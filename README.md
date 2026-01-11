@@ -1,16 +1,79 @@
-# React + Vite
+# 🧵 Spool
+> **Content approval workflows, simplified.**
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+[![Live Demo](https://img.shields.io/badge/🚀_Launch-Live_Demo-indigo?style=for-the-badge)](https://YOUR_USERNAME.github.io/spool-app/)
+![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
+![Firebase](https://img.shields.io/badge/firebase-ffca28?style=for-the-badge&logo=firebase&logoColor=black)
 
-Currently, two official plugins are available:
+**Spool** is a lightweight, agency-focused tool designed to streamline the process of drafting social media content and getting client approval. It replaces messy spreadsheets with a clean, visual dashboard and generates secure, read-only links for clients to review work.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## ✨ Key Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+* **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
+* **🔗 Client Approval Links:** Generate unique, shareable URLs for clients to review content without needing an account.
+* **🤖 AI Magic Rewriting:** (V2) Integrated Gemini AI to rephrase content instantly (Professional, Punchy, or Emojified).
+* **🖼️ Smart Media Handling:** Automatic client-side image compression to optimize storage within Firestore constraints.
+* **📅 Calendar & Grid Views:** Visualize content schedules at a glance.
+* **🔒 Secure Architecture:** Environment variable protection for API keys and sensitive data.
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 🛠️ Tech Stack
+
+* **Frontend:** React (Vite), Tailwind CSS
+* **Backend:** Firebase (Firestore, Auth)
+* **Icons:** Lucide React
+* **Deployment:** GitHub Pages
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+* Node.js (v18+)
+* A Firebase Project
+
+### Installation
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/YOUR_USERNAME/spool-app.git](https://github.com/YOUR_USERNAME/spool-app.git)
+    cd spool-app
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    npm install
+    ```
+
+3.  **Configure Environment Variables:**
+    Create a `.env` file in the root directory. Do **not** commit this file.
+    ```env
+    VITE_FIREBASE_API_KEY=your_api_key
+    VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+    VITE_FIREBASE_PROJECT_ID=your_project_id
+    VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
+    VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+    VITE_FIREBASE_APP_ID=your_app_id
+    VITE_GEMINI_API_KEY=your_gemini_key_optional
+    ```
+
+4.  **Run Locally:**
+    ```bash
+    npm run dev
+    ```
+
+---
+
+## 📦 Deployment
+
+This project is configured for automated deployment to **GitHub Pages**.
+
+### Manual Deploy
+To build and deploy the project from your local machine:
+
+```bash
+npm run deploy
