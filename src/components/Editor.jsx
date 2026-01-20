@@ -27,9 +27,26 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
 
   useEffect(() => {
     if (post) {
+      // SAFE DATE CONVERSION FOR INPUT
+      let safeDateString = new Date().toISOString().slice(0, 16); // Default to now
+      
+      if (post.scheduledDate) {
+        // If it's a Date object
+        if (post.scheduledDate instanceof Date && !isNaN(post.scheduledDate)) {
+           safeDateString = post.scheduledDate.toISOString().slice(0, 16);
+        }
+        // If it's a string
+        else if (typeof post.scheduledDate === 'string') {
+           const d = new Date(post.scheduledDate);
+           if (!isNaN(d.getTime())) {
+             safeDateString = d.toISOString().slice(0, 16);
+           }
+        }
+      }
+
       setFormData({
         ...post,
-        scheduledDate: post.scheduledDate ? new Date(post.scheduledDate).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16)
+        scheduledDate: safeDateString
       });
     }
   }, [post]);

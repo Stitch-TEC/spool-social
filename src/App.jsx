@@ -128,20 +128,30 @@ const App = () => {
     const q = query(collection(db, 'posts'), ...constraints);
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      // ✅ FIX: Convert Strings to Real Date Objects to prevent Crash
       const newPosts = snapshot.docs.map(doc => {
         const data = doc.data();
+        
+        // --- SAFE DATE PARSER ---
+        const parseDate = (val) => {
+          if (!val) return null;
+          const d = new Date(val);
+          return isNaN(d.getTime()) ? null : d; // Returns null if invalid
+        };
+
         return {
           id: doc.id,
           ...data,
-          // Safely convert date strings to Date objects
-          scheduledDate: data.scheduledDate ? new Date(data.scheduledDate) : null,
-          createdAt: data.createdAt ? new Date(data.createdAt) : new Date()
+          scheduledDate: parseDate(data.scheduledDate),
+          createdAt: parseDate(data.createdAt) || new Date()
         };
       });
       
-      // Sort: Newest First
-      newPosts.sort((a, b) => (b.scheduledDate || b.createdAt) - (a.scheduledDate || a.createdAt));
+      // Sort: Newest First (Safe sort handles nulls)
+      newPosts.sort((a, b) => {
+        const dateA = a.scheduledDate || a.createdAt;
+        const dateB = b.scheduledDate || b.createdAt;
+        return dateB - dateA;
+      });
       
       setPosts(newPosts);
       
@@ -177,7 +187,10 @@ const App = () => {
 
   const handleCopyLink = () => {
     if (!user) return;
-    const baseUrl = window.location.origin;
+    
+    // ✅ FIX: Use href (split at the ?) to keep the /spool-social/ part of the URL
+    const baseUrl = window.location.href.split('?')[0]; 
+    
     let link = `${baseUrl}?uid=${user.uid}`;
     let message = "Master Link (All Clients) Copied! 📋";
 
@@ -191,37 +204,42 @@ const App = () => {
   };
 
   // --- CRUD Handlers ---
-  const handleSavePost = async (postData) => {
+  const handleSavePost = async (formData) => {
+    if (isReadOnly) return;
     try {
-      if (!user && !sharedUid) return;
-      const targetUid = sharedUid || user.uid;
-
-      // Clean undefined fields
-      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
-
-      // Ensure dates are strings for Firestore storage
-      const dataToSave = {
-        ...postData,
-        uid: targetUid,
-        scheduledDate: postData.scheduledDate instanceof Date ? postData.scheduledDate.toISOString() : postData.scheduledDate,
-        createdAt: postData.createdAt instanceof Date ? postData.createdAt.toISOString() : (postData.createdAt || new Date().toISOString()),
-        updatedAt: new Date().toISOString()
+      // 1. Safe Date Conversion Helper
+      const getSafeDateString = (val) => {
+        if (!val) return null;
+        if (typeof val === 'string') return val; // Already a string from the input
+        if (val instanceof Date && !isNaN(val)) return val.toISOString(); // Valid Date object
+        return null; // Invalid/Empty
       };
 
-      if (!postData.id) {
-        dataToSave.status = dataToSave.status || STATUS.DRAFT;
-        await addDoc(collection(db, 'posts'), dataToSave);
-        showToast("Thread created!");
+      // 2. Prepare Data
+      const postData = { 
+        ...formData, 
+        uid: user.uid, 
+        scheduledDate: getSafeDateString(formData.scheduledDate), 
+        updatedAt: new Date().toISOString() 
+      };
+      
+      // 3. Clean undefined fields (Firestore rejects them)
+      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
+
+      // 4. Save
+      if (postData.id) {
+        await updateDoc(doc(db, 'posts', postData.id), postData);
+        showToast("Thread updated");
       } else {
-        const { id, ...updateData } = dataToSave;
-        await updateDoc(doc(db, 'posts', postData.id), updateData);
-        showToast("Thread updated!");
+        await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
+        showToast("New thread created!");
       }
+      
       setView('grid');
       setEditingPost(null);
     } catch (error) {
       console.error("Save Error:", error);
-      showToast("Failed to save.", "error");
+      showToast(`Save failed: ${error.message}`, "error");
     }
   };
 
