@@ -204,6 +204,19 @@ const App = () => {
   // --- CRUD Handlers ---
   const handleSavePost = async (formData) => {
     if (isReadOnly) return;
+
+    // 🔒 SECURITY: Input Validation & Sanitization
+    const client = (formData.client || "").trim().slice(0, 50);
+    const content = (formData.content || "").trim();
+    const platformId = formData.platform || 'gmb';
+    const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
+
+    if (!client) return showToast("Client name is required", "error");
+    if (!content) return showToast("Content cannot be empty", "error");
+    if (content.length > platform.maxChars) {
+      return showToast(`Content exceeds ${platform.name} limit (${platform.maxChars} chars)`, "error");
+    }
+
     try {
       // 1. Safe Date Conversion Helper
       const getSafeDateString = (val) => {
@@ -216,6 +229,8 @@ const App = () => {
       // 2. Prepare Data
       const postData = { 
         ...formData, 
+        client,
+        content,
         uid: user.uid, 
         scheduledDate: getSafeDateString(formData.scheduledDate), 
         updatedAt: new Date().toISOString() 
@@ -242,6 +257,7 @@ const App = () => {
   };
 
   const handleDeleteClick = (postId) => {
+    if (isReadOnly) return;
     setConfirmModal({
       title: "Delete Thread?",
       message: "This action cannot be undone.",
@@ -255,6 +271,7 @@ const App = () => {
   };
 
   const handleStatusChange = async (postId, newStatus) => {
+    if (isReadOnly) return;
     try {
       await updateDoc(doc(db, 'posts', postId), { status: newStatus });
       showToast(`Status updated to ${newStatus}`);
@@ -264,6 +281,7 @@ const App = () => {
   };
   
   const handleCloneToAll = async (post) => {
+    if (isReadOnly) return;
     const allClients = [...new Set(posts.map(p => p.client).filter(Boolean))];
     if (allClients.length === 0) return showToast("No other clients found.");
     
