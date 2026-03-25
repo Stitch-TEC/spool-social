@@ -2,18 +2,18 @@ import React from 'react';
 import { MapPin, MoreHorizontal } from 'lucide-react';
 import { PLATFORMS } from '../constants';
 
-const MobilePreview = ({ post }) => {
-  const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
-  const content = post.content || "No content yet...";
+const Wrapper = ({ children }) => (
+  <div className="w-[300px] bg-white rounded-[2rem] border-[6px] border-slate-800 shadow-2xl overflow-hidden relative h-[600px] flex flex-col">
+     <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-10" />
+     <div className="flex-1 overflow-y-auto pt-8 scrollbar-hide">
+       {children}
+     </div>
+  </div>
+);
 
-  const Wrapper = ({ children }) => (
-    <div className="w-[300px] bg-white rounded-[2rem] border-[6px] border-slate-800 shadow-2xl overflow-hidden relative h-[600px] flex flex-col">
-       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-10" />
-       <div className="flex-1 overflow-y-auto pt-8 scrollbar-hide">
-         {children}
-       </div>
-    </div>
-  );
+const MobilePreview = ({ post }) => {
+  const _platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
+  const content = post.content || "No content yet...";
 
   // 1. Twitter / X Layout
   if (post.platform === 'twitter') {
