@@ -35,7 +35,7 @@ import Editor from './components/Editor';
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { hasError: false }; }
-  static getDerivedStateFromError(error) { return { hasError: true }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
   render() {
     if (this.state.hasError) {
       return (
@@ -63,7 +63,8 @@ const App = () => {
   const [posts, setPosts] = useState([]);
   const [mediaMap, setMediaMap] = useState({});
   const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
-  
+  const [currentDate, setCurrentDate] = useState(new Date());
+
   // Filtering & Search
   const [filterClient, setFilterClient] = useState(null); 
   const [searchQuery, setSearchQuery] = useState('');     
@@ -100,11 +101,8 @@ const App = () => {
   useEffect(() => {
     if (!user && !sharedUid) return;
 
-    setIsLoading(true);
-
     const targetUid = sharedUid || user?.uid;
     if (!targetUid) {
-        setIsLoading(false);
         return;
     }
 
@@ -114,20 +112,20 @@ const App = () => {
     // 🔒 SECURITY: Guests MUST have a client param
     if (sharedUid && !clientParam) {
       console.warn("⛔ ACCESS DENIED: Missing client filter for guest.");
-      setPosts([]); 
-      setIsLoading(false);
       return; 
     }
 
     const constraints = [where('uid', '==', targetUid)];
     if (clientParam) {
       constraints.push(where('client', '==', clientParam));
-      setFilterClient(clientParam);
     }
 
     const q = query(collection(db, 'posts'), ...constraints);
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (clientParam) {
+        setFilterClient(clientParam);
+      }
       const newPosts = snapshot.docs.map(doc => {
         const data = doc.data();
         
@@ -161,8 +159,8 @@ const App = () => {
       setMediaMap(prev => ({ ...prev, ...newMedia }));
 
       setIsLoading(false);
-    }, (error) => {
-      console.error("🔥 Firestore Error:", error);
+    }, (err) => {
+      console.error("🔥 Firestore Error:", err);
       setIsLoading(false);
     });
 
@@ -260,7 +258,7 @@ const App = () => {
     try {
       await updateDoc(doc(db, 'posts', postId), { status: newStatus });
       showToast(`Status updated to ${newStatus}`);
-    } catch (error) {
+    } catch {
       showToast("Update failed", "error");
     }
   };
@@ -272,7 +270,7 @@ const App = () => {
     let count = 0;
     for (const clientName of allClients) {
         if (clientName === post.client) continue; 
-        const { id, ...cloneData } = post; // Remove ID
+        const { id: _, ...cloneData } = post; // Remove ID
         await addDoc(collection(db, 'posts'), {
             ...cloneData,
             client: clientName,
@@ -489,7 +487,9 @@ const App = () => {
                          // 🛡️ SAFE CALENDAR: Only show posts that actually have a date
                          <CalendarView 
                             posts={filteredPosts.filter(p => p.scheduledDate instanceof Date)} 
-                            onPostClick={(p) => { if(isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); }}} 
+                            currentDate={currentDate}
+                            onDateChange={setCurrentDate}
+                            onEdit={(p) => { if(isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); }}}
                          />
                        ) : (
                          <>

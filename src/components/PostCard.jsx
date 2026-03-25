@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { 
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus, 
   Edit3, Trash2, Copy, ExternalLink 
@@ -7,7 +7,7 @@ import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { resolveImage } from '../utils/helpers';
 
-const PostCard = ({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, isReadOnly, onClick }) => {
+const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, isReadOnly, onClick }) => {
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
@@ -70,6 +70,6 @@ const PostCard = ({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneToAll,
       </div>
     </div>
   );
-};
+});
 
 export default PostCard;

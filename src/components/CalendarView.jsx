@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { STATUS } from '../constants';
 
@@ -9,6 +9,26 @@ const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
   const days = Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1);
   const padding = Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i);
   const monthName = currentDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+  const currentMonth = currentDate.getMonth();
+  const currentYear = currentDate.getFullYear();
+
+  // ⚡ OPTIMIZATION: Group posts by date in a single pass (O(N))
+  const postsByDay = useMemo(() => {
+    const map = {};
+    posts.forEach(p => {
+      const d = new Date(p.scheduledDate);
+      if (d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+        const day = d.getDate();
+        if (!map[day]) map[day] = [];
+        map[day].push(p);
+      }
+    });
+    // Sort each day's posts by time
+    Object.keys(map).forEach(day => {
+      map[day].sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
+    });
+    return map;
+  }, [posts, currentMonth, currentYear]);
 
   return (
     <div className="h-full flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -28,10 +48,7 @@ const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
       <div className="flex-1 grid grid-cols-7 bg-slate-200 gap-px overflow-y-auto">
         {padding.map(i => <div key={`pad-${i}`} className="bg-slate-50/50" />)}
         {days.map(day => {
-           const dayPosts = posts.filter(p => {
-              const d = new Date(p.scheduledDate);
-              return d.getDate() === day && d.getMonth() === currentDate.getMonth() && d.getFullYear() === currentDate.getFullYear();
-           }).sort((a,b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
+           const dayPosts = postsByDay[day] || [];
 
            return (
              <div key={day} className="bg-white min-h-[100px] p-2 hover:bg-slate-50 transition-colors group relative">

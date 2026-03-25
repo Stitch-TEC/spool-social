@@ -78,7 +78,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
       try {
         const processedImage = await processImageFile(file); // ✅ COMPRESSION
         setFormData(prev => ({ ...prev, imageUrl: processedImage }));
-      } catch (err) {
+      } catch {
         showToast("Error processing image", "error");
       }
     }
