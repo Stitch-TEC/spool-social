@@ -1,8 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, memo } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { STATUS } from '../constants';
 
-const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
+const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
   const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
 
@@ -67,6 +67,6 @@ const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
       </div>
     </div>
   );
-};
+});
 
 export default CalendarView;
