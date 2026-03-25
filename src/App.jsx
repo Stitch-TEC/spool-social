@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Component } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
@@ -23,7 +23,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
-import { STATUS } from './constants';
+import { STATUS, PLATFORMS } from './constants';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
@@ -126,37 +126,62 @@ const App = () => {
       if (clientParam) {
         setFilterClient(clientParam);
       }
-      const newPosts = snapshot.docs.map(doc => {
-        const data = doc.data();
-        
-        // --- SAFE DATE PARSER ---
-        const parseDate = (val) => {
-          if (!val) return null;
-          const d = new Date(val);
-          return isNaN(d.getTime()) ? null : d; // Returns null if invalid
-        };
 
-        return {
-          id: doc.id,
-          ...data,
-          scheduledDate: parseDate(data.scheduledDate),
-          createdAt: parseDate(data.createdAt) || new Date()
-        };
+      setPosts(prevPosts => {
+        // Create a map for quick lookup of existing posts
+        const postMap = new Map(prevPosts.map(p => [p.id, p]));
+        
+        const newPosts = snapshot.docs.map(doc => {
+          const data = doc.data();
+          const existingPost = postMap.get(doc.id);
+
+          // Check if post actually changed (using updatedAt as a proxy for efficiency)
+          // or if it's new. Convert to string to ensure value comparison.
+          const currentUpdate = data.updatedAt?.toString();
+          const prevUpdate = existingPost?.updatedAt?.toString();
+
+          if (existingPost && prevUpdate === currentUpdate) {
+            return existingPost;
+          }
+
+          // --- SAFE DATE PARSER ---
+          const parseDate = (val) => {
+            if (!val) return null;
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? null : d; // Returns null if invalid
+          };
+
+          return {
+            id: doc.id,
+            ...data,
+            scheduledDate: parseDate(data.scheduledDate),
+            createdAt: parseDate(data.createdAt) || new Date()
+          };
+        });
+
+        // Sort: Newest First (Safe sort handles nulls)
+        newPosts.sort((a, b) => {
+          const dateA = a.scheduledDate || a.createdAt;
+          const dateB = b.scheduledDate || b.createdAt;
+          return dateB - dateA;
+        });
+
+        return newPosts;
       });
-      
-      // Sort: Newest First (Safe sort handles nulls)
-      newPosts.sort((a, b) => {
-        const dateA = a.scheduledDate || a.createdAt;
-        const dateB = b.scheduledDate || b.createdAt;
-        return dateB - dateA;
+
+      // Update media map only if new images are discovered
+      setMediaMap(prev => {
+        let hasNew = false;
+        const next = { ...prev };
+        snapshot.docs.forEach(doc => {
+          const img = doc.data().imageUrl;
+          if (img && !next[img]) {
+            next[img] = img;
+            hasNew = true;
+          }
+        });
+        return hasNew ? next : prev;
       });
-      
-      setPosts(newPosts);
-      
-      // Update media map
-      const newMedia = {};
-      newPosts.forEach(p => { if (p.imageUrl) newMedia[p.imageUrl] = p.imageUrl; });
-      setMediaMap(prev => ({ ...prev, ...newMedia }));
 
       setIsLoading(false);
     }, (err) => {
@@ -178,12 +203,12 @@ const App = () => {
   }, [isReadOnly]);
 
   // --- Helpers ---
-  const showToast = (message, type = 'success') => {
+  const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
-  };
+  }, []);
 
-  const handleCopyLink = () => {
+  const handleCopyLink = useCallback(() => {
     if (!user) return;
     
     // ✅ FIX: Use href (split at the ?) to keep the /spool-social/ part of the URL
@@ -199,10 +224,10 @@ const App = () => {
 
     navigator.clipboard.writeText(link);
     showToast(message);
-  };
+  }, [filterClient, user, showToast]);
 
   // --- CRUD Handlers ---
-  const handleSavePost = async (formData) => {
+  const handleSavePost = useCallback(async (formData) => {
     if (isReadOnly) return;
 
     // 🔒 SECURITY: Input Validation & Sanitization
@@ -254,9 +279,9 @@ const App = () => {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");
     }
-  };
+  }, [isReadOnly, user, showToast]);
 
-  const handleDeleteClick = (postId) => {
+  const handleDeleteClick = useCallback((postId) => {
     if (isReadOnly) return;
     setConfirmModal({
       title: "Delete Thread?",
@@ -268,9 +293,9 @@ const App = () => {
         showToast("Thread deleted.");
       }
     });
-  };
+  }, [isReadOnly, showToast]);
 
-  const handleStatusChange = async (postId, newStatus) => {
+  const handleStatusChange = useCallback(async (postId, newStatus) => {
     if (isReadOnly) return;
     try {
       await updateDoc(doc(db, 'posts', postId), { status: newStatus });
@@ -278,9 +303,9 @@ const App = () => {
     } catch {
       showToast("Update failed", "error");
     }
-  };
+  }, [isReadOnly, showToast]);
   
-  const handleCloneToAll = async (post) => {
+  const handleCloneToAll = useCallback(async (post) => {
     if (isReadOnly) return;
     const allClients = [...new Set(posts.map(p => p.client).filter(Boolean))];
     if (allClients.length === 0) return showToast("No other clients found.");
@@ -299,7 +324,20 @@ const App = () => {
         count++;
     }
     showToast(`Cloned to ${count} clients!`);
-  };
+  }, [isReadOnly, posts, showToast]);
+
+  const handleSelectPost = useCallback((p) => {
+    if (isReadOnly) {
+      setReviewingPost(p);
+    } else {
+      setEditingPost(p);
+      setView('editor');
+    }
+  }, [isReadOnly]);
+
+  const handleDuplicatePost = useCallback((p) => {
+    handleSavePost({ ...p, id: undefined, status: STATUS.DRAFT });
+  }, [handleSavePost]);
 
   // --- Filtering Logic ---
   const uniqueClients = useMemo(() => {
@@ -318,6 +356,10 @@ const App = () => {
       return matchesClient && matchesSearch;
     });
   }, [posts, filterClient, searchQuery]);
+
+  const calendarPosts = useMemo(() => {
+    return filteredPosts.filter(p => p.scheduledDate instanceof Date);
+  }, [filteredPosts]);
 
 
   // --- Render ---
@@ -505,10 +547,10 @@ const App = () => {
                        {view === 'calendar' ? (
                          // 🛡️ SAFE CALENDAR: Only show posts that actually have a date
                          <CalendarView 
-                            posts={filteredPosts.filter(p => p.scheduledDate instanceof Date)} 
+                            posts={calendarPosts}
                             currentDate={currentDate}
                             onDateChange={setCurrentDate}
-                            onEdit={(p) => { if(isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); }}}
+                            onEdit={handleSelectPost}
                          />
                        ) : (
                          <>
@@ -526,11 +568,11 @@ const App = () => {
                                    post={p} 
                                    mediaMap={mediaMap} 
                                    isReadOnly={isReadOnly}
-                                   onClick={() => { if (isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); } }} 
-                                   onEdit={(p) => { setEditingPost(p); setView('editor'); }} 
+                                   onClick={() => handleSelectPost(p)}
+                                   onEdit={handleSelectPost}
                                    onCloneToAll={handleCloneToAll} 
-                                   onDuplicate={(p) => handleSavePost({...p, id: undefined, status: STATUS.DRAFT})}
-                                   onDelete={() => handleDeleteClick(p.id)} 
+                                   onDuplicate={handleDuplicatePost}
+                                   onDelete={handleDeleteClick}
                                    onStatusChange={handleStatusChange}
                                  />
                                ))}
