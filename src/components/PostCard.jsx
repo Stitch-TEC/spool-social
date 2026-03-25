@@ -47,10 +47,10 @@ const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneT
 
           {!isReadOnly && (
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Platforms" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" className="p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} className="p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={14} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Platforms" aria-label="Blast: Clone to All Platforms" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={14} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={14} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={14} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={14} /></button>
             </div>
           )}
         </div>

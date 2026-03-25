@@ -414,7 +414,7 @@ const App = () => {
             
             <div className="flex items-center gap-3">
               {!isReadOnly && (
-                <button onClick={() => setSidebarOpen(!sidebarOpen)} className="lg:hidden p-2 text-slate-500 hover:bg-slate-100 rounded-lg">
+                <button onClick={() => setSidebarOpen(!sidebarOpen)} title="Toggle Sidebar" aria-label="Toggle Sidebar" className="lg:hidden p-2 text-slate-500 hover:bg-slate-100 rounded-lg">
                   <Menu size={24} />
                 </button>
               )}
@@ -442,8 +442,8 @@ const App = () => {
             <div className="flex items-center gap-2 sm:gap-3">
               {!isReadOnly && (
                 <div className="hidden sm:flex bg-slate-100 p-1 rounded-lg">
-                  <button onClick={() => setView('grid')} className={`p-1.5 rounded-md ${view === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Grid View"><Grid size={18}/></button>
-                  <button onClick={() => setView('calendar')} className={`p-1.5 rounded-md ${view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Calendar View"><CalendarIcon size={18}/></button>
+                  <button onClick={() => setView('grid')} className={`p-1.5 rounded-md ${view === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Grid View" aria-label="Grid View"><Grid size={18}/></button>
+                  <button onClick={() => setView('calendar')} className={`p-1.5 rounded-md ${view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Calendar View" aria-label="Calendar View"><CalendarIcon size={18}/></button>
                 </div>
               )}
 
@@ -468,6 +468,7 @@ const App = () => {
                  onClick={() => { signOut(auth); window.location.reload(); }} 
                  className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
                  title={isReadOnly ? "Exit View" : "Log Out"}
+                 aria-label={isReadOnly ? "Exit View" : "Log Out"}
                >
                  <LogOut size={20} />
               </button>
@@ -479,7 +480,7 @@ const App = () => {
                 <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                   {view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}
                   {filterClient && !isReadOnly && (
-                    <button onClick={() => setFilterClient(null)} className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
+                    <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
                   )}
                 </h2>
              </div>

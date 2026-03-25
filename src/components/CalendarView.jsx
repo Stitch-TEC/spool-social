@@ -37,9 +37,9 @@ const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
            <span className="text-indigo-600">📅</span> {monthName}
         </h2>
         <div className="flex gap-1 bg-white rounded-lg border border-slate-200 p-1">
-          <button onClick={() => onDateChange(new Date(currentDate.setMonth(currentDate.getMonth() - 1)))} className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronLeft size={18}/></button>
+          <button onClick={() => onDateChange(new Date(currentDate.setMonth(currentDate.getMonth() - 1)))} title="Previous Month" aria-label="Previous Month" className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronLeft size={18}/></button>
           <button onClick={() => onDateChange(new Date())} className="px-3 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-md">Today</button>
-          <button onClick={() => onDateChange(new Date(currentDate.setMonth(currentDate.getMonth() + 1)))} className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronRight size={18}/></button>
+          <button onClick={() => onDateChange(new Date(currentDate.setMonth(currentDate.getMonth() + 1)))} title="Next Month" aria-label="Next Month" className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronRight size={18}/></button>
         </div>
       </div>
       <div className="grid grid-cols-7 bg-slate-100 gap-px border-b border-slate-200 text-center py-2">
@@ -60,7 +60,7 @@ const CalendarView = ({ posts, currentDate, onDateChange, onEdit }) => {
                    </button>
                  ))}
                </div>
-               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-indigo-600 transition-all"><Plus size={14}/></button>
+               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} title="Add Thread" aria-label="Add Thread" className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-indigo-600 transition-all"><Plus size={14}/></button>
              </div>
            );
         })}

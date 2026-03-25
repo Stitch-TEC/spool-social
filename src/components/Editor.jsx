@@ -94,7 +94,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
       <div className={`flex-1 flex flex-col h-full border-r border-slate-200 transition-all ${previewMode ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex items-center gap-3">
-             <button onClick={onCancel} className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
+             <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">New Thread</h2>
           </div>
           <button onClick={() => onSave(formData)} disabled={isOverLimit || !formData.content} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg">
@@ -170,7 +170,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
             ) : (
               <div className="relative rounded-xl overflow-hidden border border-slate-200 group">
                 <img src={resolveImage(formData.imageUrl, mediaMap)} className="w-full h-48 object-cover" alt="Preview" />
-                <button onClick={() => setFormData({ ...formData, imageUrl: '' })} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-rose-600 transition-colors backdrop-blur-sm"><Trash2 size={16}/></button>
+                <button onClick={() => setFormData({ ...formData, imageUrl: '' })} title="Remove Image" aria-label="Remove Image" className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-rose-600 transition-colors backdrop-blur-sm"><Trash2 size={16}/></button>
               </div>
             )}
           </div>
@@ -181,7 +181,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
       <div className={`w-full md:w-[400px] bg-slate-100 border-l border-slate-200 flex flex-col ${previewMode ? 'flex fixed inset-0 z-20' : 'hidden md:flex'}`}>
          <div className="p-4 border-b border-slate-200 bg-slate-100 flex justify-between items-center">
             <h3 className="font-bold text-slate-500 text-sm uppercase tracking-wider">Live Preview</h3>
-            <button onClick={() => setPreviewMode(!previewMode)} className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
+            <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
          <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
             <MobilePreview post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}} />
@@ -189,7 +189,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
       </div>
       
       {/* Mobile Toggle */}
-      <button onClick={() => setPreviewMode(true)} className="md:hidden fixed bottom-6 right-6 z-50 bg-slate-900 text-white p-4 rounded-full shadow-xl"><Smartphone size={24}/></button>
+      <button onClick={() => setPreviewMode(true)} title="Open Preview" aria-label="Open Preview" className="md:hidden fixed bottom-6 right-6 z-50 bg-slate-900 text-white p-4 rounded-full shadow-xl"><Smartphone size={24}/></button>
     </div>
   );
 };

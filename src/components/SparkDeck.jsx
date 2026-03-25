@@ -10,7 +10,7 @@ const SparkDeck = ({ onClose, onSelect }) => (
           <Sparkles size={20} className="text-yellow-300" />
           <h3 className="font-bold text-lg">Spark Deck</h3>
         </div>
-        <button onClick={onClose} className="p-1 hover:bg-white/20 rounded-full transition-colors"><X size={20} /></button>
+        <button onClick={onClose} title="Close Spark Deck" aria-label="Close Spark Deck" className="p-1 hover:bg-white/20 rounded-full transition-colors"><X size={20} /></button>
       </div>
       <div className="p-2 overflow-y-auto bg-slate-50 rounded-b-2xl">
         <div className="grid gap-2 p-2">

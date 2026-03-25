@@ -32,7 +32,7 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
               <h3 className="text-xl font-bold text-slate-800">Review Thread</h3>
               <p className="text-sm text-slate-500">Scheduled: {new Date(post.scheduledDate).toLocaleString()}</p>
             </div>
-            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
+            <button onClick={onClose} title="Close Review" aria-label="Close Review" className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
           </div>
 
           <div className="p-6 flex-1 overflow-y-auto">
