@@ -1,0 +1,4 @@
+## 2025-05-15 - [Defense in Depth: Authorization and Input Validation]
+**Vulnerability:** Authorization bypass in event handlers and lack of input validation/sanitization.
+**Learning:** Even when the UI hides actions from unauthorized users (like guests in read-only mode), the underlying event handlers must still enforce those restrictions to prevent exploitation via the console or manipulated state. Additionally, missing input length limits on certain fields (like client names) poses a minor DoS risk and data integrity issue.
+**Prevention:** Always verify authorization state (e.g., `isReadOnly` flag) at the start of all sensitive action handlers, not just in the UI rendering logic. Implement input sanitization and length validation on all user-controlled fields before persisting to the database.
