@@ -1,16 +1,17 @@
 import React, { memo } from 'react';
 import { 
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus, 
-  Edit3, Trash2, Copy, ExternalLink 
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { resolveImage } from '../utils/helpers';
 
-const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, isReadOnly, onClick }) => {
+const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly, onClick }) => {
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
+  const isArchived = post.status === STATUS.ARCHIVED;
   const formattedDate = post.scheduledDate ? new Date(post.scheduledDate).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No date set';
   const displayImage = resolveImage(post.imageUrl, mediaMap);
   
@@ -27,8 +28,8 @@ const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneT
   };
 
   return (
-    <div onClick={onClick} className={`group bg-white border border-slate-100 rounded-xl shadow-sm hover:shadow-md transition-all overflow-hidden flex flex-col cursor-pointer ${getStatusColor()}`}>
-      <div className={`h-1.5 w-full ${isPosted ? 'bg-indigo-500' : isScheduled ? 'bg-amber-400' : 'bg-slate-300'}`} />
+    <div onClick={onClick} className={`group bg-white border border-slate-100 rounded-xl shadow-sm hover:shadow-md transition-all overflow-hidden flex flex-col cursor-pointer ${getStatusColor()} ${isArchived ? 'grayscale-[0.5] opacity-80' : ''}`}>
+      <div className={`h-1.5 w-full ${isPosted ? 'bg-indigo-500' : isScheduled ? 'bg-amber-400' : isArchived ? 'bg-slate-500' : 'bg-slate-300'}`} />
       <div className="p-5 flex-1 flex flex-col">
         <div className="flex justify-between items-start mb-3">
           <div className="flex items-center gap-2">
@@ -47,6 +48,11 @@ const PostCard = memo(({ post, mediaMap, onEdit, onDelete, onDuplicate, onCloneT
 
           {!isReadOnly && (
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {isArchived ? (
+                <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={14} /></button>
+              ) : (
+                <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={14} /></button>
+              )}
               <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Platforms" aria-label="Blast: Clone to All Platforms" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={14} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={14} /></button>
               <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={14} /></button>

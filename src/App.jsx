@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo, Component } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X
+  Loader2, Filter, X, Download, Upload, Archive
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -19,11 +19,13 @@ import {
   doc, 
   onSnapshot,
   query, 
-  where 
+  where,
+  writeBatch
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
-import { STATUS } from './constants';
+import { STATUS, PLATFORMS } from './constants';
+import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
@@ -67,6 +69,7 @@ const App = () => {
 
   // Filtering & Search
   const [filterClient, setFilterClient] = useState(null); 
+  const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');     
   const [sidebarOpen, setSidebarOpen] = useState(false);  
 
@@ -270,7 +273,7 @@ const App = () => {
     });
   };
 
-  const handleStatusChange = async (postId, newStatus) => {
+  const handleStatusChange = useCallback(async (postId, newStatus) => {
     if (isReadOnly) return;
     try {
       await updateDoc(doc(db, 'posts', postId), { status: newStatus });
@@ -278,6 +281,100 @@ const App = () => {
     } catch {
       showToast("Update failed", "error");
     }
+  }, [isReadOnly]);
+
+  const handleArchivePost = useCallback(async (postId) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), { status: STATUS.ARCHIVED });
+      showToast("Thread archived");
+    } catch {
+      showToast("Archive failed", "error");
+    }
+  }, [isReadOnly]);
+
+  const handleRestorePost = useCallback(async (postId) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), { status: STATUS.DRAFT });
+      showToast("Thread restored to drafts");
+    } catch {
+      showToast("Restore failed", "error");
+    }
+  }, [isReadOnly]);
+
+  const handleExport = (type) => {
+    let postsToExport = [];
+    if (type === 'current') {
+      postsToExport = filteredPosts.filter(p => p.status !== STATUS.ARCHIVED);
+    } else if (type === 'archived') {
+      postsToExport = posts.filter(p => p.status === STATUS.ARCHIVED);
+    } else {
+      postsToExport = posts;
+    }
+
+    if (postsToExport.length === 0) {
+      return showToast("No posts to export", "error");
+    }
+
+    const csv = convertToCSV(postsToExport);
+    downloadCSV(csv, `spool-export-${type}-${new Date().toISOString().split('T')[0]}.csv`);
+  };
+
+  const handleImport = async (e) => {
+    if (isReadOnly) return;
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const csvText = event.target.result;
+      const importedPosts = parseCSV(csvText);
+
+      if (importedPosts.length === 0) {
+        return showToast("No valid posts found in CSV", "error");
+      }
+
+      setConfirmModal({
+        title: `Import ${importedPosts.length} Threads?`,
+        message: `This will add ${importedPosts.length} new threads to your dashboard.`,
+        type: "primary",
+        onConfirm: async () => {
+          try {
+            const batch = writeBatch(db);
+            let count = 0;
+
+            // Firestore batches have a 500 document limit
+            const BATCH_LIMIT = 500;
+            const currentImportBatch = importedPosts.slice(0, BATCH_LIMIT);
+
+            currentImportBatch.forEach(post => {
+              const newDocRef = doc(collection(db, 'posts'));
+              batch.set(newDocRef, {
+                ...post,
+                uid: user.uid,
+                createdAt: new Date().toISOString()
+              });
+              count++;
+            });
+
+            await batch.commit();
+            showToast(`Successfully imported ${count} threads!`);
+            setConfirmModal(null);
+
+            if (importedPosts.length > BATCH_LIMIT) {
+              showToast(`Heads up: Only the first ${BATCH_LIMIT} threads were imported.`, "error");
+            }
+          } catch (error) {
+            console.error("Import Error:", error);
+            showToast(`Import failed: ${error.message}`, "error");
+            setConfirmModal(null);
+          }
+        }
+      });
+    };
+    reader.readAsText(file);
+    e.target.value = null; // Reset input
   };
   
   const handleCloneToAll = async (post) => {
@@ -309,15 +406,16 @@ const App = () => {
   const filteredPosts = useMemo(() => {
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
+      const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
       const searchLower = searchQuery.toLowerCase();
       const matchesSearch = 
         !searchQuery ||
         (post.content && post.content.toLowerCase().includes(searchLower)) ||
         (post.client && post.client.toLowerCase().includes(searchLower));
 
-      return matchesClient && matchesSearch;
+      return matchesClient && matchesArchive && matchesSearch;
     });
-  }, [posts, filterClient, searchQuery]);
+  }, [posts, filterClient, showArchived, searchQuery]);
 
 
   // --- Render ---
@@ -383,6 +481,28 @@ const App = () => {
               {/* Navigation */}
               <div className="flex-1 overflow-y-auto">
                  <div className="mb-6">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Views</h3>
+                    <div className="space-y-1">
+                        <button
+                          onClick={() => { setShowArchived(false); setSidebarOpen(false); }}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Grid size={16} /> <span>Active Threads</span>
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => { setShowArchived(true); setSidebarOpen(false); }}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Archive size={16} /> <span>Archived</span>
+                          </div>
+                        </button>
+                    </div>
+                 </div>
+
+                 <div className="mb-6">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Clients</h3>
                     <div className="space-y-1">
                         <button 
@@ -400,6 +520,28 @@ const App = () => {
                             {client}
                           </button>
                         ))}
+                    </div>
+                 </div>
+
+                 <div className="mb-6">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
+                          <Upload size={16} />
+                          <span>Import CSV</span>
+                          <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
+                        </label>
+                        <div className="relative group">
+                          <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+                            <Download size={16} />
+                            <span>Export CSV</span>
+                          </button>
+                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
+                            <button onClick={() => handleExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
+                            <button onClick={() => handleExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
+                            <button onClick={() => handleExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
+                          </div>
+                        </div>
                     </div>
                  </div>
               </div>
@@ -532,6 +674,8 @@ const App = () => {
                                    onDuplicate={(p) => handleSavePost({...p, id: undefined, status: STATUS.DRAFT})}
                                    onDelete={() => handleDeleteClick(p.id)} 
                                    onStatusChange={handleStatusChange}
+                                   onArchive={handleArchivePost}
+                                   onRestore={handleRestorePost}
                                  />
                                ))}
                              </div>
