@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Component, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
@@ -24,13 +24,15 @@ import {
 
 import { auth, db, googleProvider } from './config/firebase';
 import { STATUS, PLATFORMS } from './constants';
+import { resolveImage } from './utils/helpers';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
 import SparkDeck from './components/SparkDeck';
 import CalendarView from './components/CalendarView';
-import Editor from './components/Editor';
+
+const Editor = lazy(() => import('./components/Editor'));
 
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
@@ -386,12 +388,21 @@ const App = () => {
 
   if (view === 'editor') {
     return (
-      <Editor 
-        post={editingPost} 
-        onSave={handleSavePost} 
-        onCancel={() => { setView('grid'); setEditingPost(null); }} 
-        onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
-      />
+      // ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
+      // and improves the first paint time for the main dashboard.
+      <Suspense fallback={
+        <div className="flex flex-col items-center justify-center h-screen bg-white">
+          <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+          <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
+        </div>
+      }>
+        <Editor
+          post={editingPost}
+          onSave={handleSavePost}
+          onCancel={() => { setView('grid'); setEditingPost(null); }}
+          onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+        />
+      </Suspense>
     );
   }
 
@@ -563,12 +574,15 @@ const App = () => {
                            ) : (
                              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                                {filteredPosts.map(p => (
+                                 // ⚡ OPTIMIZATION: Resolve image URLs here instead of inside PostCard.
+                                 // Passing a primitive string (resolvedImageUrl) instead of the entire mediaMap object
+                                 // makes React.memo(PostCard) much more effective, as it won't re-render
+                                 // every card when the mediaMap object's reference changes.
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
-                                   mediaMap={mediaMap} 
+                                   resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
-                                   onClick={() => handleSelectPost(p)}
                                    onEdit={handleSelectPost}
                                    onCloneToAll={handleCloneToAll} 
                                    onDuplicate={handleDuplicatePost}
