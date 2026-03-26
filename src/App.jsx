@@ -595,7 +595,12 @@ const App = () => {
         </main>
       </div>
 
-      {confirmModal && <ConfirmModal {...confirmModal} />}
+      {confirmModal && (
+        <ConfirmModal
+          {...confirmModal}
+          onCancel={() => setConfirmModal(null)}
+        />
+      )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
       {isSparkDeckOpen && <SparkDeck onClose={() => setIsSparkDeckOpen(false)} onSelect={(txt) => { setEditingPost(prev => ({...prev, content: txt})); setIsSparkDeckOpen(false); }} />}
       {reviewingPost && (
