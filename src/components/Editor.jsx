@@ -108,7 +108,12 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform</label>
             <div className="flex gap-4">
               {Object.values(PLATFORMS).map(p => (
-                <button key={p.id} onClick={() => setFormData({ ...formData, platform: p.id })} className={`flex-1 flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? `border-${p.text.split('-')[1]}-500 bg-${p.text.split('-')[1]}-50` : 'border-slate-100 hover:border-slate-200'}`}>
+                <button
+                  key={p.id}
+                  onClick={() => setFormData({ ...formData, platform: p.id })}
+                  aria-pressed={formData.platform === p.id}
+                  className={`flex-1 flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? `border-${p.text.split('-')[1]}-500 bg-${p.text.split('-')[1]}-50` : 'border-slate-100 hover:border-slate-200'}`}
+                >
                    <PlatformIcon platformId={p.id} size={24} />
                    <span className={`text-xs font-bold ${formData.platform === p.id ? 'text-slate-800' : 'text-slate-400'}`}>{p.name}</span>
                 </button>

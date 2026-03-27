@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { 
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus, 
   Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore
@@ -6,7 +6,8 @@ import {
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 
-const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, isReadOnly }) => {
+const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
+  const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
@@ -16,6 +17,8 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
   const copyToClipboard = (text) => { 
      // Simple clipboard copy
      navigator.clipboard.writeText(text);
+     setCopied(true);
+     setTimeout(() => setCopied(false), 2000);
   };
 
   const getStatusColor = () => { 
@@ -45,7 +48,7 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
           {post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED && <div className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded flex items-center gap-1"><AlertCircle size={12} /> Review</div>}
 
           {!isReadOnly && (
-            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
               {isArchived ? (
                 <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={14} /></button>
               ) : (
@@ -67,7 +70,15 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
 
         {!isReadOnly && (
           <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
-            <button onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }} className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-indigo-700 transition-colors active:scale-95"><Copy size={12} /><span>Copy</span></button>
+            <button
+              onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
+              className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
+              title="Copy content to clipboard"
+              aria-label="Copy content to clipboard"
+            >
+              {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
+              <span>{copied ? 'Copied!' : 'Copy'}</span>
+            </button>
             <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors"><ExternalLink size={12} /><span>Open App</span></a>
             <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, isPosted ? STATUS.DRAFT : STATUS.POSTED); }} className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-full transition-colors ${isPosted ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{isPosted ? 'Posted' : 'Mark Done'}</button>
           </div>
