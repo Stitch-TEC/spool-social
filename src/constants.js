@@ -50,7 +50,8 @@ export const PLATFORMS = {
 export const STATUS = {
   DRAFT: 'draft',
   SCHEDULED: 'scheduled',
-  POSTED: 'posted'
+  POSTED: 'posted',
+  ARCHIVED: 'archived'
 };
 
 export const APPROVAL_STATUS = {

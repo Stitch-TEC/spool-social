@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo, Component, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X
+  Loader2, Filter, X, Download, Upload, Archive
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -19,18 +19,22 @@ import {
   doc, 
   onSnapshot,
   query, 
-  where 
+  where,
+  writeBatch
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS } from './constants';
+import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
+import { resolveImage } from './utils/helpers';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
 import SparkDeck from './components/SparkDeck';
 import CalendarView from './components/CalendarView';
-import Editor from './components/Editor';
+
+const Editor = lazy(() => import('./components/Editor'));
 
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
@@ -67,6 +71,7 @@ const App = () => {
 
   // Filtering & Search
   const [filterClient, setFilterClient] = useState(null); 
+  const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');     
   const [sidebarOpen, setSidebarOpen] = useState(false);  
 
@@ -371,15 +376,16 @@ const App = () => {
   const filteredPosts = useMemo(() => {
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
+      const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
       const searchLower = searchQuery.toLowerCase();
       const matchesSearch = 
         !searchQuery ||
         (post.content && post.content.toLowerCase().includes(searchLower)) ||
         (post.client && post.client.toLowerCase().includes(searchLower));
 
-      return matchesClient && matchesSearch;
+      return matchesClient && matchesArchive && matchesSearch;
     });
-  }, [posts, filterClient, searchQuery]);
+  }, [posts, filterClient, showArchived, searchQuery]);
 
   const calendarPosts = useMemo(() => {
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
@@ -410,12 +416,21 @@ const App = () => {
 
   if (view === 'editor') {
     return (
-      <Editor 
-        post={editingPost} 
-        onSave={handleSavePost} 
-        onCancel={() => { setView('grid'); setEditingPost(null); }} 
-        onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
-      />
+      // ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
+      // and improves the first paint time for the main dashboard.
+      <Suspense fallback={
+        <div className="flex flex-col items-center justify-center h-screen bg-white">
+          <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+          <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
+        </div>
+      }>
+        <Editor
+          post={editingPost}
+          onSave={handleSavePost}
+          onCancel={() => { setView('grid'); setEditingPost(null); }}
+          onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+        />
+      </Suspense>
     );
   }
 
@@ -449,6 +464,28 @@ const App = () => {
               {/* Navigation */}
               <div className="flex-1 overflow-y-auto">
                  <div className="mb-6">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Views</h3>
+                    <div className="space-y-1">
+                        <button
+                          onClick={() => { setShowArchived(false); setSidebarOpen(false); }}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Grid size={16} /> <span>Active Threads</span>
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => { setShowArchived(true); setSidebarOpen(false); }}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Archive size={16} /> <span>Archived</span>
+                          </div>
+                        </button>
+                    </div>
+                 </div>
+
+                 <div className="mb-6">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Clients</h3>
                     <div className="space-y-1">
                         <button 
@@ -466,6 +503,28 @@ const App = () => {
                             {client}
                           </button>
                         ))}
+                    </div>
+                 </div>
+
+                 <div className="mb-6">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
+                          <Upload size={16} />
+                          <span>Import CSV</span>
+                          <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
+                        </label>
+                        <div className="relative group">
+                          <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+                            <Download size={16} />
+                            <span>Export CSV</span>
+                          </button>
+                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
+                            <button onClick={() => handleExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
+                            <button onClick={() => handleExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
+                            <button onClick={() => handleExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
+                          </div>
+                        </div>
                     </div>
                  </div>
               </div>
@@ -587,17 +646,22 @@ const App = () => {
                            ) : (
                              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                                {filteredPosts.map(p => (
+                                 // ⚡ OPTIMIZATION: Resolve image URLs here instead of inside PostCard.
+                                 // Passing a primitive string (resolvedImageUrl) instead of the entire mediaMap object
+                                 // makes React.memo(PostCard) much more effective, as it won't re-render
+                                 // every card when the mediaMap object's reference changes.
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
-                                   mediaMap={mediaMap} 
+                                   resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
-                                   onClick={() => handleSelectPost(p)}
                                    onEdit={handleSelectPost}
                                    onCloneToAll={handleCloneToAll} 
                                    onDuplicate={handleDuplicatePost}
                                    onDelete={handleDeleteClick}
                                    onStatusChange={handleStatusChange}
+                                   onArchive={handleArchivePost}
+                                   onRestore={handleRestorePost}
                                  />
                                ))}
                              </div>
@@ -619,7 +683,12 @@ const App = () => {
         </main>
       </div>
 
-      {confirmModal && <ConfirmModal {...confirmModal} />}
+      {confirmModal && (
+        <ConfirmModal
+          {...confirmModal}
+          onCancel={() => setConfirmModal(null)}
+        />
+      )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
       {isSparkDeckOpen && <SparkDeck onClose={() => setIsSparkDeckOpen(false)} onSelect={(txt) => { setEditingPost(prev => ({...prev, content: txt})); setIsSparkDeckOpen(false); }} />}
       {reviewingPost && (
