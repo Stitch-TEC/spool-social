@@ -300,6 +300,26 @@ const App = () => {
     });
   }, [isReadOnly, showToast]);
 
+  const handleArchivePost = useCallback(async (postId) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), { status: STATUS.ARCHIVED });
+      showToast("Thread archived");
+    } catch {
+      showToast("Archive failed", "error");
+    }
+  }, [isReadOnly, showToast]);
+
+  const handleRestorePost = useCallback(async (postId) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), { status: STATUS.DRAFT });
+      showToast("Thread restored to drafts");
+    } catch {
+      showToast("Restore failed", "error");
+    }
+  }, [isReadOnly, showToast]);
+
   const handleStatusChange = useCallback(async (postId, newStatus) => {
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
@@ -315,6 +335,43 @@ const App = () => {
       showToast("Update failed", "error");
     }
   }, [isReadOnly, showToast]);
+
+
+  const handleImport = useCallback(async (e) => {
+    if (isReadOnly) return;
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const csvText = event.target.result;
+        const importedData = parseCSV(csvText);
+
+        if (importedData.length === 0) return showToast("No valid data found in CSV", "error");
+
+        const batch = writeBatch(db);
+        importedData.forEach(item => {
+          const newDocRef = doc(collection(db, 'posts'));
+          batch.set(newDocRef, {
+            ...item,
+            uid: user.uid,
+            status: item.status || STATUS.DRAFT,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        });
+
+        await batch.commit();
+        showToast(`Imported ${importedData.length} threads! 🚀`);
+      } catch (err) {
+        console.error("Import error:", err);
+        showToast("Import failed. Check CSV format.", "error");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // Reset input
+  }, [isReadOnly, user, showToast]);
 
   const handleRequestChanges = useCallback(async (postId, feedback) => {
     // 🔒 SECURITY: Input Validation & Sanitization
@@ -390,6 +447,19 @@ const App = () => {
   const calendarPosts = useMemo(() => {
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts]);
+
+  const handleExport = useCallback((mode) => {
+    let exportPosts = [];
+    if (mode === 'current') exportPosts = filteredPosts;
+    else if (mode === 'archived') exportPosts = posts.filter(p => p.status === STATUS.ARCHIVED);
+    else exportPosts = posts;
+
+    if (exportPosts.length === 0) return showToast("Nothing to export", "error");
+
+    const csvData = convertToCSV(exportPosts);
+    downloadCSV(csvData, `spool-export-${mode}-${new Date().toISOString().split('T')[0]}.csv`);
+    showToast("Export complete! 📥");
+  }, [posts, filteredPosts, showToast]);
 
 
   // --- Render ---
@@ -584,7 +654,11 @@ const App = () => {
               )}
 
               {!isReadOnly && (
-                <button onClick={() => setView('editor')} className="hidden sm:flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 hover:scale-105 transition-transform">
+                <button
+                  onClick={() => setView('editor')}
+                  className="hidden sm:flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 hover:scale-105 transition-transform"
+                  aria-label="Create New Thread"
+                >
                   <Plus size={18} /> <span className="hidden md:inline">New</span>
                 </button>
               )}
