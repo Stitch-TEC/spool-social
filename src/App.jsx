@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Component, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
@@ -26,13 +26,15 @@ import {
 import { auth, db, googleProvider } from './config/firebase';
 import { STATUS, PLATFORMS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
+import { resolveImage } from './utils/helpers';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
 import SparkDeck from './components/SparkDeck';
 import CalendarView from './components/CalendarView';
-import Editor from './components/Editor';
+
+const Editor = lazy(() => import('./components/Editor'));
 
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
@@ -129,37 +131,62 @@ const App = () => {
       if (clientParam) {
         setFilterClient(clientParam);
       }
-      const newPosts = snapshot.docs.map(doc => {
-        const data = doc.data();
-        
-        // --- SAFE DATE PARSER ---
-        const parseDate = (val) => {
-          if (!val) return null;
-          const d = new Date(val);
-          return isNaN(d.getTime()) ? null : d; // Returns null if invalid
-        };
 
-        return {
-          id: doc.id,
-          ...data,
-          scheduledDate: parseDate(data.scheduledDate),
-          createdAt: parseDate(data.createdAt) || new Date()
-        };
+      setPosts(prevPosts => {
+        // Create a map for quick lookup of existing posts
+        const postMap = new Map(prevPosts.map(p => [p.id, p]));
+        
+        const newPosts = snapshot.docs.map(doc => {
+          const data = doc.data();
+          const existingPost = postMap.get(doc.id);
+
+          // Check if post actually changed (using updatedAt as a proxy for efficiency)
+          // or if it's new. Convert to string to ensure value comparison.
+          const currentUpdate = data.updatedAt?.toString();
+          const prevUpdate = existingPost?.updatedAt?.toString();
+
+          if (existingPost && prevUpdate === currentUpdate) {
+            return existingPost;
+          }
+
+          // --- SAFE DATE PARSER ---
+          const parseDate = (val) => {
+            if (!val) return null;
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? null : d; // Returns null if invalid
+          };
+
+          return {
+            id: doc.id,
+            ...data,
+            scheduledDate: parseDate(data.scheduledDate),
+            createdAt: parseDate(data.createdAt) || new Date()
+          };
+        });
+
+        // Sort: Newest First (Safe sort handles nulls)
+        newPosts.sort((a, b) => {
+          const dateA = a.scheduledDate || a.createdAt;
+          const dateB = b.scheduledDate || b.createdAt;
+          return dateB - dateA;
+        });
+
+        return newPosts;
       });
-      
-      // Sort: Newest First (Safe sort handles nulls)
-      newPosts.sort((a, b) => {
-        const dateA = a.scheduledDate || a.createdAt;
-        const dateB = b.scheduledDate || b.createdAt;
-        return dateB - dateA;
+
+      // Update media map only if new images are discovered
+      setMediaMap(prev => {
+        let hasNew = false;
+        const next = { ...prev };
+        snapshot.docs.forEach(doc => {
+          const img = doc.data().imageUrl;
+          if (img && !next[img]) {
+            next[img] = img;
+            hasNew = true;
+          }
+        });
+        return hasNew ? next : prev;
       });
-      
-      setPosts(newPosts);
-      
-      // Update media map
-      const newMedia = {};
-      newPosts.forEach(p => { if (p.imageUrl) newMedia[p.imageUrl] = p.imageUrl; });
-      setMediaMap(prev => ({ ...prev, ...newMedia }));
 
       setIsLoading(false);
     }, (err) => {
@@ -181,12 +208,12 @@ const App = () => {
   }, [isReadOnly]);
 
   // --- Helpers ---
-  const showToast = (message, type = 'success') => {
+  const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
-  };
+  }, []);
 
-  const handleCopyLink = () => {
+  const handleCopyLink = useCallback(() => {
     if (!user) return;
     
     // ✅ FIX: Use href (split at the ?) to keep the /spool-social/ part of the URL
@@ -202,10 +229,10 @@ const App = () => {
 
     navigator.clipboard.writeText(link);
     showToast(message);
-  };
+  }, [filterClient, user, showToast]);
 
   // --- CRUD Handlers ---
-  const handleSavePost = async (formData) => {
+  const handleSavePost = useCallback(async (formData) => {
     if (isReadOnly) return;
 
     // 🔒 SECURITY: Input Validation & Sanitization
@@ -257,9 +284,9 @@ const App = () => {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");
     }
-  };
+  }, [isReadOnly, user, showToast]);
 
-  const handleDeleteClick = (postId) => {
+  const handleDeleteClick = useCallback((postId) => {
     if (isReadOnly) return;
     setConfirmModal({
       title: "Delete Thread?",
@@ -271,7 +298,7 @@ const App = () => {
         showToast("Thread deleted.");
       }
     });
-  };
+  }, [isReadOnly, showToast]);
 
   const handleStatusChange = useCallback(async (postId, newStatus) => {
     if (isReadOnly) return;
@@ -281,103 +308,9 @@ const App = () => {
     } catch {
       showToast("Update failed", "error");
     }
-  }, [isReadOnly]);
-
-  const handleArchivePost = useCallback(async (postId) => {
-    if (isReadOnly) return;
-    try {
-      await updateDoc(doc(db, 'posts', postId), { status: STATUS.ARCHIVED });
-      showToast("Thread archived");
-    } catch {
-      showToast("Archive failed", "error");
-    }
-  }, [isReadOnly]);
-
-  const handleRestorePost = useCallback(async (postId) => {
-    if (isReadOnly) return;
-    try {
-      await updateDoc(doc(db, 'posts', postId), { status: STATUS.DRAFT });
-      showToast("Thread restored to drafts");
-    } catch {
-      showToast("Restore failed", "error");
-    }
-  }, [isReadOnly]);
-
-  const handleExport = (type) => {
-    let postsToExport = [];
-    if (type === 'current') {
-      postsToExport = filteredPosts.filter(p => p.status !== STATUS.ARCHIVED);
-    } else if (type === 'archived') {
-      postsToExport = posts.filter(p => p.status === STATUS.ARCHIVED);
-    } else {
-      postsToExport = posts;
-    }
-
-    if (postsToExport.length === 0) {
-      return showToast("No posts to export", "error");
-    }
-
-    const csv = convertToCSV(postsToExport);
-    downloadCSV(csv, `spool-export-${type}-${new Date().toISOString().split('T')[0]}.csv`);
-  };
-
-  const handleImport = async (e) => {
-    if (isReadOnly) return;
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const csvText = event.target.result;
-      const importedPosts = parseCSV(csvText);
-
-      if (importedPosts.length === 0) {
-        return showToast("No valid posts found in CSV", "error");
-      }
-
-      setConfirmModal({
-        title: `Import ${importedPosts.length} Threads?`,
-        message: `This will add ${importedPosts.length} new threads to your dashboard.`,
-        type: "primary",
-        onConfirm: async () => {
-          try {
-            const batch = writeBatch(db);
-            let count = 0;
-
-            // Firestore batches have a 500 document limit
-            const BATCH_LIMIT = 500;
-            const currentImportBatch = importedPosts.slice(0, BATCH_LIMIT);
-
-            currentImportBatch.forEach(post => {
-              const newDocRef = doc(collection(db, 'posts'));
-              batch.set(newDocRef, {
-                ...post,
-                uid: user.uid,
-                createdAt: new Date().toISOString()
-              });
-              count++;
-            });
-
-            await batch.commit();
-            showToast(`Successfully imported ${count} threads!`);
-            setConfirmModal(null);
-
-            if (importedPosts.length > BATCH_LIMIT) {
-              showToast(`Heads up: Only the first ${BATCH_LIMIT} threads were imported.`, "error");
-            }
-          } catch (error) {
-            console.error("Import Error:", error);
-            showToast(`Import failed: ${error.message}`, "error");
-            setConfirmModal(null);
-          }
-        }
-      });
-    };
-    reader.readAsText(file);
-    e.target.value = null; // Reset input
-  };
+  }, [isReadOnly, showToast]);
   
-  const handleCloneToAll = async (post) => {
+  const handleCloneToAll = useCallback(async (post) => {
     if (isReadOnly) return;
     const allClients = [...new Set(posts.map(p => p.client).filter(Boolean))];
     if (allClients.length === 0) return showToast("No other clients found.");
@@ -396,7 +329,20 @@ const App = () => {
         count++;
     }
     showToast(`Cloned to ${count} clients!`);
-  };
+  }, [isReadOnly, posts, showToast]);
+
+  const handleSelectPost = useCallback((p) => {
+    if (isReadOnly) {
+      setReviewingPost(p);
+    } else {
+      setEditingPost(p);
+      setView('editor');
+    }
+  }, [isReadOnly]);
+
+  const handleDuplicatePost = useCallback((p) => {
+    handleSavePost({ ...p, id: undefined, status: STATUS.DRAFT });
+  }, [handleSavePost]);
 
   // --- Filtering Logic ---
   const uniqueClients = useMemo(() => {
@@ -416,6 +362,10 @@ const App = () => {
       return matchesClient && matchesArchive && matchesSearch;
     });
   }, [posts, filterClient, showArchived, searchQuery]);
+
+  const calendarPosts = useMemo(() => {
+    return filteredPosts.filter(p => p.scheduledDate instanceof Date);
+  }, [filteredPosts]);
 
 
   // --- Render ---
@@ -442,12 +392,21 @@ const App = () => {
 
   if (view === 'editor') {
     return (
-      <Editor 
-        post={editingPost} 
-        onSave={handleSavePost} 
-        onCancel={() => { setView('grid'); setEditingPost(null); }} 
-        onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
-      />
+      // ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
+      // and improves the first paint time for the main dashboard.
+      <Suspense fallback={
+        <div className="flex flex-col items-center justify-center h-screen bg-white">
+          <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+          <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
+        </div>
+      }>
+        <Editor
+          post={editingPost}
+          onSave={handleSavePost}
+          onCancel={() => { setView('grid'); setEditingPost(null); }}
+          onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+        />
+      </Suspense>
     );
   }
 
@@ -647,10 +606,10 @@ const App = () => {
                        {view === 'calendar' ? (
                          // 🛡️ SAFE CALENDAR: Only show posts that actually have a date
                          <CalendarView 
-                            posts={filteredPosts.filter(p => p.scheduledDate instanceof Date)} 
+                            posts={calendarPosts}
                             currentDate={currentDate}
                             onDateChange={setCurrentDate}
-                            onEdit={(p) => { if(isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); }}}
+                            onEdit={handleSelectPost}
                          />
                        ) : (
                          <>
@@ -663,16 +622,19 @@ const App = () => {
                            ) : (
                              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                                {filteredPosts.map(p => (
+                                 // ⚡ OPTIMIZATION: Resolve image URLs here instead of inside PostCard.
+                                 // Passing a primitive string (resolvedImageUrl) instead of the entire mediaMap object
+                                 // makes React.memo(PostCard) much more effective, as it won't re-render
+                                 // every card when the mediaMap object's reference changes.
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
-                                   mediaMap={mediaMap} 
+                                   resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
-                                   onClick={() => { if (isReadOnly) setReviewingPost(p); else { setEditingPost(p); setView('editor'); } }} 
-                                   onEdit={(p) => { setEditingPost(p); setView('editor'); }} 
+                                   onEdit={handleSelectPost}
                                    onCloneToAll={handleCloneToAll} 
-                                   onDuplicate={(p) => handleSavePost({...p, id: undefined, status: STATUS.DRAFT})}
-                                   onDelete={() => handleDeleteClick(p.id)} 
+                                   onDuplicate={handleDuplicatePost}
+                                   onDelete={handleDeleteClick}
                                    onStatusChange={handleStatusChange}
                                    onArchive={handleArchivePost}
                                    onRestore={handleRestorePost}
