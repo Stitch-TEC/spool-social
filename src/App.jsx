@@ -24,7 +24,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
-import { STATUS, PLATFORMS } from './constants';
+import { STATUS, PLATFORMS, APPROVAL_STATUS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
 import { resolveImage } from './utils/helpers';
 import Toast from './components/Toast';
@@ -301,14 +301,38 @@ const App = () => {
   }, [isReadOnly, showToast]);
 
   const handleStatusChange = useCallback(async (postId, newStatus) => {
-    if (isReadOnly) return;
+    // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
+    const isApproving = newStatus === STATUS.SCHEDULED;
+    if (isReadOnly && !isApproving) return;
+
     try {
-      await updateDoc(doc(db, 'posts', postId), { status: newStatus });
+      await updateDoc(doc(db, 'posts', postId), {
+        status: newStatus,
+        ...(isApproving ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
+      });
       showToast(`Status updated to ${newStatus}`);
     } catch {
       showToast("Update failed", "error");
     }
   }, [isReadOnly, showToast]);
+
+  const handleRequestChanges = useCallback(async (postId, feedback) => {
+    // 🔒 SECURITY: Input Validation & Sanitization
+    const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
+    if (!sanitizedFeedback) return showToast("Feedback cannot be empty", "error");
+
+    try {
+      await updateDoc(doc(db, 'posts', postId), {
+        feedback: sanitizedFeedback,
+        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED
+      });
+      showToast("Feedback sent!");
+      setReviewingPost(null);
+    } catch (error) {
+      console.error("Feedback Error:", error);
+      showToast("Failed to send feedback", "error");
+    }
+  }, [showToast]);
   
   const handleCloneToAll = useCallback(async (post) => {
     if (isReadOnly) return;
@@ -673,7 +697,7 @@ const App = () => {
            mediaMap={mediaMap}
            onClose={() => setReviewingPost(null)}
            onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
-           onRequestChanges={(fb) => { updateDoc(doc(db, 'posts', reviewingPost.id), { feedback: fb, approvalStatus: 'changes_requested' }); showToast("Feedback sent!"); setReviewingPost(null); }}
+           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
     </ErrorBoundary>
