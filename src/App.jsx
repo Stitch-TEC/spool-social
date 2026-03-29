@@ -519,10 +519,19 @@ const App = () => {
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 flex">
         
-        {/* --- SIDEBAR (Desktop) --- */}
+        {/* --- SIDEBAR (Desktop/Mobile) --- */}
         {!isReadOnly && (
-          <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:static`}>
-            <div className="p-6 h-full flex flex-col">
+          <>
+            {/* Mobile Sidebar Overlay */}
+            {sidebarOpen && (
+              <div
+                className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden transition-opacity"
+                onClick={() => setSidebarOpen(false)}
+              />
+            )}
+
+            <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:static`}>
+              <div className="p-6 h-full flex flex-col">
               {/* Sidebar Header with Branding */}
               <div className="flex flex-col mb-8">
                 <div className="flex items-center gap-2">
@@ -608,9 +617,10 @@ const App = () => {
                         </div>
                     </div>
                  </div>
+                </div>
               </div>
-            </div>
-          </aside>
+            </aside>
+          </>
         )}
 
         {/* --- MAIN CONTENT --- */}
@@ -632,15 +642,15 @@ const App = () => {
               </div>
             </div>
 
-            <div className="flex-1 max-w-md mx-4">
+            <div className="flex-1 max-w-md mx-2 sm:mx-4">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input 
                   type="text"
-                  placeholder="Search content..."
+                  placeholder="Search..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+                  className="w-full pl-9 pr-3 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
                 />
               </div>
             </div>

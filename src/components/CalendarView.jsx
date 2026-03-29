@@ -43,24 +43,32 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
         </div>
       </div>
       <div className="grid grid-cols-7 bg-slate-100 gap-px border-b border-slate-200 text-center py-2">
-        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d} className="text-xs font-bold text-slate-400 uppercase tracking-wider">{d}</div>)}
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+          <div key={d} className="text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+            <span className="hidden sm:inline">{d}</span>
+            <span className="sm:hidden">{d[0]}</span>
+          </div>
+        ))}
       </div>
       <div className="flex-1 grid grid-cols-7 bg-slate-200 gap-px overflow-y-auto">
         {padding.map(i => <div key={`pad-${i}`} className="bg-slate-50/50" />)}
         {days.map(day => {
            const dayPosts = postsByDay[day] || [];
+           const isToday = new Date().getDate() === day && new Date().getMonth() === currentDate.getMonth();
 
            return (
-             <div key={day} className="bg-white min-h-[100px] p-2 hover:bg-slate-50 transition-colors group relative">
-               <span className={`text-xs font-bold ${new Date().getDate() === day && new Date().getMonth() === currentDate.getMonth() ? 'bg-indigo-600 text-white w-6 h-6 flex items-center justify-center rounded-full' : 'text-slate-400'}`}>{day}</span>
-               <div className="mt-2 space-y-1">
+             <div key={day} className="bg-white min-h-[70px] sm:min-h-[100px] p-1 sm:p-2 hover:bg-slate-50 transition-colors group relative">
+               <span className={`text-[10px] sm:text-xs font-bold ${isToday ? 'bg-indigo-600 text-white w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full' : 'text-slate-400'}`}>{day}</span>
+               <div className="mt-1 sm:mt-2 space-y-0.5 sm:space-y-1">
                  {dayPosts.map(p => (
-                   <button key={p.id} onClick={() => onEdit(p)} className={`w-full text-left text-[10px] truncate px-1.5 py-1 rounded border-l-2 ${p.status === STATUS.POSTED ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-amber-400 bg-amber-50 text-amber-800'}`}>
-                     {new Date(p.scheduledDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {p.client ? `• ${p.client}` : ''}
+                   <button key={p.id} onClick={() => onEdit(p)} className={`w-full text-left text-[8px] sm:text-[10px] truncate px-1 sm:px-1.5 py-0.5 sm:py-1 rounded border-l-2 ${p.status === STATUS.POSTED ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-amber-400 bg-amber-50 text-amber-800'}`}>
+                     <span className="hidden sm:inline">{new Date(p.scheduledDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                     <span className="sm:hidden">{new Date(p.scheduledDate).getHours()}:{new Date(p.scheduledDate).getMinutes().toString().padStart(2, '0')}</span>
+                     {p.client ? ` • ${p.client}` : ''}
                    </button>
                  ))}
                </div>
-               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} title="Add Thread" aria-label="Add Thread" className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-indigo-600 transition-all"><Plus size={14}/></button>
+               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} title="Add Thread" aria-label="Add Thread" className="absolute top-1 right-1 sm:top-2 sm:right-2 opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-indigo-600 transition-all"><Plus size={12}/></button>
              </div>
            );
         })}
