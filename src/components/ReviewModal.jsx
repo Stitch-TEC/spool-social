@@ -66,6 +66,7 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
                  <textarea 
                     className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
                     placeholder="Add specific notes..."
+                    maxLength={500}
                     value={feedback}
                     onChange={(e) => setFeedback(e.target.value)}
                  />
