@@ -353,10 +353,21 @@ const App = () => {
         const batch = writeBatch(db);
         importedData.forEach(item => {
           const newDocRef = doc(collection(db, 'posts'));
+
+          // 🔒 SECURITY: Explicit field mapping & sanitization to prevent mass assignment
+          const platformId = item.platform || 'gmb';
+          const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
+
           batch.set(newDocRef, {
-            ...item,
             uid: user.uid,
+            client: (item.client || "").trim().slice(0, 50),
+            content: (item.content || "").trim().slice(0, platform.maxChars),
+            platform: platformId,
             status: item.status || STATUS.DRAFT,
+            approvalStatus: item.approvalStatus || APPROVAL_STATUS.PENDING,
+            feedback: (item.feedback || "").trim().slice(0, 500),
+            imageUrl: item.imageUrl || '',
+            scheduledDate: item.scheduledDate || null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });

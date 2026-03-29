@@ -7,3 +7,8 @@
 **Vulnerability:** Guests were previously blocked from all status changes, including approvals, and the feedback field lacked length limits.
 **Learning:** Security policies should be granular. Completely blocking guests prevents the app's primary "approval" function. Feedback fields are also a vector for storage-based DoS or DB bloat if they don't have limits.
 **Prevention:** Refine authorization to allow specific, intended state transitions for guest users (e.g., `DRAFT` to `SCHEDULED` for approval). Enforce strict character limits (e.g., 500 chars) and sanitization on all feedback/comment inputs.
+
+## 2025-05-17 - [Mass Assignment Prevention in Bulk Imports]
+**Vulnerability:** Mass assignment risk in CSV import logic via object spreading (`...item`).
+**Learning:** Spread operators are convenient but dangerous when handling user-provided data for database persistence. They can allow injection of arbitrary fields (e.g., overriding `uid`, `status`, or adding non-existent metadata) that bypass validation.
+**Prevention:** Always use explicit field mapping and sanitization (trimming and slicing for length limits) when persisting data from external files or multi-field forms, especially in `writeBatch` operations.

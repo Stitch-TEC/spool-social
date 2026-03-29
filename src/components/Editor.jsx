@@ -157,7 +157,8 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
              </div>
              <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Client Name</label>
-                <input type="text" placeholder="e.g. Acme Corp" value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
+                {/* 🔒 SECURITY: Input length limit */}
+                <input type="text" maxLength={50} placeholder="e.g. Acme Corp" value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
              </div>
           </div>
 
