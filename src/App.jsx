@@ -216,8 +216,7 @@ const App = () => {
   const handleCopyLink = useCallback(() => {
     if (!user) return;
     
-    // ✅ FIX: Use href (split at the ?) to keep the /spool-social/ part of the URL
-    const baseUrl = window.location.href.split('?')[0]; 
+    const baseUrl = window.location.origin + window.location.pathname;
     
     let link = `${baseUrl}?uid=${user.uid}`;
     let message = "Master Link (All Clients) Copied! 📋";

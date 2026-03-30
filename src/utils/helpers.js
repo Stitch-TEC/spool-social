@@ -22,6 +22,11 @@ export const processImageFile = (file) => {
         canvas.height = img.height * scaleSize;
 
         const ctx = canvas.getContext('2d');
+        
+        // Fill white background to preserve transparent PNGs
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         
         // Compress to JPEG at 60% quality

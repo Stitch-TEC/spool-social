@@ -24,6 +24,29 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
   });
   const [previewMode, setPreviewMode] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      try {
+        const processedImage = await processImageFile(file);
+        setFormData(prev => ({ ...prev, imageUrl: processedImage }));
+      } catch {
+        showToast("Error processing image", "error");
+      }
+    }
+  };
 
   useEffect(() => {
     if (post) {
@@ -44,7 +67,17 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
         }
       }
 
+      const defaultState = {
+        platform: 'gmb',
+        content: '',
+        client: '',
+        imageUrl: '',
+        scheduledDate: safeDateString,
+        status: STATUS.DRAFT,
+        tags: []
+      };
       setFormData({
+        ...defaultState,
         ...post,
         scheduledDate: safeDateString
       });
@@ -56,7 +89,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
     setIsGenerating(true);
     try {
       if (mode === 'fix') {
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(`Fix grammar and spelling, keep tone casual: "${formData.content}"`);
         setFormData(prev => ({ ...prev, content: result.response.text() }));
       } else {
@@ -160,16 +193,48 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
                 {/* 🔒 SECURITY: Input length limit */}
                 <input type="text" maxLength={50} placeholder="e.g. Acme Corp" value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
              </div>
+             {/* Tag Management UI */}
+             <div className="md:col-span-2">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Tags</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                    {formData.tags?.map((tag, i) => (
+                      <span key={i} className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1">
+                        #{tag}
+                        <button onClick={() => setFormData(prev => ({...prev, tags: prev.tags.filter((_, index) => index !== i)}))} className="hover:text-rose-500"><X size={12}/></button>
+                      </span>
+                    ))}
+                </div>
+                <input 
+                  type="text" 
+                  placeholder="Type a tag and press Enter..." 
+                  onKeyDown={(e) => {
+                     if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const val = e.target.value.trim().replace(/^#/, '');
+                        if (val && !formData.tags?.includes(val)) {
+                           setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
+                        }
+                        e.target.value = '';
+                     }
+                  }} 
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" 
+                />
+             </div>
           </div>
 
           {/* Image Upload */}
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Visual Asset</label>
             {!formData.imageUrl ? (
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-indigo-500 hover:bg-indigo-50/50 transition-all group">
+              <label 
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-all group ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 hover:border-indigo-500 hover:bg-indigo-50/50'}`}
+              >
                 <div className="flex flex-col items-center pt-5 pb-6">
-                  <UploadCloud className="w-8 h-8 text-slate-400 group-hover:text-indigo-500 mb-2 transition-colors" />
-                  <p className="text-xs text-slate-500 font-medium">Click to upload image</p>
+                  <UploadCloud className={`w-8 h-8 mb-2 transition-colors ${isDragging ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'}`} />
+                  <p className={`text-xs font-medium ${isDragging ? 'text-indigo-600' : 'text-slate-500'}`}>{isDragging ? 'Drop image here' : 'Click or drop to upload image'}</p>
                 </div>
                 <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
               </label>
