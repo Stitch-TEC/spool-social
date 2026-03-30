@@ -21,10 +21,12 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
   };
   
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
-        <div className="flex-1 bg-slate-100 p-8 flex items-center justify-center border-r border-slate-200">
-             <MobilePreview post={{...post, imageUrl: displayImage}} />
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-2 sm:p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] sm:h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
+        <div className="flex-1 bg-slate-100 p-4 sm:p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto">
+             <div className="scale-75 sm:scale-90 md:scale-100 origin-center">
+                <MobilePreview post={{...post, imageUrl: displayImage}} />
+             </div>
         </div>
         <div className="flex-1 flex flex-col bg-white">
           <div className="p-6 border-b border-slate-100 flex justify-between items-start">

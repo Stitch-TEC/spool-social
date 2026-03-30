@@ -106,16 +106,16 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
           {/* Platform Select */}
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform</label>
-            <div className="flex gap-4">
+            <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-4">
               {Object.values(PLATFORMS).map(p => (
                 <button
                   key={p.id}
                   onClick={() => setFormData({ ...formData, platform: p.id })}
                   aria-pressed={formData.platform === p.id}
-                  className={`flex-1 flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? `border-${p.text.split('-')[1]}-500 bg-${p.text.split('-')[1]}-50` : 'border-slate-100 hover:border-slate-200'}`}
+                  className={`flex-1 flex flex-row sm:flex-col items-center justify-center gap-2 p-2 sm:p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? `border-${p.text.split('-')[1]}-500 bg-${p.text.split('-')[1]}-50` : 'border-slate-100 hover:border-slate-200'}`}
                 >
-                   <PlatformIcon platformId={p.id} size={24} />
-                   <span className={`text-xs font-bold ${formData.platform === p.id ? 'text-slate-800' : 'text-slate-400'}`}>{p.name}</span>
+                   <PlatformIcon platformId={p.id} size={20} className="sm:w-6 sm:h-6" />
+                   <span className={`text-[10px] sm:text-xs font-bold ${formData.platform === p.id ? 'text-slate-800' : 'text-slate-400'}`}>{p.name}</span>
                 </button>
               ))}
             </div>
@@ -138,11 +138,11 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
                <CharCountCircle current={wordCount} max={currentPlatform.maxChars} />
             </div>
             
-            <div className="flex flex-wrap gap-2 mt-3 pb-4 border-b border-slate-100">
-               <button onClick={() => handleAI('fix')} disabled={isGenerating} className="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-lg hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"><Wand2 size={12}/>{isGenerating ? 'Fixing...' : 'Fix Grammar'}</button>
-               <button onClick={() => handleAI('punchy')} className="px-3 py-1.5 bg-orange-50 text-orange-700 text-xs font-bold rounded-lg hover:bg-orange-100 flex items-center gap-1.5"><Smartphone size={12}/>Punchy</button>
-               <button onClick={() => handleAI('professional')} className="px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-bold rounded-lg hover:bg-blue-100 flex items-center gap-1.5"><RefreshCw size={12}/>Professional</button>
-               <button onClick={() => handleAI('emojify')} className="px-3 py-1.5 bg-pink-50 text-pink-700 text-xs font-bold rounded-lg hover:bg-pink-100 flex items-center gap-1.5"><Wand2 size={12}/>Emojify</button>
+            <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-3 pb-4 border-b border-slate-100">
+               <button onClick={() => handleAI('fix')} disabled={isGenerating} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-indigo-50 text-indigo-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"><Wand2 size={12}/>{isGenerating ? 'Fixing...' : 'Fix Grammar'}</button>
+               <button onClick={() => handleAI('punchy')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-orange-50 text-orange-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-orange-100 flex items-center gap-1.5"><Smartphone size={12}/>Punchy</button>
+               <button onClick={() => handleAI('professional')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-blue-50 text-blue-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-blue-100 flex items-center gap-1.5"><RefreshCw size={12}/>Professional</button>
+               <button onClick={() => handleAI('emojify')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-pink-50 text-pink-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-pink-100 flex items-center gap-1.5"><Wand2 size={12}/>Emojify</button>
             </div>
           </div>
 

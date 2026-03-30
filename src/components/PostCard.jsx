@@ -48,16 +48,16 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
           {post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED && <div className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded flex items-center gap-1"><AlertCircle size={12} /> Review</div>}
 
           {!isReadOnly && (
-            <div className="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+            <div className="flex gap-1 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
               {isArchived ? (
-                <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={14} /></button>
+                <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ) : (
-                <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={14} /></button>
+                <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               )}
-              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Platforms" aria-label="Blast: Clone to All Platforms" className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={14} /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={14} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Platforms" aria-label="Blast: Clone to All Platforms" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
             </div>
           )}
         </div>
@@ -72,15 +72,15 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
           <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
-              className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
+              className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
               title="Copy content to clipboard"
               aria-label="Copy content to clipboard"
             >
-              {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
-              <span>{copied ? 'Copied!' : 'Copy'}</span>
+              {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
+              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
             </button>
-            <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors"><ExternalLink size={12} /><span>Open App</span></a>
-            <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, isPosted ? STATUS.DRAFT : STATUS.POSTED); }} className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-full transition-colors ${isPosted ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{isPosted ? 'Posted' : 'Mark Done'}</button>
+            <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} /><span className="hidden sm:inline">Open App</span></a>
+            <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, isPosted ? STATUS.DRAFT : STATUS.POSTED); }} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 sm:px-2.5 sm:py-1.5 rounded-full transition-colors ${isPosted ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{isPosted ? 'Posted' : 'Mark Done'}</button>
           </div>
         )}
       </div>
