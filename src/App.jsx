@@ -173,15 +173,17 @@ const App = () => {
         return newPosts;
       });
 
-      // Update media map only if new images are discovered
+      // ⚡ OPTIMIZATION: Only process changed documents to update media map (O(M) vs O(N))
       setMediaMap(prev => {
         let hasNew = false;
         const next = { ...prev };
-        snapshot.docs.forEach(doc => {
-          const img = doc.data().imageUrl;
-          if (img && !next[img]) {
-            next[img] = img;
-            hasNew = true;
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added' || change.type === 'modified') {
+            const img = change.doc.data().imageUrl;
+            if (img && !next[img]) {
+              next[img] = img;
+              hasNew = true;
+            }
           }
         });
         return hasNew ? next : prev;
@@ -400,27 +402,46 @@ const App = () => {
     }
   }, [showToast]);
   
+  // --- Filtering Logic ---
+  const uniqueClients = useMemo(() => {
+    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort();
+  }, [posts]);
+
+  // ⚡ OPTIMIZATION: Move handler after uniqueClients to reuse memoized value
   const handleCloneToAll = useCallback(async (post) => {
     if (isReadOnly) return;
-    const allClients = [...new Set(posts.map(p => p.client).filter(Boolean))];
-    if (allClients.length === 0) return showToast("No other clients found.");
+    if (uniqueClients.length === 0) return showToast("No other clients found.");
     
-    let count = 0;
-    for (const clientName of allClients) {
-        if (clientName === post.client) continue; 
-        const { id: _, ...cloneData } = post; // Remove ID
-        await addDoc(collection(db, 'posts'), {
-            ...cloneData,
-            client: clientName,
-            status: STATUS.DRAFT,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
+    try {
+      const batch = writeBatch(db);
+      let count = 0;
+
+      uniqueClients.forEach(clientName => {
+        if (clientName === post.client) return;
+
+        const { id: _, ...cloneData } = post;
+        const newDocRef = doc(collection(db, 'posts'));
+
+        batch.set(newDocRef, {
+          ...cloneData,
+          client: clientName,
+          status: STATUS.DRAFT,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
         });
         count++;
+      });
+
+      if (count > 0) {
+        await batch.commit();
+        showToast(`Cloned to ${count} clients! 🚀`);
+      }
+    } catch (error) {
+      console.error("Clone Error:", error);
+      showToast("Cloning failed", "error");
     }
-    showToast(`Cloned to ${count} clients!`);
-  }, [isReadOnly, posts, showToast]);
+  }, [isReadOnly, uniqueClients, showToast]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
@@ -434,11 +455,6 @@ const App = () => {
   const handleDuplicatePost = useCallback((p) => {
     handleSavePost({ ...p, id: undefined, status: STATUS.DRAFT });
   }, [handleSavePost]);
-
-  // --- Filtering Logic ---
-  const uniqueClients = useMemo(() => {
-    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort();
-  }, [posts]);
 
   const filteredPosts = useMemo(() => {
     return posts.filter(post => {
