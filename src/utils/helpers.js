@@ -18,8 +18,14 @@ export const processImageFile = (file) => {
         const canvas = document.createElement('canvas');
         const MAX_WIDTH = 800; 
         const scaleSize = MAX_WIDTH / img.width;
-        canvas.width = MAX_WIDTH;
-        canvas.height = img.height * scaleSize;
+        
+        if (scaleSize < 1) {
+          canvas.width = MAX_WIDTH;
+          canvas.height = img.height * scaleSize;
+        } else {
+          canvas.width = img.width;
+          canvas.height = img.height;
+        }
 
         const ctx = canvas.getContext('2d');
         

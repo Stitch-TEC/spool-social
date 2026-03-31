@@ -50,19 +50,24 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
 
   useEffect(() => {
     if (post) {
-      // SAFE DATE CONVERSION FOR INPUT
-      let safeDateString = new Date().toISOString().slice(0, 16); // Default to now
+      // SAFE DATE CONVERSION FOR INPUT (Local Timezone Aware)
+      const toLocalISOString = (date) => {
+        const tzOffset = date.getTimezoneOffset() * 60000;
+        return new Date(date.getTime() - tzOffset).toISOString().slice(0, 16);
+      };
+
+      let safeDateString = toLocalISOString(new Date()); // Default to now (local time)
       
       if (post.scheduledDate) {
         // If it's a Date object
         if (post.scheduledDate instanceof Date && !isNaN(post.scheduledDate)) {
-           safeDateString = post.scheduledDate.toISOString().slice(0, 16);
+           safeDateString = toLocalISOString(post.scheduledDate);
         }
         // If it's a string
         else if (typeof post.scheduledDate === 'string') {
            const d = new Date(post.scheduledDate);
            if (!isNaN(d.getTime())) {
-             safeDateString = d.toISOString().slice(0, 16);
+             safeDateString = toLocalISOString(d);
            }
         }
       }
