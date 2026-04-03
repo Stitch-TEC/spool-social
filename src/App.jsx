@@ -3,7 +3,8 @@ import {
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X, Download, Upload, Archive
+  Loader2, Filter, X, Download, Upload, Archive,
+  CheckCircle
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -82,6 +83,7 @@ const App = () => {
   const [isSparkDeckOpen, setIsSparkDeckOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // Derived State (Read Only Mode)
   const sharedUid = new URLSearchParams(window.location.search).get('uid');
@@ -229,6 +231,8 @@ const App = () => {
 
     navigator.clipboard.writeText(link);
     showToast(message);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
   }, [filterClient, user, showToast]);
 
   // --- CRUD Handlers ---
@@ -665,8 +669,17 @@ const App = () => {
                   placeholder="Search..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+                  className={`w-full pl-9 ${searchQuery ? 'pr-9' : 'pr-3'} py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all`}
                 />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                    aria-label="Clear search"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -681,11 +694,13 @@ const App = () => {
               {!isReadOnly && (
                 <button 
                   onClick={handleCopyLink} 
-                  className="flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-100 px-3 py-2 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-all"
+                  className={`flex items-center gap-2 px-3 py-2 rounded-xl font-bold text-sm transition-all border ${linkCopied ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-indigo-50 text-indigo-700 border-indigo-100 hover:bg-indigo-100'}`}
                   title="Copy Link for Client"
                 >
-                    <LinkIcon size={16} /> 
-                    <span className="hidden sm:inline">{filterClient ? `${filterClient} Link` : 'Master Link'}</span>
+                    {linkCopied ? <CheckCircle size={16} /> : <LinkIcon size={16} />}
+                    <span className="hidden sm:inline">
+                      {linkCopied ? 'Copied!' : (filterClient ? `${filterClient} Link` : 'Master Link')}
+                    </span>
                 </button>
               )}
 

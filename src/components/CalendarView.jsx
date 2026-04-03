@@ -68,7 +68,7 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
                    </button>
                  ))}
                </div>
-               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} title="Add Thread" aria-label="Add Thread" className="absolute top-1 right-1 sm:top-2 sm:right-2 p-1 text-slate-300 hover:text-indigo-600 transition-all [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100"><Plus size={12}/></button>
+               <button onClick={() => onEdit({ scheduledDate: new Date(currentDate.getFullYear(), currentDate.getMonth(), day, 9, 0).toISOString() })} title="Add Thread" aria-label="Add Thread" className="absolute top-1 right-1 sm:top-2 sm:right-2 p-1 text-slate-300 hover:text-indigo-600 transition-all [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100"><Plus size={12}/></button>
              </div>
            );
         })}
