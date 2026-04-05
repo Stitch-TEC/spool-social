@@ -211,13 +211,18 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
                 </div>
                 <input 
                   type="text" 
+                  maxLength={20}
                   placeholder="Type a tag and press Enter..." 
                   onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                         e.preventDefault();
                         const val = e.target.value.trim().replace(/^#/, '');
-                        if (val && !formData.tags?.includes(val)) {
-                           setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
+                        if (val) {
+                           if (formData.tags?.length >= 10) {
+                              showToast("Max 10 tags allowed", "error");
+                           } else if (!formData.tags?.includes(val)) {
+                              setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
+                           }
                         }
                         e.target.value = '';
                      }

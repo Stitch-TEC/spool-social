@@ -256,22 +256,24 @@ const App = () => {
         return null; // Invalid/Empty
       };
 
-      // 2. Prepare Data
+      // 2. Prepare Data (Explicit field mapping to prevent mass assignment)
       const postData = { 
-        ...formData, 
+        uid: user.uid,
         client,
         content,
-        uid: user.uid, 
+        platform: formData.platform || 'gmb',
+        imageUrl: (formData.imageUrl || "").slice(0, 1000000), // Max 1MB roughly
+        status: formData.status || STATUS.DRAFT,
+        approvalStatus: formData.approvalStatus || APPROVAL_STATUS.PENDING,
+        feedback: (formData.feedback || "").trim().slice(0, 500),
+        tags: Array.isArray(formData.tags) ? formData.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)) : [],
         scheduledDate: getSafeDateString(formData.scheduledDate), 
         updatedAt: new Date().toISOString() 
       };
       
-      // 3. Clean undefined fields (Firestore rejects them)
-      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
-
-      // 4. Save
-      if (postData.id) {
-        await updateDoc(doc(db, 'posts', postData.id), postData);
+      // 3. Save
+      if (formData.id) {
+        await updateDoc(doc(db, 'posts', formData.id), postData);
         showToast("Thread updated");
       } else {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
@@ -522,6 +524,8 @@ const App = () => {
       }>
         <Editor
           post={editingPost}
+          mediaMap={mediaMap}
+          showToast={showToast}
           onSave={handleSavePost}
           onCancel={() => { setView('grid'); setEditingPost(null); }}
           onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
