@@ -3,7 +3,7 @@ import {
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X, Download, Upload, Archive
+  Loader2, Filter, X, Download, Upload, Archive, Settings
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -33,6 +33,7 @@ import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
 import SparkDeck from './components/SparkDeck';
 import CalendarView from './components/CalendarView';
+import ClientSettingsModal from './components/ClientSettingsModal';
 
 const Editor = lazy(() => import('./components/Editor'));
 
@@ -68,6 +69,7 @@ const App = () => {
   const [mediaMap, setMediaMap] = useState({});
   const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [clientMap, setClientMap] = useState({});
 
   // Filtering & Search
   const [filterClient, setFilterClient] = useState(null); 
@@ -80,6 +82,7 @@ const App = () => {
   const [editingPost, setEditingPost] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isSparkDeckOpen, setIsSparkDeckOpen] = useState(false);
+  const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
 
@@ -195,7 +198,13 @@ const App = () => {
       setIsLoading(false);
     });
 
-    return () => unsubscribe();
+    const clientUnsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
+      const map = {};
+      snapshot.forEach(d => { map[d.id] = d.data(); });
+      setClientMap(map);
+    }, (err) => console.error("🔥 Clients fetch error:", err));
+
+    return () => { unsubscribe(); clientUnsub(); };
   }, [user, sharedUid]);
 
   // --- 3. Dynamic Title ---
@@ -522,6 +531,8 @@ const App = () => {
       }>
         <Editor
           post={editingPost}
+          clientMap={clientMap}
+          uniqueClients={uniqueClients}
           onSave={handleSavePost}
           onCancel={() => { setView('grid'); setEditingPost(null); }}
           onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
@@ -591,7 +602,12 @@ const App = () => {
                  </div>
 
                  <div className="mb-6">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Clients</h3>
+                    <div className="flex items-center justify-between mb-3 w-full">
+                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Clients</h3>
+                       {!isReadOnly && (
+                         <button onClick={() => setIsClientSettingsOpen(true)} className="p-1 rounded-md text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors" title="Brand Settings"><Settings size={14}/></button>
+                       )}
+                    </div>
                     <div className="space-y-1">
                         <button 
                           onClick={() => { setFilterClient(null); setSidebarOpen(false); }}
@@ -759,10 +775,12 @@ const App = () => {
                                  // ⚡ OPTIMIZATION: Resolve image URLs here instead of inside PostCard.
                                  // Passing a primitive string (resolvedImageUrl) instead of the entire mediaMap object
                                  // makes React.memo(PostCard) much more effective, as it won't re-render
-                                 // every card when the mediaMap object's reference changes.
+                                 // Pass the resolved image as string rather than computing it down below.
+                                 // Now also pass clientMap directly
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
+                                   clientMap={clientMap}
                                    resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
                                    onEdit={handleSelectPost}
@@ -809,6 +827,9 @@ const App = () => {
            onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
            onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
+      )}
+      {isClientSettingsOpen && (
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} />
       )}
     </ErrorBoundary>
   );

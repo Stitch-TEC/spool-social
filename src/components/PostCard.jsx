@@ -6,7 +6,7 @@ import {
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 
-const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
+const PostCard = memo(({ post, clientMap = {}, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
@@ -14,6 +14,8 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
   const isArchived = post.status === STATUS.ARCHIVED;
   const formattedDate = post.scheduledDate ? new Date(post.scheduledDate).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No date set';
   
+  const clientSettings = clientMap[post.client] || {};
+  const brandColor = clientSettings.brandColor || '#4338ca'; // indigo-700 default
   const copyToClipboard = (text) => { 
      // Simple clipboard copy
      navigator.clipboard.writeText(text);
@@ -39,7 +41,7 @@ const PostCard = memo(({ post, resolvedImageUrl, onEdit, onDelete, onDuplicate, 
                 <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
                 <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>
-                    {post.client && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-100 font-medium truncate max-w-[80px]">{post.client}</span>}
+                    {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
                 </div>
             </div>
           </div>

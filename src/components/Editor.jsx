@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, Save, Wand2, RefreshCw, Smartphone, Image as ImageIcon, 
   Trash2, UploadCloud, Calendar as CalendarIcon 
@@ -12,7 +12,12 @@ import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helper
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || "dummy_key");
 
-const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }) => {
+const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck }) => {
+  const allClients = useMemo(() => {
+    const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
+    return [...set].sort();
+  }, [uniqueClients, clientMap]);
+
   const [formData, setFormData] = useState({
     platform: 'gmb',
     content: '',
@@ -193,10 +198,13 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
                    <input type="datetime-local" value={formData.scheduledDate} onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
                 </div>
              </div>
-             <div>
+             <div className="flex flex-col gap-1">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Client Name</label>
                 {/* 🔒 SECURITY: Input length limit */}
-                <input type="text" maxLength={50} placeholder="e.g. Acme Corp" value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
+                <input type="text" list="client-list" maxLength={50} placeholder="Select or type a new client..." value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
+                <datalist id="client-list">
+                    {allClients.map(c => <option key={c} value={c} />)}
+                </datalist>
              </div>
              {/* Tag Management UI */}
              <div className="md:col-span-2">
@@ -260,7 +268,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, showToast, onOpenSparkDeck }
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
          <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
-            <MobilePreview post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}} />
+            <MobilePreview post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}} clientMap={clientMap} />
          </div>
       </div>
       
