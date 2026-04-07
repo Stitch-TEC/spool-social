@@ -11,6 +11,13 @@ const Wrapper = ({ children }) => (
   </div>
 );
 
+// ⚡ OPTIMIZATION: Moved Avatar out of render loop to prevent re-creation.
+const Avatar = ({ sizeClass, hasLogo, logoUrl }) => (
+  <div className={`${sizeClass} rounded-full overflow-hidden flex items-center justify-center shrink-0 ${hasLogo ? 'bg-white border border-slate-100' : 'bg-slate-200'}`}>
+    {hasLogo ? <img src={logoUrl} className="w-full h-full object-contain" alt="Client Logo" /> : null}
+  </div>
+);
+
 const MobilePreview = ({ post, clientMap = {} }) => {
   const _platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const content = post.content || "No content yet...";
@@ -18,19 +25,13 @@ const MobilePreview = ({ post, clientMap = {} }) => {
   const hasLogo = !!clientSettings.logoUrl;
   const brandColor = clientSettings.brandColor || '#2563eb'; // blue-600 default
 
-  const Avatar = ({ sizeClass }) => (
-    <div className={`${sizeClass} rounded-full overflow-hidden flex items-center justify-center shrink-0 ${hasLogo ? 'bg-white border border-slate-100' : 'bg-slate-200'}`}>
-      {hasLogo ? <img src={clientSettings.logoUrl} className="w-full h-full object-contain" alt="Client Logo" /> : null}
-    </div>
-  );
-
   // 1. Twitter / X Layout
   if (post.platform === 'twitter') {
     return (
       <Wrapper>
         <div className="px-4 pb-4 font-sans">
            <div className="flex gap-3">
-             <Avatar sizeClass="w-10 h-10" />
+             <Avatar sizeClass="w-10 h-10" hasLogo={hasLogo} logoUrl={clientSettings.logoUrl} />
              <div className="flex-1">
                 <div className="flex items-center gap-1">
                    <span className="font-bold text-slate-900 text-sm">You</span> 
@@ -52,7 +53,7 @@ const MobilePreview = ({ post, clientMap = {} }) => {
         <div className="font-sans text-sm pb-4">
            <div className="flex items-center justify-between p-3">
               <div className="flex items-center gap-2">
-                 <Avatar sizeClass="w-8 h-8" />
+                 <Avatar sizeClass="w-8 h-8" hasLogo={hasLogo} logoUrl={clientSettings.logoUrl} />
                  <span className="font-semibold text-xs text-slate-900">{post.client ? post.client.toLowerCase().replace(/\s+/g,'_') : 'your_username'}</span>
               </div>
               <MoreHorizontal size={16} />

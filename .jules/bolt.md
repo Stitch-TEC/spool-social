@@ -9,3 +9,7 @@
 ## 2026-03-27 - [Efficient Firestore Listener and Bulk Operations]
 **Learning:** Iterating over all documents in a Firestore `onSnapshot` listener to update local state (like `mediaMap`) becomes increasingly expensive as the collection grows (O(N)). Additionally, performing multiple sequential `addDoc` calls for bulk operations (like cloning) results in unnecessary network round-trips.
 **Action:** Use `snapshot.docChanges()` to only process modified documents (O(M)) and utilize `writeBatch` for atomic, efficient bulk writes.
+
+## 2026-03-28 - [Referential Stability for Global Arrays]
+**Learning:** Derived arrays (like `uniqueClients` from `posts`) are recreated on every render if defined naively in `useMemo`. When these arrays are dependencies for other callbacks (like `handleCloneToAll`), those callbacks also change, breaking `React.memo` for all child components.
+**Action:** Stabilize the array reference using a string hash (e.g., `join('\0')`) as the `useMemo` dependency, ensuring the array reference only changes when its contents actually change.
