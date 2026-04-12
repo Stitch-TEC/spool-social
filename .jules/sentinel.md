@@ -12,3 +12,8 @@
 **Vulnerability:** Mass assignment risk in CSV import logic via object spreading (`...item`).
 **Learning:** Spread operators are convenient but dangerous when handling user-provided data for database persistence. They can allow injection of arbitrary fields (e.g., overriding `uid`, `status`, or adding non-existent metadata) that bypass validation.
 **Prevention:** Always use explicit field mapping and sanitization (trimming and slicing for length limits) when persisting data from external files or multi-field forms, especially in `writeBatch` operations.
+
+## 2025-05-18 - [Input Validation and UI Feedback for Tags]
+**Vulnerability:** Potential for database bloat or DoS via unlimited tag creation (count and length).
+**Learning:** Security validation must be enforced both at the persistence layer (Firestore handlers) and the UI layer to provide a consistent user experience and prevent bypass.
+**Prevention:** Enforce strict limits on array-based inputs (e.g., max 10 tags) and string lengths (e.g., 20 chars per tag) in both 'App.jsx' and 'Editor.jsx'.

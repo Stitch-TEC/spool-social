@@ -265,22 +265,29 @@ const App = () => {
         return null; // Invalid/Empty
       };
 
-      // 2. Prepare Data
+      // 2. Prepare Data (Explicit Mapping & Tag Validation)
+      const sanitizedTags = (formData.tags || [])
+        .slice(0, 10)
+        .map(t => (t || "").trim().slice(0, 20))
+        .filter(Boolean);
+
       const postData = { 
-        ...formData, 
+        uid: user.uid,
+        platform: formData.platform || 'gmb',
         client,
         content,
-        uid: user.uid, 
+        imageUrl: formData.imageUrl || '',
+        status: formData.status || STATUS.DRAFT,
+        approvalStatus: formData.approvalStatus || APPROVAL_STATUS.PENDING,
+        feedback: (formData.feedback || "").trim().slice(0, 500),
+        tags: sanitizedTags,
         scheduledDate: getSafeDateString(formData.scheduledDate), 
         updatedAt: new Date().toISOString() 
       };
       
-      // 3. Clean undefined fields (Firestore rejects them)
-      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
-
-      // 4. Save
-      if (postData.id) {
-        await updateDoc(doc(db, 'posts', postData.id), postData);
+      // 3. Save
+      if (formData.id) {
+        await updateDoc(doc(db, 'posts', formData.id), postData);
         showToast("Thread updated");
       } else {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
@@ -367,6 +374,11 @@ const App = () => {
           const platformId = item.platform || 'gmb';
           const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
 
+          const sanitizedTags = (item.tags || [])
+            .slice(0, 10)
+            .map(t => (t || "").trim().slice(0, 20))
+            .filter(Boolean);
+
           batch.set(newDocRef, {
             uid: user.uid,
             client: (item.client || "").trim().slice(0, 50),
@@ -376,6 +388,7 @@ const App = () => {
             approvalStatus: item.approvalStatus || APPROVAL_STATUS.PENDING,
             feedback: (item.feedback || "").trim().slice(0, 500),
             imageUrl: item.imageUrl || '',
+            tags: sanitizedTags,
             scheduledDate: item.scheduledDate || null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()

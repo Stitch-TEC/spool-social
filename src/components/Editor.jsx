@@ -219,18 +219,20 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
                 </div>
                 <input 
                   type="text" 
-                  placeholder="Type a tag and press Enter..." 
+                  placeholder={formData.tags?.length >= 10 ? "Limit reached (10 tags)" : "Type a tag and press Enter..."}
+                  disabled={formData.tags?.length >= 10}
+                  maxLength={20}
                   onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                         e.preventDefault();
-                        const val = e.target.value.trim().replace(/^#/, '');
-                        if (val && !formData.tags?.includes(val)) {
+                        const val = e.target.value.trim().replace(/^#/, '').slice(0, 20);
+                        if (val && !formData.tags?.includes(val) && (formData.tags || []).length < 10) {
                            setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
                         }
                         e.target.value = '';
                      }
                   }} 
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" 
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-50"
                 />
              </div>
           </div>

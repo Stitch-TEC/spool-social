@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Upload, Trash2, CheckCircle, Palette, Save } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
@@ -7,20 +7,22 @@ import { processImageFile } from '../utils/helpers';
 const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
-  const [logoUrl, setLogoUrl] = useState('');
-  const [brandColor, setBrandColor] = useState('#4f46e5');
   const [isSaving, setIsSaving] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  useEffect(() => {
-    if (selectedClient && selectedClient !== 'NEW' && clientMap[selectedClient]) {
-      setLogoUrl(clientMap[selectedClient].logoUrl || '');
-      setBrandColor(clientMap[selectedClient].brandColor || '#4f46e5');
-    } else {
-      setLogoUrl('');
-      setBrandColor('#4f46e5');
-    }
-  }, [selectedClient, clientMap]);
+  // Derived state to avoid useEffect cascading renders
+  const clientInfo = (selectedClient && selectedClient !== 'NEW') ? clientMap[selectedClient] : null;
+
+  const [logoUrl, setLogoUrl] = useState(clientInfo?.logoUrl || '');
+  const [brandColor, setBrandColor] = useState(clientInfo?.brandColor || '#4f46e5');
+
+  // Sync internal state when selection changes
+  const [prevClient, setPrevClient] = useState(selectedClient);
+  if (selectedClient !== prevClient) {
+    setPrevClient(selectedClient);
+    setLogoUrl(clientInfo?.logoUrl || '');
+    setBrandColor(clientInfo?.brandColor || '#4f46e5');
+  }
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
