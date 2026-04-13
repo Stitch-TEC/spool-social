@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense, useDeferredValue } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
@@ -36,6 +36,10 @@ import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 
 const Editor = lazy(() => import('./components/Editor'));
+
+// ⚡ OPTIMIZATION: A stable empty object to prevent unnecessary re-renders
+// when a post doesn't have associated client settings.
+const DEFAULT_CLIENT_SETTINGS = Object.freeze({});
 
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
@@ -75,6 +79,10 @@ const App = () => {
   const [filterClient, setFilterClient] = useState(null); 
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');     
+  // ⚡ OPTIMIZATION: Use deferred value for the search query.
+  // This keeps the input field responsive while the expensive filtering
+  // of the post list is deferred until the main thread is free.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sidebarOpen, setSidebarOpen] = useState(false);  
 
   // UI States
@@ -198,10 +206,24 @@ const App = () => {
       setIsLoading(false);
     });
 
+    // ⚡ OPTIMIZATION: Use docChanges() for O(M) updates to clientMap.
+    // This preserves object references for individual clients, preventing
+    // unnecessary re-renders in components that only depend on a subset of clients.
     const clientUnsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
-      const map = {};
-      snapshot.forEach(d => { map[d.id] = d.data(); });
-      setClientMap(map);
+      setClientMap(prev => {
+        let hasChanges = false;
+        const next = { ...prev };
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added' || change.type === 'modified') {
+            next[change.doc.id] = change.doc.data();
+            hasChanges = true;
+          } else if (change.type === 'removed') {
+            delete next[change.doc.id];
+            hasChanges = true;
+          }
+        });
+        return hasChanges ? next : prev;
+      });
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
@@ -412,9 +434,20 @@ const App = () => {
   }, [showToast]);
   
   // --- Filtering Logic ---
-  const uniqueClients = useMemo(() => {
-    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort();
+  // ⚡ OPTIMIZATION: Stabilize uniqueClients reference.
+  // We first create a stable string representation of the unique clients.
+  // This string only changes when the set of clients actually changes.
+  // Using a null-character separator (\0) to robustly handle names with commas.
+  const clientsHash = useMemo(() => {
+    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort().join('\0');
   }, [posts]);
+
+  // Then we derive the uniqueClients array from that stable string.
+  // This ensures that uniqueClients (and callbacks that depend on it,
+  // like handleCloneToAll) maintains referential stability.
+  const uniqueClients = useMemo(() => {
+    return clientsHash ? clientsHash.split('\0') : [];
+  }, [clientsHash]);
 
   // ⚡ OPTIMIZATION: Move handler after uniqueClients to reuse memoized value
   const handleCloneToAll = useCallback(async (post) => {
@@ -469,15 +502,15 @@ const App = () => {
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
       const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
-      const searchLower = searchQuery.toLowerCase();
+      const searchLower = deferredSearchQuery.toLowerCase();
       const matchesSearch = 
-        !searchQuery ||
+        !deferredSearchQuery ||
         (post.content && post.content.toLowerCase().includes(searchLower)) ||
         (post.client && post.client.toLowerCase().includes(searchLower));
 
       return matchesClient && matchesArchive && matchesSearch;
     });
-  }, [posts, filterClient, showArchived, searchQuery]);
+  }, [posts, filterClient, showArchived, deferredSearchQuery]);
 
   const calendarPosts = useMemo(() => {
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
@@ -780,7 +813,7 @@ const App = () => {
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
-                                   clientMap={clientMap}
+                                   clientSettings={clientMap[p.client] || DEFAULT_CLIENT_SETTINGS}
                                    resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
                                    onEdit={handleSelectPost}

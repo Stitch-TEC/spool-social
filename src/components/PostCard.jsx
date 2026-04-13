@@ -6,7 +6,7 @@ import {
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 
-const PostCard = memo(({ post, clientMap = {}, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
+const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
@@ -14,7 +14,6 @@ const PostCard = memo(({ post, clientMap = {}, resolvedImageUrl, onEdit, onDelet
   const isArchived = post.status === STATUS.ARCHIVED;
   const formattedDate = post.scheduledDate ? new Date(post.scheduledDate).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No date set';
   
-  const clientSettings = clientMap[post.client] || {};
   const brandColor = clientSettings.brandColor || '#4338ca'; // indigo-700 default
   const copyToClipboard = (text) => { 
      // Simple clipboard copy
