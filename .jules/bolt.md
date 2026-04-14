@@ -13,3 +13,7 @@
 ## 2026-03-28 - [Referential Stability for Global Arrays]
 **Learning:** Derived arrays (like `uniqueClients` from `posts`) are recreated on every render if defined naively in `useMemo`. When these arrays are dependencies for other callbacks (like `handleCloneToAll`), those callbacks also change, breaking `React.memo` for all child components.
 **Action:** Stabilize the array reference using a string hash (e.g., `join('\0')`) as the `useMemo` dependency, ensuring the array reference only changes when its contents actually change.
+
+## 2026-04-14 - [Search Filtering Redundancy]
+**Learning:** Performing `toLowerCase()` on both the search query and multiple fields for every item in an array during a filter pass (O(N)) is computationally expensive and redundant. This overhead grows linearly with the number of posts.
+**Action:** Normalize the search query once outside the filter loop and cache lowercase versions of searchable fields (`_searchContent`, `_searchClient`) on data objects when they are first ingested or updated.
