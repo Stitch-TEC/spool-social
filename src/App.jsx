@@ -170,7 +170,10 @@ const App = () => {
             id: doc.id,
             ...data,
             scheduledDate: parseDate(data.scheduledDate),
-            createdAt: parseDate(data.createdAt) || new Date()
+            createdAt: parseDate(data.createdAt) || new Date(),
+            // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering (O(1) lookup during filter)
+            _searchContent: (data.content || "").toLowerCase(),
+            _searchClient: (data.client || "").toLowerCase()
           };
         });
 
@@ -499,14 +502,16 @@ const App = () => {
   }, [handleSavePost]);
 
   const filteredPosts = useMemo(() => {
+    // ⚡ OPTIMIZATION: Normalize search query once per filter pass instead of inside the loop (O(1) vs O(N))
+    const searchLower = deferredSearchQuery.toLowerCase();
+
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
       const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
-      const searchLower = deferredSearchQuery.toLowerCase();
       const matchesSearch = 
-        !deferredSearchQuery ||
-        (post.content && post.content.toLowerCase().includes(searchLower)) ||
-        (post.client && post.client.toLowerCase().includes(searchLower));
+        !searchLower ||
+        post._searchContent?.includes(searchLower) ||
+        post._searchClient?.includes(searchLower);
 
       return matchesClient && matchesArchive && matchesSearch;
     });

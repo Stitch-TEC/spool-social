@@ -12,7 +12,8 @@ const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, on
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
-  const formattedDate = post.scheduledDate ? new Date(post.scheduledDate).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No date set';
+  // ⚡ OPTIMIZATION: Use existing Date object from props instead of re-parsing
+  const formattedDate = post.scheduledDate ? post.scheduledDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'No date set';
   
   const brandColor = clientSettings.brandColor || '#4338ca'; // indigo-700 default
   const copyToClipboard = (text) => { 
