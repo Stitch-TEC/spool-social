@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense, useDeferredValue, useRef } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
@@ -93,6 +93,7 @@ const App = () => {
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
+  const searchInputRef = useRef(null);
 
   // Derived State (Read Only Mode)
   const sharedUid = new URLSearchParams(window.location.search).get('uid');
@@ -710,12 +711,26 @@ const App = () => {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input 
+                  ref={searchInputRef}
                   type="text"
                   placeholder="Search..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+                  className="w-full pl-9 pr-10 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
                 />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.focus();
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
               </div>
             </div>
 
