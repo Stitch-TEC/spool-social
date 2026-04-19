@@ -12,3 +12,8 @@
 **Vulnerability:** Mass assignment risk in CSV import logic via object spreading (`...item`).
 **Learning:** Spread operators are convenient but dangerous when handling user-provided data for database persistence. They can allow injection of arbitrary fields (e.g., overriding `uid`, `status`, or adding non-existent metadata) that bypass validation.
 **Prevention:** Always use explicit field mapping and sanitization (trimming and slicing for length limits) when persisting data from external files or multi-field forms, especially in `writeBatch` operations.
+
+## 2026-04-19 - [Mass Assignment and Strict Input Validation]
+**Vulnerability:** Mass assignment risk in persistence logic and lack of strict input limits on tags and client names.
+**Learning:** Using explicit field mapping instead of object spreading for Firestore updates prevents unauthorized field injection. Input validation should be enforced both at the UI level (attributes, state) and the logic level (sanitization, guard clauses) for defense-in-depth.
+**Prevention:** Always use explicit field mapping for DB persistence. Enforce strict character and count limits (e.g., 50 chars for names, 10 tags per post) in handlers.

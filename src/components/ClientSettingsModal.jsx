@@ -4,7 +4,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, isReadOnly }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
 
@@ -63,7 +63,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
   };
 
   const handleSave = async () => {
-    const activeClient = selectedClient === 'NEW' ? newClientName.trim() : selectedClient;
+    if (isReadOnly) return;
+    const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
     
     setIsSaving(true);
@@ -124,6 +125,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
               <input
                 type="text"
                 placeholder="e.g. My Awesome Startup"
+                maxLength={50}
                 value={newClientName}
                 onChange={(e) => setNewClientName(e.target.value)}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all"
@@ -195,7 +197,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
           </button>
           <button 
             onClick={handleSave}
-            disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim())}
+            disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim()) || isReadOnly}
             className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {isSaving ? <span className="animate-pulse">Saving...</span> : <><Save size={16}/> Save Brand Info</>}
