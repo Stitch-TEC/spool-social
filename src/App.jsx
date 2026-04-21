@@ -24,7 +24,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
-import { STATUS, PLATFORMS, APPROVAL_STATUS } from './constants';
+import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
 import { resolveImage } from './utils/helpers';
 import Toast from './components/Toast';
@@ -36,10 +36,6 @@ import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 
 const Editor = lazy(() => import('./components/Editor'));
-
-// ⚡ OPTIMIZATION: A stable empty object to prevent unnecessary re-renders
-// when a post doesn't have associated client settings.
-const DEFAULT_CLIENT_SETTINGS = Object.freeze({});
 
 // --- Error Boundary Component ---
 class ErrorBoundary extends Component {
@@ -875,7 +871,8 @@ const App = () => {
       {reviewingPost && (
         <ReviewModal 
            post={reviewingPost} 
-           mediaMap={mediaMap}
+           clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
+           resolvedImageUrl={resolveImage(reviewingPost.imageUrl, mediaMap)}
            onClose={() => setReviewingPost(null)}
            onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
            onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}

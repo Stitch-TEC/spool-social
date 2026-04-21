@@ -1,14 +1,12 @@
 import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
-import { resolveImage } from '../utils/helpers';
 
-const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) => {
+const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, onRequestChanges, onClose }) => {
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
   
-  const displayImage = resolveImage(post.imageUrl, mediaMap);
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
 
   const toggleTag = (tag) => {
@@ -25,7 +23,7 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] sm:h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
         <div className="flex-1 bg-slate-100 p-4 sm:p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto">
              <div className="scale-75 sm:scale-90 md:scale-100 origin-center">
-                <MobilePreview post={{...post, imageUrl: displayImage}} />
+                <MobilePreview post={{...post, imageUrl: resolvedImageUrl}} clientSettings={clientSettings} />
              </div>
         </div>
         <div className="flex-1 flex flex-col bg-white">

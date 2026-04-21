@@ -17,3 +17,7 @@
 ## 2026-04-14 - [Search Filtering Redundancy]
 **Learning:** Performing `toLowerCase()` on both the search query and multiple fields for every item in an array during a filter pass (O(N)) is computationally expensive and redundant. This overhead grows linearly with the number of posts.
 **Action:** Normalize the search query once outside the filter loop and cache lowercase versions of searchable fields (`_searchContent`, `_searchClient`) on data objects when they are first ingested or updated.
+
+## 2026-04-15 - [Granular Props and Custom Memoization for Live Previews]
+**Learning:** Components used for "live previews" (like `MobilePreview`) that are children of complex state-heavy parents (like `Editor`) often re-render on every keystroke due to metadata changes (tags, dates) that aren't visually relevant to the preview. Additionally, passing large map objects (like `clientMap`) as a prop forces re-renders if *any* key in the map changes.
+**Action:** Use `React.memo` with a custom comparison function to only re-render on visual field changes. Lift expensive lookups (like image resolution and client settings) to the parent and pass only the specific primitive values or stable sub-objects (`clientSettings`) to the child. Use a shared, frozen `DEFAULT_CLIENT_SETTINGS` object to preserve referential stability for missing data.
