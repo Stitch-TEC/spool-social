@@ -7,7 +7,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
-import { PLATFORMS, STATUS } from '../constants';
+import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helpers'; // ✅ NEW
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || "dummy_key");
@@ -278,7 +278,10 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
          <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
-            <MobilePreview post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}} clientMap={clientMap} />
+            <MobilePreview
+              post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}}
+              clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
+            />
          </div>
       </div>
       
