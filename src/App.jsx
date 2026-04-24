@@ -276,6 +276,12 @@ const App = () => {
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
 
+    // Sanitize tags: max 10 tags, 20 chars each
+    const tags = (formData.tags || [])
+      .slice(0, 10)
+      .map(tag => String(tag).trim().slice(0, 20))
+      .filter(Boolean);
+
     if (!client) return showToast("Client name is required", "error");
     if (!content) return showToast("Content cannot be empty", "error");
     if (content.length > platform.maxChars) {
@@ -291,22 +297,24 @@ const App = () => {
         return null; // Invalid/Empty
       };
 
-      // 2. Prepare Data
+      // 2. Prepare Data - EXPLICIT MAPPING to prevent mass assignment
       const postData = { 
-        ...formData, 
         client,
         content,
+        platform: platformId,
+        status: formData.status || STATUS.DRAFT,
+        approvalStatus: formData.approvalStatus || APPROVAL_STATUS.PENDING,
+        feedback: (formData.feedback || "").trim().slice(0, 500),
+        imageUrl: formData.imageUrl || '',
+        tags,
         uid: user.uid, 
         scheduledDate: getSafeDateString(formData.scheduledDate), 
         updatedAt: new Date().toISOString() 
       };
-      
-      // 3. Clean undefined fields (Firestore rejects them)
-      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
 
-      // 4. Save
-      if (postData.id) {
-        await updateDoc(doc(db, 'posts', postData.id), postData);
+      // 3. Save
+      if (formData.id) {
+        await updateDoc(doc(db, 'posts', formData.id), postData);
         showToast("Thread updated");
       } else {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
@@ -570,11 +578,14 @@ const App = () => {
       }>
         <Editor
           post={editingPost}
+          isReadOnly={isReadOnly}
+          mediaMap={mediaMap}
           clientMap={clientMap}
           uniqueClients={uniqueClients}
           onSave={handleSavePost}
           onCancel={() => { setView('grid'); setEditingPost(null); }}
           onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+          showToast={showToast}
         />
       </Suspense>
     );
@@ -882,7 +893,7 @@ const App = () => {
         />
       )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} isReadOnly={isReadOnly} />
       )}
     </ErrorBoundary>
   );

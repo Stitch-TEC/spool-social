@@ -12,7 +12,7 @@ import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helper
 
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || "dummy_key");
 
-const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck }) => {
+const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck, isReadOnly }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -140,7 +140,14 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
              <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">New Thread</h2>
           </div>
-          <button onClick={() => onSave(formData)} disabled={isOverLimit || !formData.content} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg">
+          <button
+            onClick={() => {
+              if (isReadOnly) return;
+              onSave(formData);
+            }}
+            disabled={isOverLimit || !formData.content || isReadOnly}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg"
+          >
              <Save size={18} /> <span>Save</span>
           </button>
         </div>
@@ -219,18 +226,21 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
                 </div>
                 <input 
                   type="text" 
-                  placeholder="Type a tag and press Enter..." 
+                  placeholder={formData.tags?.length >= 10 ? "Limit reached (10 tags)" : "Type a tag and press Enter..."}
+                  disabled={formData.tags?.length >= 10 || isReadOnly}
                   onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                         e.preventDefault();
-                        const val = e.target.value.trim().replace(/^#/, '');
+                        if (formData.tags?.length >= 10) return;
+
+                        const val = e.target.value.trim().replace(/^#/, '').slice(0, 20);
                         if (val && !formData.tags?.includes(val)) {
                            setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
                         }
                         e.target.value = '';
                      }
                   }} 
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" 
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-50"
                 />
              </div>
           </div>
