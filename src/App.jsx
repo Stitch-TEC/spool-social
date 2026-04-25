@@ -458,39 +458,40 @@ const App = () => {
   }, [clientsHash]);
 
   // ⚡ OPTIMIZATION: Move handler after uniqueClients to reuse memoized value
-  const handleCloneToAll = useCallback(async (post) => {
+  const handleCloneToAll = useCallback((post) => {
     if (isReadOnly) return;
-    if (uniqueClients.length === 0) return showToast("No other clients found.");
     
-    try {
-      const batch = writeBatch(db);
-      let count = 0;
+    const targetClients = uniqueClients.filter(c => c !== post.client);
+    if (targetClients.length === 0) return showToast("No other clients found.");
 
-      uniqueClients.forEach(clientName => {
-        if (clientName === post.client) return;
+    setConfirmModal({
+      title: "Blast: Clone to All Clients?",
+      message: `This will create a draft of this thread for ${targetClients.length} other clients.`,
+      onConfirm: async () => {
+        try {
+          const batch = writeBatch(db);
+          targetClients.forEach(clientName => {
+            const { id: _, ...cloneData } = post;
+            const newDocRef = doc(collection(db, 'posts'));
 
-        const { id: _, ...cloneData } = post;
-        const newDocRef = doc(collection(db, 'posts'));
-
-        batch.set(newDocRef, {
-          ...cloneData,
-          client: clientName,
-          status: STATUS.DRAFT,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
-        });
-        count++;
-      });
-
-      if (count > 0) {
-        await batch.commit();
-        showToast(`Cloned to ${count} clients! 🚀`);
+            batch.set(newDocRef, {
+              ...cloneData,
+              client: clientName,
+              status: STATUS.DRAFT,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
+            });
+          });
+          await batch.commit();
+          showToast(`Cloned to ${targetClients.length} clients! 🚀`);
+          setConfirmModal(null);
+        } catch (error) {
+          console.error("Clone Error:", error);
+          showToast("Cloning failed", "error");
+        }
       }
-    } catch (error) {
-      console.error("Clone Error:", error);
-      showToast("Cloning failed", "error");
-    }
+    });
   }, [isReadOnly, uniqueClients, showToast]);
 
   const handleSelectPost = useCallback((p) => {
