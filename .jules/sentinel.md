@@ -17,3 +17,8 @@
 **Vulnerability:** Mass assignment risk in persistence logic and lack of strict input limits on tags and client names.
 **Learning:** Using explicit field mapping instead of object spreading for Firestore updates prevents unauthorized field injection. Input validation should be enforced both at the UI level (attributes, state) and the logic level (sanitization, guard clauses) for defense-in-depth.
 **Prevention:** Always use explicit field mapping for DB persistence. Enforce strict character and count limits (e.g., 50 chars for names, 10 tags per post) in handlers.
+
+## 2026-04-26 - [Mass Assignment and Internal State Leaks]
+**Vulnerability:** Mass assignment risk in cloning logic and internal field leakage to Firestore.
+**Learning:** Using object spreading (`...post`) during document duplication can inadvertently persist internal UI-only helper fields (like `_searchContent` or `_searchClient`) and bypass intent by copying fields like `feedback` or `status` that should be reset.
+**Prevention:** Strictly use explicit field mapping for all Firestore write operations, especially when duplicating existing records. Reset lifecycle fields (status, feedback) and owner-related fields (uid) to ensure data integrity and security.
