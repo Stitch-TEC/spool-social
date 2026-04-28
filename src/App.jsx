@@ -406,6 +406,10 @@ const App = () => {
             approvalStatus: item.approvalStatus || APPROVAL_STATUS.PENDING,
             feedback: (item.feedback || "").trim().slice(0, 500),
             imageUrl: item.imageUrl || '',
+            tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
+              .slice(0, 10)
+              .map(tag => String(tag).trim().slice(0, 20))
+              .filter(Boolean),
             scheduledDate: item.scheduledDate || null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -471,13 +475,18 @@ const App = () => {
         try {
           const batch = writeBatch(db);
           targetClients.forEach(clientName => {
-            const { id: _, ...cloneData } = post;
             const newDocRef = doc(collection(db, 'posts'));
 
             batch.set(newDocRef, {
-              ...cloneData,
+              uid: user.uid,
               client: clientName,
+              content: post.content || "",
+              platform: post.platform || 'gmb',
               status: STATUS.DRAFT,
+              approvalStatus: APPROVAL_STATUS.PENDING,
+              feedback: "",
+              imageUrl: post.imageUrl || '',
+              tags: post.tags || [],
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
               scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
@@ -492,7 +501,7 @@ const App = () => {
         }
       }
     });
-  }, [isReadOnly, uniqueClients, showToast]);
+  }, [isReadOnly, uniqueClients, showToast, user]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
