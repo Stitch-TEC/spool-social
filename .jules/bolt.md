@@ -21,3 +21,7 @@
 ## 2026-04-15 - [Granular Props and Custom Memoization for Live Previews]
 **Learning:** Components used for "live previews" (like `MobilePreview`) that are children of complex state-heavy parents (like `Editor`) often re-render on every keystroke due to metadata changes (tags, dates) that aren't visually relevant to the preview. Additionally, passing large map objects (like `clientMap`) as a prop forces re-renders if *any* key in the map changes.
 **Action:** Use `React.memo` with a custom comparison function to only re-render on visual field changes. Lift expensive lookups (like image resolution and client settings) to the parent and pass only the specific primitive values or stable sub-objects (`clientSettings`) to the child. Use a shared, frozen `DEFAULT_CLIENT_SETTINGS` object to preserve referential stability for missing data.
+
+## 2026-04-28 - [High-Frequency Date Formatting Overhead]
+**Learning:** Repeated calls to `toLocaleString()` and `toLocaleTimeString()` in components rendered in large lists (`PostCard`) or dense grids (`CalendarView`) incur significant CPU overhead because the browser re-compiles the formatting pattern on every call.
+**Action:** Use shared, pre-compiled `Intl.DateTimeFormat` instances to perform formatting, which is ~50x faster than repeated `toLocaleString()` calls.

@@ -1,6 +1,7 @@
 import React, { useMemo, memo } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { STATUS } from '../constants';
+import { DATE_FORMATTERS } from '../utils/helpers';
 
 const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
   const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
@@ -8,7 +9,10 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
 
   const days = Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1);
   const padding = Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i);
-  const monthName = currentDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+  // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting.
+  const monthName = DATE_FORMATTERS.monthYear.format(currentDate);
+
   const currentMonth = currentDate.getMonth();
   const currentYear = currentDate.getFullYear();
 
@@ -64,8 +68,8 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
                <div className="mt-1 sm:mt-2 space-y-0.5 sm:space-y-1">
                  {dayPosts.map(p => (
                    <button key={p.id} onClick={() => onEdit(p)} className={`w-full text-left text-[8px] sm:text-[10px] truncate px-1 sm:px-1.5 py-0.5 sm:py-1 rounded border-l-2 ${p.status === STATUS.POSTED ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-amber-400 bg-amber-50 text-amber-800'}`}>
-                     {/* ⚡ OPTIMIZATION: Use existing Date object for formatting instead of re-parsing */}
-                     <span className="hidden sm:inline">{p.scheduledDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                     {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
+                     <span className="hidden sm:inline">{DATE_FORMATTERS.time.format(p.scheduledDate)}</span>
                      <span className="sm:hidden">{p.scheduledDate.getHours()}:{p.scheduledDate.getMinutes().toString().padStart(2, '0')}</span>
                      {p.client ? ` • ${p.client}` : ''}
                    </button>

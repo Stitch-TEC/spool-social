@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
+import { DATE_FORMATTERS } from '../utils/helpers';
 
 const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, onRequestChanges, onClose }) => {
   const [feedback, setFeedback] = useState('');
@@ -30,7 +31,10 @@ const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, o
           <div className="p-6 border-b border-slate-100 flex justify-between items-start">
             <div>
               <h3 className="text-xl font-bold text-slate-800">Review Thread</h3>
-              <p className="text-sm text-slate-500">Scheduled: {new Date(post.scheduledDate).toLocaleString()}</p>
+              {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
+              <p className="text-sm text-slate-500">
+                Scheduled: {post.scheduledDate ? DATE_FORMATTERS.full.format(post.scheduledDate instanceof Date ? post.scheduledDate : new Date(post.scheduledDate)) : 'No date set'}
+              </p>
             </div>
             <button onClick={onClose} title="Close Review" aria-label="Close Review" className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
           </div>
