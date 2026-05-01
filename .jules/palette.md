@@ -13,3 +13,7 @@
 ## 2025-05-17 - [Search Clear UX and Focus Management]
 **Learning:** When implementing a 'clear' button that conditionally unmounts (e.g., only shows when input is not empty), the browser loses focus if the button was the active element. This disrupts keyboard navigation flow.
 **Action:** Use a React 'ref' on the input field and programmatically return focus to it after the clear action to ensure a seamless experience for keyboard users.
+
+## 2025-05-18 - [Accessibility for External Links and Navigation]
+**Learning:** Generic labels like "Open App" or "Today" provide insufficient context for screen reader users and lack hover tooltips. Providing descriptive `aria-label` and `title` attributes (e.g., "Open platform app", "Go to Today") significantly improves screen reader navigation and discoverability.
+**Action:** Always provide descriptive context-aware ARIA labels and titles for navigational and external link elements.

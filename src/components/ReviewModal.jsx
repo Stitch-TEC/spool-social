@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
+import CharCountCircle from './CharCountCircle';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
 const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, onRequestChanges, onClose }) => {
@@ -62,18 +63,28 @@ const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, o
                  </div>
                  <div className="flex flex-wrap gap-2">
                     {feedbackTags.map(tag => (
-                      <button key={tag} onClick={() => toggleTag(tag)} className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                      <button
+                        key={tag}
+                        onClick={() => toggleTag(tag)}
+                        aria-pressed={activeTags.includes(tag)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                      >
                         {tag}
                       </button>
                     ))}
                  </div>
-                 <textarea 
-                    className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
-                    placeholder="Add specific notes..."
-                    maxLength={500}
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                 />
+                 <div className="relative">
+                    <textarea
+                        className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
+                        placeholder="Add specific notes..."
+                        maxLength={500}
+                        value={feedback}
+                        onChange={(e) => setFeedback(e.target.value)}
+                    />
+                    <div className="absolute bottom-3 right-3">
+                        <CharCountCircle current={feedback.length} max={500} />
+                    </div>
+                 </div>
                </div>
              )}
           </div>
