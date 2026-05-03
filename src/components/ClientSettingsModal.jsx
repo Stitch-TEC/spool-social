@@ -64,7 +64,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, isReadOnly }) 
 
   const handleSave = async () => {
     if (isReadOnly) return;
-    const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).slice(0, 50);
+    const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).replace(/\//g, '').slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
     
     setIsSaving(true);

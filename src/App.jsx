@@ -267,7 +267,7 @@ const App = () => {
     if (isReadOnly) return;
 
     // 🔒 SECURITY: Input Validation & Sanitization
-    const client = (formData.client || "").trim().slice(0, 50);
+    const client = (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
     const content = (formData.content || "").trim();
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
@@ -294,12 +294,15 @@ const App = () => {
       };
 
       // 2. Prepare Data - EXPLICIT MAPPING to prevent mass assignment
+      const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
+      const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
+
       const postData = { 
         client,
         content,
         platform: platformId,
-        status: formData.status || STATUS.DRAFT,
-        approvalStatus: formData.approvalStatus || APPROVAL_STATUS.PENDING,
+        status,
+        approvalStatus,
         feedback: (formData.feedback || "").trim().slice(0, 500),
         imageUrl: formData.imageUrl || '',
         tags,
@@ -360,6 +363,9 @@ const App = () => {
   }, [isReadOnly, showToast]);
 
   const handleStatusChange = useCallback(async (postId, newStatus) => {
+    // 🔒 SECURITY: Validate status enum
+    if (!Object.values(STATUS).includes(newStatus)) return;
+
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
     if (isReadOnly && !isApproving) return;
@@ -396,14 +402,16 @@ const App = () => {
           // 🔒 SECURITY: Explicit field mapping & sanitization to prevent mass assignment
           const platformId = item.platform || 'gmb';
           const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
+          const status = Object.values(STATUS).includes(item.status) ? item.status : STATUS.DRAFT;
+          const approvalStatus = Object.values(APPROVAL_STATUS).includes(item.approvalStatus) ? item.approvalStatus : APPROVAL_STATUS.PENDING;
 
           batch.set(newDocRef, {
             uid: user.uid,
-            client: (item.client || "").trim().slice(0, 50),
+            client: (item.client || "").trim().replace(/\//g, '').slice(0, 50),
             content: (item.content || "").trim().slice(0, platform.maxChars),
             platform: platformId,
-            status: item.status || STATUS.DRAFT,
-            approvalStatus: item.approvalStatus || APPROVAL_STATUS.PENDING,
+            status,
+            approvalStatus,
             feedback: (item.feedback || "").trim().slice(0, 500),
             imageUrl: item.imageUrl || '',
             tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
@@ -479,7 +487,7 @@ const App = () => {
 
             batch.set(newDocRef, {
               uid: user.uid,
-              client: clientName,
+              client: String(clientName).replace(/\//g, '').slice(0, 50),
               content: post.content || "",
               platform: post.platform || 'gmb',
               status: STATUS.DRAFT,
