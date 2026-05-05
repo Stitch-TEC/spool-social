@@ -69,7 +69,8 @@ const App = () => {
   const [posts, setPosts] = useState([]);
   const [mediaMap, setMediaMap] = useState({});
   const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
-  const [currentDate, setCurrentDate] = useState(new Date());
+  // ⚡ OPTIMIZATION: Use lazy initializer to avoid creating a new Date object on every render of App.
+  const [currentDate, setCurrentDate] = useState(() => new Date());
   const [clientMap, setClientMap] = useState({});
 
   // Filtering & Search
