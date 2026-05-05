@@ -68,7 +68,7 @@ const App = () => {
   const [posts, setPosts] = useState([]);
   const [mediaMap, setMediaMap] = useState({});
   const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentDate, setCurrentDate] = useState(() => new Date());
   const [clientMap, setClientMap] = useState({});
 
   // Filtering & Search
@@ -735,6 +735,7 @@ const App = () => {
                 <input 
                   ref={searchInputRef}
                   type="text"
+                  aria-label="Search threads"
                   placeholder="Search..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}

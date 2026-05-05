@@ -3,12 +3,12 @@ import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
-  const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-  const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
+const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
 
-  const days = Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1);
-  const padding = Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i);
+const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
+  const days = useMemo(() => Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1), [currentDate]);
+  const padding = useMemo(() => Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i), [currentDate]);
 
   // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting.
   const monthName = DATE_FORMATTERS.monthYear.format(currentDate);
@@ -16,13 +16,20 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
   const currentMonth = currentDate.getMonth();
   const currentYear = currentDate.getFullYear();
 
+  // ⚡ OPTIMIZATION: Pre-calculate today's components to avoid ~30 redundant new Date() allocations in the loop.
+  const today = useMemo(() => {
+    const d = new Date();
+    return { day: d.getDate(), month: d.getMonth(), year: d.getFullYear() };
+  }, []);
+
   // ⚡ OPTIMIZATION: Group posts by date in a single pass (O(N))
   const postsByDay = useMemo(() => {
     const map = {};
     posts.forEach(p => {
       // ⚡ OPTIMIZATION: Use existing Date object from props instead of re-parsing
       const d = p.scheduledDate;
-      if (d && d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+      // 🛡️ SAFETY CHECK: Ensure d is a valid Date before calling methods.
+      if (d instanceof Date && !isNaN(d.getTime()) && d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
         const day = d.getDate();
         if (!map[day]) map[day] = [];
         map[day].push(p);
@@ -44,7 +51,7 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
         </h2>
         <div className="flex gap-1 bg-white rounded-lg border border-slate-200 p-1">
           <button onClick={() => onDateChange(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} title="Previous Month" aria-label="Previous Month" className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronLeft size={18}/></button>
-          <button onClick={() => onDateChange(new Date())} className="px-3 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-md">Today</button>
+          <button onClick={() => onDateChange(new Date())} title="Go to Today" className="px-3 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-md">Today</button>
           <button onClick={() => onDateChange(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))} title="Next Month" aria-label="Next Month" className="p-1.5 hover:bg-slate-100 rounded-md text-slate-600"><ChevronRight size={18}/></button>
         </div>
       </div>
@@ -60,7 +67,7 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
         {padding.map(i => <div key={`pad-${i}`} className="bg-slate-50/50" />)}
         {days.map(day => {
            const dayPosts = postsByDay[day] || [];
-           const isToday = new Date().getDate() === day && new Date().getMonth() === currentDate.getMonth();
+           const isToday = today.day === day && today.month === currentMonth && today.year === currentYear;
 
            return (
              <div key={day} className="bg-white min-h-[70px] sm:min-h-[100px] p-1 sm:p-2 hover:bg-slate-50 transition-colors group relative">
@@ -69,8 +76,9 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
                  {dayPosts.map(p => (
                    <button key={p.id} onClick={() => onEdit(p)} className={`w-full text-left text-[8px] sm:text-[10px] truncate px-1 sm:px-1.5 py-0.5 sm:py-1 rounded border-l-2 ${p.status === STATUS.POSTED ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-amber-400 bg-amber-50 text-amber-800'}`}>
                      {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
-                     <span className="hidden sm:inline">{DATE_FORMATTERS.time.format(p.scheduledDate)}</span>
-                     <span className="sm:hidden">{p.scheduledDate.getHours()}:{p.scheduledDate.getMinutes().toString().padStart(2, '0')}</span>
+                     {/* 🛡️ SAFETY CHECK: scheduledDate should already be a Date object, but we guard here too. */}
+                     <span className="hidden sm:inline">{p.scheduledDate instanceof Date ? DATE_FORMATTERS.time.format(p.scheduledDate) : ''}</span>
+                     <span className="sm:hidden">{p.scheduledDate instanceof Date ? `${p.scheduledDate.getHours()}:${p.scheduledDate.getMinutes().toString().padStart(2, '0')}` : ''}</span>
                      {p.client ? ` • ${p.client}` : ''}
                    </button>
                  ))}
