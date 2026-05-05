@@ -7,14 +7,21 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
   const getDaysInMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
   const getFirstDayOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1).getDay();
 
-  const days = Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1);
-  const padding = Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i);
+  const days = useMemo(() => Array.from({ length: getDaysInMonth(currentDate) }, (_, i) => i + 1), [currentDate]);
+  const padding = useMemo(() => Array.from({ length: getFirstDayOfMonth(currentDate) }, (_, i) => i), [currentDate]);
 
   // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting.
   const monthName = DATE_FORMATTERS.monthYear.format(currentDate);
 
   const currentMonth = currentDate.getMonth();
   const currentYear = currentDate.getFullYear();
+
+  // ⚡ OPTIMIZATION: Pre-calculate today's date once to avoid O(N) allocations in the loop
+  // and fix year-matching bug in isToday logic.
+  const now = new Date();
+  const todayDay = now.getDate();
+  const todayMonth = now.getMonth();
+  const todayYear = now.getFullYear();
 
   // ⚡ OPTIMIZATION: Group posts by date in a single pass (O(N))
   const postsByDay = useMemo(() => {
@@ -60,7 +67,7 @@ const CalendarView = memo(({ posts, currentDate, onDateChange, onEdit }) => {
         {padding.map(i => <div key={`pad-${i}`} className="bg-slate-50/50" />)}
         {days.map(day => {
            const dayPosts = postsByDay[day] || [];
-           const isToday = new Date().getDate() === day && new Date().getMonth() === currentDate.getMonth();
+           const isToday = todayDay === day && todayMonth === currentMonth && todayYear === currentYear;
 
            return (
              <div key={day} className="bg-white min-h-[70px] sm:min-h-[100px] p-1 sm:p-2 hover:bg-slate-50 transition-colors group relative">

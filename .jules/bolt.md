@@ -25,3 +25,7 @@
 ## 2026-04-28 - [High-Frequency Date Formatting Overhead]
 **Learning:** Repeated calls to `toLocaleString()` and `toLocaleTimeString()` in components rendered in large lists (`PostCard`) or dense grids (`CalendarView`) incur significant CPU overhead because the browser re-compiles the formatting pattern on every call.
 **Action:** Use shared, pre-compiled `Intl.DateTimeFormat` instances to perform formatting, which is ~50x faster than repeated `toLocaleString()` calls.
+
+## 2026-05-05 - [Redundant State Initialization and Loop Allocations]
+**Learning:** Naive state initialization like `useState(new Date())` or creating objects like `new Date()` inside a loop (e.g., in a calendar grid) leads to unnecessary memory allocations and GC pressure on every render.
+**Action:** Use lazy state initializers `useState(() => new Date())` for initial values and pre-calculate stable values (like 'today') outside of loops to minimize redundant allocations.
