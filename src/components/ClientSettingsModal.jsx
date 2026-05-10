@@ -66,12 +66,18 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, isReadOnly }) 
     if (isReadOnly) return;
     const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).replace(/\//g, '').slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
+
+    // 🛡️ SECURITY: Validate brandColor format
+    const hexRegex = /^#[0-9A-F]{6}$/i;
+    if (brandColor && !hexRegex.test(brandColor)) {
+      return alert('Invalid brand color format');
+    }
     
     setIsSaving(true);
     try {
       await setDoc(doc(db, 'clients', activeClient), {
         name: activeClient,
-        logoUrl,
+        logoUrl: (logoUrl || '').slice(0, 500000),
         brandColor
       }, { merge: true });
       setIsSaving(false);
