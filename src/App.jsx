@@ -142,40 +142,43 @@ const App = () => {
         setFilterClient(clientParam);
       }
 
+      // ⚡ OPTIMIZATION: Use docChanges() for O(M) updates to posts.
+      // This avoids redundant data parsing and object creation for unchanged documents,
+      // significantly improving performance as the collection grows.
       setPosts(prevPosts => {
-        // Create a map for quick lookup of existing posts
         const postMap = new Map(prevPosts.map(p => [p.id, p]));
-        
-        const newPosts = snapshot.docs.map(doc => {
-          const data = doc.data();
-          const existingPost = postMap.get(doc.id);
+        let hasChanges = false;
 
-          // Check if post actually changed (using updatedAt as a proxy for efficiency)
-          // or if it's new. Convert to string to ensure value comparison.
-          const currentUpdate = data.updatedAt?.toString();
-          const prevUpdate = existingPost?.updatedAt?.toString();
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added' || change.type === 'modified') {
+            const data = change.doc.data();
 
-          if (existingPost && prevUpdate === currentUpdate) {
-            return existingPost;
+            // --- SAFE DATE PARSER ---
+            const parseDate = (val) => {
+              if (!val) return null;
+              const d = new Date(val);
+              return isNaN(d.getTime()) ? null : d;
+            };
+
+            postMap.set(change.doc.id, {
+              id: change.doc.id,
+              ...data,
+              scheduledDate: parseDate(data.scheduledDate),
+              createdAt: parseDate(data.createdAt) || new Date(),
+              // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering
+              _searchContent: (data.content || "").toLowerCase(),
+              _searchClient: (data.client || "").toLowerCase()
+            });
+            hasChanges = true;
+          } else if (change.type === 'removed') {
+            postMap.delete(change.doc.id);
+            hasChanges = true;
           }
-
-          // --- SAFE DATE PARSER ---
-          const parseDate = (val) => {
-            if (!val) return null;
-            const d = new Date(val);
-            return isNaN(d.getTime()) ? null : d; // Returns null if invalid
-          };
-
-          return {
-            id: doc.id,
-            ...data,
-            scheduledDate: parseDate(data.scheduledDate),
-            createdAt: parseDate(data.createdAt) || new Date(),
-            // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering (O(1) lookup during filter)
-            _searchContent: (data.content || "").toLowerCase(),
-            _searchClient: (data.client || "").toLowerCase()
-          };
         });
+
+        if (!hasChanges) return prevPosts;
+
+        const newPosts = Array.from(postMap.values());
 
         // Sort: Newest First (Safe sort handles nulls)
         newPosts.sort((a, b) => {
@@ -546,8 +549,12 @@ const App = () => {
   }, [posts, filterClient, showArchived, deferredSearchQuery]);
 
   const calendarPosts = useMemo(() => {
+    // ⚡ OPTIMIZATION: Only perform filtering for calendar posts if the user
+    // is actually in the calendar view. This avoids unnecessary processing
+    // of the full post list in the grid or editor views.
+    if (view !== 'calendar') return [];
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
-  }, [filteredPosts]);
+  }, [filteredPosts, view]);
 
   const handleExport = useCallback((mode) => {
     let exportPosts = [];
