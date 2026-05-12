@@ -93,6 +93,12 @@ const App = () => {
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const searchInputRef = useRef(null);
+  const postsRef = useRef([]);
+
+  // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks
+  useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
 
   // Derived State (Read Only Mode)
   const sharedUid = new URLSearchParams(window.location.search).get('uid');
@@ -309,7 +315,7 @@ const App = () => {
         status,
         approvalStatus,
         feedback: (formData.feedback || "").trim().slice(0, 500),
-        imageUrl: formData.imageUrl || '',
+        imageUrl: (formData.imageUrl || '').slice(0, 500000),
         tags,
         uid: user.uid, 
         scheduledDate: getSafeDateString(formData.scheduledDate), 
@@ -373,7 +379,14 @@ const App = () => {
 
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
-    if (isReadOnly && !isApproving) return;
+    if (isReadOnly) {
+      if (!isApproving) return;
+      // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
+      if (!postsRef.current.some(p => p.id === postId)) {
+        console.warn("⛔ ACCESS DENIED: Post not in guest view.");
+        return;
+      }
+    }
 
     try {
       await updateDoc(doc(db, 'posts', postId), {
@@ -418,7 +431,7 @@ const App = () => {
             status,
             approvalStatus,
             feedback: (item.feedback || "").trim().slice(0, 500),
-            imageUrl: item.imageUrl || '',
+            imageUrl: (item.imageUrl || '').slice(0, 500000),
             tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
               .slice(0, 10)
               .map(tag => String(tag).trim().slice(0, 20))
@@ -445,6 +458,12 @@ const App = () => {
     const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
     if (!sanitizedFeedback) return showToast("Feedback cannot be empty", "error");
 
+    // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
+    if (isReadOnly && !postsRef.current.some(p => p.id === postId)) {
+       console.warn("⛔ ACCESS DENIED: Post not in guest view.");
+       return;
+    }
+
     try {
       await updateDoc(doc(db, 'posts', postId), {
         feedback: sanitizedFeedback,
@@ -456,7 +475,7 @@ const App = () => {
       console.error("Feedback Error:", error);
       showToast("Failed to send feedback", "error");
     }
-  }, [showToast]);
+  }, [isReadOnly, showToast]);
   
   // --- Filtering Logic ---
   // ⚡ OPTIMIZATION: Stabilize uniqueClients reference.
@@ -498,7 +517,7 @@ const App = () => {
               status: STATUS.DRAFT,
               approvalStatus: APPROVAL_STATUS.PENDING,
               feedback: "",
-              imageUrl: post.imageUrl || '',
+              imageUrl: (post.imageUrl || '').slice(0, 500000),
               tags: post.tags || [],
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),

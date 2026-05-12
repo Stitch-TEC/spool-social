@@ -22,3 +22,8 @@
 **Vulnerability:** Mass assignment risk in cloning logic and internal field leakage to Firestore.
 **Learning:** Using object spreading (`...post`) during document duplication can inadvertently persist internal UI-only helper fields (like `_searchContent` or `_searchClient`) and bypass intent by copying fields like `feedback` or `status` that should be reset.
 **Prevention:** Strictly use explicit field mapping for all Firestore write operations, especially when duplicating existing records. Reset lifecycle fields (status, feedback) and owner-related fields (uid) to ensure data integrity and security.
+
+## 2026-05-18 - [Defense-in-Depth for Guest Authorization]
+**Vulnerability:** Authorization relies on URL params which can be manipulated; guest actions (approval/feedback) were not verified against the actual visible dataset.
+**Learning:** Even when Firestore rules or queries limit initial data, application-level handlers should verify that the requested document ID exists within the user's authorized "view" (stored in a stable ref) to prevent unauthorized modifications via direct function calls or state manipulation.
+**Prevention:** Use a stable reference synchronized with the authorized data state to validate document ownership/visibility in all state-changing callbacks.
