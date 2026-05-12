@@ -17,3 +17,7 @@
 ## 2025-05-18 - [Accessibility for External Links and Navigation]
 **Learning:** Generic labels like "Open App" or "Today" provide insufficient context for screen reader users and lack hover tooltips. Providing descriptive `aria-label` and `title` attributes (e.g., "Open platform app", "Go to Today") significantly improves screen reader navigation and discoverability.
 **Action:** Always provide descriptive context-aware ARIA labels and titles for navigational and external link elements.
+
+## 2025-05-19 - [Accessible Dropdowns and Live Regions]
+**Learning:** Purely CSS-based dropdowns (e.g., using `group-hover`) are inaccessible to keyboard users unless paired with `group-focus-within`. Additionally, dynamic UI updates like toast notifications are invisible to screen readers unless they use ARIA live regions.
+**Action:** Use `group-focus-within` to reveal hidden menus on keyboard focus and ensure toast components have `role="status"` and `aria-live="polite"` for proper announcement.

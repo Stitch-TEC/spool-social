@@ -4,7 +4,7 @@ import {
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
   Loader2, Filter, X, Download, Upload, Archive, Settings,
-  CheckCircle
+  CheckCircle, ChevronRight
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -705,11 +705,15 @@ const App = () => {
                           <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
                         </label>
                         <div className="relative group">
-                          <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+                          <button
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                            aria-haspopup="true"
+                          >
                             <Download size={16} />
                             <span>Export CSV</span>
+                            <ChevronRight size={14} className="ml-auto opacity-40" />
                           </button>
-                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
+                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block group-focus-within:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
                             <button onClick={() => handleExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
                             <button onClick={() => handleExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
                             <button onClick={() => handleExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
