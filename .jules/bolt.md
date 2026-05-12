@@ -29,3 +29,7 @@
 ## 2026-05-05 - [Redundant State Initialization and Loop Allocations]
 **Learning:** Naive state initialization like `useState(new Date())` or creating objects like `new Date()` inside a loop (e.g., in a calendar grid) leads to unnecessary memory allocations and GC pressure on every render.
 **Action:** Use lazy state initializers `useState(() => new Date())` for initial values and pre-calculate stable values (like 'today') outside of loops to minimize redundant allocations.
+
+## 2026-05-20 - [Incremental Firestore State Management & View-Aware Computations]
+**Learning:** Mapping over an entire Firestore collection snapshot (`snapshot.docs.map()`) on every update results in O(N) complexity for data parsing and object creation. For large collections, this creates significant main-thread lag. Additionally, running filters for non-visible views (e.g., filtering calendar posts while in grid view) wastes CPU cycles.
+**Action:** Use `snapshot.docChanges()` to process only added, modified, or removed documents (O(M)), maintaining a local Map to preserve referential stability. Implement view-awareness in expensive `useMemo` hooks to skip processing when the result is not visually required.
