@@ -21,3 +21,7 @@
 ## 2025-05-19 - [Accessible Dropdowns and Live Regions]
 **Learning:** Purely CSS-based dropdowns (e.g., using `group-hover`) are inaccessible to keyboard users unless paired with `group-focus-within`. Additionally, dynamic UI updates like toast notifications are invisible to screen readers unless they use ARIA live regions.
 **Action:** Use `group-focus-within` to reveal hidden menus on keyboard focus and ensure toast components have `role="status"` and `aria-live="polite"` for proper announcement.
+
+## 2025-05-20 - [Semantic Progress Indicators and Editor Shortcuts]
+**Learning:** Decorative SVG indicators for limits (like character counts) are invisible to screen readers unless they use the 'progressbar' role and appropriate ARIA attributes. Additionally, providing standard keyboard shortcuts (Ctrl+Enter) and visual loading states (spinners) in forms significantly improves the perceived speed and accessibility of the drafting experience.
+**Action:** Use 'role="progressbar"' with 'aria-valuenow' for SVG indicators, implement 'Ctrl/Cmd+Enter' shortcuts for textareas, and always provide 'isSaving' feedback for async form submissions.
