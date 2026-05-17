@@ -111,8 +111,7 @@ const App = () => {
     }
     
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      // 🧪 MOCK USER INJECTED FOR TESTING
-      setUser(currentUser || { uid: 'test-admin-123', displayName: 'Automated Tester' });
+      setUser(currentUser);
       setIsLoading(false);
     });
     return () => unsubscribe();
