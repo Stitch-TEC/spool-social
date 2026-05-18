@@ -27,3 +27,8 @@
 **Vulnerability:** Authorization relies on URL params which can be manipulated; guest actions (approval/feedback) were not verified against the actual visible dataset.
 **Learning:** Even when Firestore rules or queries limit initial data, application-level handlers should verify that the requested document ID exists within the user's authorized "view" (stored in a stable ref) to prevent unauthorized modifications via direct function calls or state manipulation.
 **Prevention:** Use a stable reference synchronized with the authorized data state to validate document ownership/visibility in all state-changing callbacks.
+
+## 2026-05-25 - [Insecure Mock User Fallback in Production Path]
+**Vulnerability:** Hardcoded mock user credentials were used as a fallback in the `onAuthStateChanged` listener.
+**Learning:** Hardcoding test or mock users directly in the application's authentication flow can inadvertently grant unauthorized access to anyone if authentication fails or is bypassed. Test-only code should be kept separate from production builds and should never be part of the main application logic unless strictly gated by environment variables.
+**Prevention:** Remove all mock user credentials from production code. Use environment-specific authentication mocks or dedicated testing environments to verify functionality without compromising security.
