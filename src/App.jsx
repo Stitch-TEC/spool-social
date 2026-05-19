@@ -151,25 +151,42 @@ const App = () => {
       // This avoids redundant data parsing and object creation for unchanged documents,
       // significantly improving performance as the collection grows.
       setPosts(prevPosts => {
-        const postMap = new Map(prevPosts.map(p => [p.id, p]));
+        // ⚡ OPTIMIZATION: Initialize Map with a loop to avoid intermediate array allocations.
+        const postMap = new Map();
+        prevPosts.forEach(p => postMap.set(p.id, p));
+
         let hasChanges = false;
 
         snapshot.docChanges().forEach(change => {
           if (change.type === 'added' || change.type === 'modified') {
             const data = change.doc.data();
+            const existing = postMap.get(change.doc.id);
 
-            // --- SAFE DATE PARSER ---
-            const parseDate = (val) => {
-              if (!val) return null;
-              const d = new Date(val);
+            // ⚡ OPTIMIZATION: Preserve Date object references by comparing raw strings.
+            // This prevents unnecessary re-renders in components that depend on stable props.
+            const getStableDate = (newVal, field) => {
+              if (!newVal) return null;
+              if (existing && existing[`_raw_${field}`] === newVal) {
+                return existing[field];
+              }
+              const d = new Date(newVal);
               return isNaN(d.getTime()) ? null : d;
             };
+
+            const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
+            const createdAt = getStableDate(data.createdAt, 'createdAt') || new Date();
+
+            // ⚡ OPTIMIZATION: Pre-calculate numeric timestamp for O(1) sort comparisons.
+            const _sortTs = (scheduledDate || createdAt).getTime();
 
             postMap.set(change.doc.id, {
               id: change.doc.id,
               ...data,
-              scheduledDate: parseDate(data.scheduledDate),
-              createdAt: parseDate(data.createdAt) || new Date(),
+              scheduledDate,
+              createdAt,
+              _raw_scheduledDate: data.scheduledDate,
+              _raw_createdAt: data.createdAt,
+              _sortTs,
               // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering
               _searchContent: (data.content || "").toLowerCase(),
               _searchClient: (data.client || "").toLowerCase()
@@ -185,12 +202,8 @@ const App = () => {
 
         const newPosts = Array.from(postMap.values());
 
-        // Sort: Newest First (Safe sort handles nulls)
-        newPosts.sort((a, b) => {
-          const dateA = a.scheduledDate || a.createdAt;
-          const dateB = b.scheduledDate || b.createdAt;
-          return dateB - dateA;
-        });
+        // ⚡ OPTIMIZATION: Sort using pre-calculated numeric timestamp (O(1) comparison).
+        newPosts.sort((a, b) => b._sortTs - a._sortTs);
 
         return newPosts;
       });

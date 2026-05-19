@@ -1,4 +1,4 @@
-import React, { memo, useState, useCallback } from 'react';
+import React, { memo, useState, useCallback, useMemo } from 'react';
 import { 
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus, 
   Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore
@@ -14,8 +14,12 @@ const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, on
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
 
-  // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for ~50x faster date formatting.
-  const formattedDate = post.scheduledDate ? DATE_FORMATTERS.short.format(post.scheduledDate) : 'No date set';
+  // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat and memoize the result.
+  // This avoids redundant formatting work on every render, leveraging referentially
+  // stable Date objects from the parent's optimized data listener.
+  const formattedDate = useMemo(() => {
+    return post.scheduledDate ? DATE_FORMATTERS.short.format(post.scheduledDate) : 'No date set';
+  }, [post.scheduledDate]);
   
   const brandColor = clientSettings.brandColor || '#4338ca'; // indigo-700 default
 
