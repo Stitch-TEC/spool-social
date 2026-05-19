@@ -33,3 +33,6 @@
 ## 2026-05-20 - [Incremental Firestore State Management & View-Aware Computations]
 **Learning:** Mapping over an entire Firestore collection snapshot (`snapshot.docs.map()`) on every update results in O(N) complexity for data parsing and object creation. For large collections, this creates significant main-thread lag. Additionally, running filters for non-visible views (e.g., filtering calendar posts while in grid view) wastes CPU cycles.
 **Action:** Use `snapshot.docChanges()` to process only added, modified, or removed documents (O(M)), maintaining a local Map to preserve referential stability. Implement view-awareness in expensive `useMemo` hooks to skip processing when the result is not visually required.
+## 2026-05-19 - [Referential Stability in Firestore Listeners]
+**Learning:** React state updates from Firestore snapshots often create new object references (like Dates) even for unchanged fields. This invalidates `React.memo` for child components down the tree. Additionally, using `.map()` to initialize a Map from the previous state creates unnecessary intermediate array allocations.
+**Action:** Implement reference preservation by caching raw values and reusing existing objects if the raw value hasn't changed. Use a simple `forEach` loop for Map initialization to minimize GC pressure.
