@@ -2,7 +2,10 @@ import { PLATFORMS } from '../constants';
 
 export const resolveImage = (imgRef, mediaMap) => {
     if (!imgRef) return null;
-    return imgRef.startsWith('data:') ? imgRef : mediaMap[imgRef] || null;
+    // Inline data URLs and remote (Storage/CDN) URLs render directly; legacy
+    // references fall back to the in-memory media map.
+    if (imgRef.startsWith('data:') || imgRef.startsWith('http')) return imgRef;
+    return mediaMap?.[imgRef] || null;
 };
 
 // ✅ RESTORED: Image Compression Logic

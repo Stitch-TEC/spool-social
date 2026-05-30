@@ -3,6 +3,7 @@ import { X, Upload, Trash2, CheckCircle, Palette, Save } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
+import { uploadImageIfNeeded } from '../utils/storage';
 
 const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
@@ -60,10 +61,11 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
     try {
       // 🔒 Per-user doc id keeps each workspace's branding isolated.
       const clientDocId = `${uid}__${encodeURIComponent(activeClient)}`;
+      const finalLogoUrl = await uploadImageIfNeeded(logoUrl, { uid, folder: 'client-logos' });
       await setDoc(doc(db, 'clients', clientDocId), {
         uid,
         name: activeClient,
-        logoUrl,
+        logoUrl: finalLogoUrl,
         brandColor
       }, { merge: true });
       setIsSaving(false);

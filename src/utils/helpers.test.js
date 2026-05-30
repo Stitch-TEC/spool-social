@@ -16,6 +16,11 @@ describe('resolveImage', () => {
     expect(resolveImage('ref1', { ref1: 'https://cdn/x.jpg' })).toBe('https://cdn/x.jpg');
     expect(resolveImage('missing', {})).toBeNull();
   });
+
+  it('passes remote (http/https) URLs straight through', () => {
+    const url = 'https://firebasestorage.googleapis.com/v0/b/p/o/post-images%2Fa.jpg?alt=media&token=abc';
+    expect(resolveImage(url, {})).toBe(url);
+  });
 });
 
 describe('TRANSFORMATIONS', () => {

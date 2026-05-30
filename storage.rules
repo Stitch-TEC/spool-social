@@ -1,0 +1,27 @@
+rules_version = '2';
+
+// =============================================================================
+// Spool — Firebase Storage Security Rules
+//
+// ⚠️  Review and test before deploying:  firebase deploy --only storage
+//     Requires Firebase Storage to be enabled for the project.
+//
+// Images are non-sensitive publishing assets and are served via tokenized
+// download URLs, so reads are public; writes are restricted to the
+// authenticated owner's own folder (path segment must equal their uid).
+// =============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /post-images/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /client-logos/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

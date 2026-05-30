@@ -27,6 +27,7 @@ import { auth, db, googleProvider } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
 import { resolveImage } from './utils/helpers';
+import { uploadImageIfNeeded } from './utils/storage';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
@@ -279,6 +280,11 @@ const App = () => {
       
       // 3. Clean undefined fields (Firestore rejects them)
       Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
+
+      // 3b. Upload a freshly-added inline image to Storage (keeps base64 out of Firestore docs).
+      if (postData.imageUrl) {
+        postData.imageUrl = await uploadImageIfNeeded(postData.imageUrl, { uid: user.uid, folder: 'post-images' });
+      }
 
       // 4. Save
       if (postData.id) {
