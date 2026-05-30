@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Upload, Trash2, CheckCircle, Palette, Save } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
   const [logoUrl, setLogoUrl] = useState('');
@@ -12,15 +12,16 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  useEffect(() => {
-    if (selectedClient && selectedClient !== 'NEW' && clientMap[selectedClient]) {
-      setLogoUrl(clientMap[selectedClient].logoUrl || '');
-      setBrandColor(clientMap[selectedClient].brandColor || '#4f46e5');
-    } else {
-      setLogoUrl('');
-      setBrandColor('#4f46e5');
-    }
-  }, [selectedClient, clientMap]);
+  // Load the selected client's branding into editable state when the selection
+  // changes (React-recommended "adjust state during render" pattern — no effect,
+  // and it won't clobber in-progress edits when the Firestore snapshot updates).
+  const [syncedClient, setSyncedClient] = useState(null);
+  if (selectedClient !== syncedClient) {
+    setSyncedClient(selectedClient);
+    const settings = selectedClient && selectedClient !== 'NEW' ? clientMap[selectedClient] : null;
+    setLogoUrl(settings?.logoUrl || '');
+    setBrandColor(settings?.brandColor || '#4f46e5');
+  }
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -51,12 +52,16 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap }) => {
   };
 
   const handleSave = async () => {
-    const activeClient = selectedClient === 'NEW' ? newClientName.trim() : selectedClient;
+    const activeClient = selectedClient === 'NEW' ? newClientName.trim().slice(0, 50) : selectedClient;
     if (!activeClient) return alert('Enter a valid client name');
-    
+    if (!uid) return alert('You must be signed in to save brand settings');
+
     setIsSaving(true);
     try {
-      await setDoc(doc(db, 'clients', activeClient), {
+      // 🔒 Per-user doc id keeps each workspace's branding isolated.
+      const clientDocId = `${uid}__${encodeURIComponent(activeClient)}`;
+      await setDoc(doc(db, 'clients', clientDocId), {
+        uid,
         name: activeClient,
         logoUrl,
         brandColor

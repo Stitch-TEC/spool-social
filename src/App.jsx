@@ -97,8 +97,7 @@ const App = () => {
     }
     
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      // 🧪 MOCK USER INJECTED FOR TESTING
-      setUser(currentUser || { uid: 'test-admin-123', displayName: 'Automated Tester' });
+      setUser(currentUser);
       setIsLoading(false);
     });
     return () => unsubscribe();
@@ -198,9 +197,12 @@ const App = () => {
       setIsLoading(false);
     });
 
-    const clientUnsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
+    // 🔒 Scope client branding to the workspace owner (multi-tenant isolation).
+    // Keyed by client name in memory so PostCard/MobilePreview lookups by post.client work.
+    const clientQuery = query(collection(db, 'clients'), where('uid', '==', targetUid));
+    const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
       const map = {};
-      snapshot.forEach(d => { map[d.id] = d.data(); });
+      snapshot.forEach(d => { const data = d.data(); if (data.name) map[data.name] = data; });
       setClientMap(map);
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
@@ -521,23 +523,27 @@ const App = () => {
 
   if (view === 'editor') {
     return (
-      // ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
-      // and improves the first paint time for the main dashboard.
-      <Suspense fallback={
-        <div className="flex flex-col items-center justify-center h-screen bg-white">
-          <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-          <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
-        </div>
-      }>
-        <Editor
-          post={editingPost}
-          clientMap={clientMap}
-          uniqueClients={uniqueClients}
-          onSave={handleSavePost}
-          onCancel={() => { setView('grid'); setEditingPost(null); }}
-          onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
-        />
-      </Suspense>
+      <ErrorBoundary>
+        {/* ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
+            and improves the first paint time for the main dashboard. */}
+        <Suspense fallback={
+          <div className="flex flex-col items-center justify-center h-screen bg-white">
+            <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+            <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
+          </div>
+        }>
+          <Editor
+            post={editingPost}
+            clientMap={clientMap}
+            mediaMap={mediaMap}
+            uniqueClients={uniqueClients}
+            showToast={showToast}
+            onSave={handleSavePost}
+            onCancel={() => { setView('grid'); setEditingPost(null); }}
+            onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+          />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
 
@@ -820,16 +826,17 @@ const App = () => {
       {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
       {isSparkDeckOpen && <SparkDeck onClose={() => setIsSparkDeckOpen(false)} onSelect={(txt) => { setEditingPost(prev => ({...prev, content: txt})); setIsSparkDeckOpen(false); }} />}
       {reviewingPost && (
-        <ReviewModal 
-           post={reviewingPost} 
+        <ReviewModal
+           post={reviewingPost}
            mediaMap={mediaMap}
+           clientMap={clientMap}
            onClose={() => setReviewingPost(null)}
            onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
            onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} />
       )}
     </ErrorBoundary>
   );

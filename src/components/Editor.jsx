@@ -10,7 +10,21 @@ import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS } from '../constants';
 import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helpers'; // ✅ NEW
 
-const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || "dummy_key");
+// NOTE: Calling Gemini directly from the browser exposes the API key in the client
+// bundle (every VITE_* var is public). The "Fix Grammar" button is therefore only
+// shown when a key is configured, and the call should be moved behind a server-side
+// proxy (e.g. a Cloud Function) before enabling AI in production.
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const AI_ENABLED = !!GEMINI_KEY && GEMINI_KEY !== 'your_gemini_api_key_here';
+const genAI = AI_ENABLED ? new GoogleGenerativeAI(GEMINI_KEY) : null;
+
+// Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
+const PLATFORM_ACTIVE_CLASSES = {
+  gmb: 'border-blue-500 bg-blue-50',
+  linkedin: 'border-sky-500 bg-sky-50',
+  twitter: 'border-slate-800 bg-slate-50',
+  instagram: 'border-pink-500 bg-pink-50',
+};
 
 const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck }) => {
   const allClients = useMemo(() => {
@@ -99,6 +113,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
     setIsGenerating(true);
     try {
       if (mode === 'fix') {
+        if (!genAI) return showToast("AI grammar fix isn't configured.", "error");
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(`Fix grammar and spelling, keep tone casual: "${formData.content}"`);
         setFormData(prev => ({ ...prev, content: result.response.text() }));
@@ -155,7 +170,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
                   key={p.id}
                   onClick={() => setFormData({ ...formData, platform: p.id })}
                   aria-pressed={formData.platform === p.id}
-                  className={`flex-1 flex flex-row sm:flex-col items-center justify-center gap-2 p-2 sm:p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? `border-${p.text.split('-')[1]}-500 bg-${p.text.split('-')[1]}-50` : 'border-slate-100 hover:border-slate-200'}`}
+                  className={`flex-1 flex flex-row sm:flex-col items-center justify-center gap-2 p-2 sm:p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? (PLATFORM_ACTIVE_CLASSES[p.id] || 'border-indigo-500 bg-indigo-50') : 'border-slate-100 hover:border-slate-200'}`}
                 >
                    <PlatformIcon platformId={p.id} size={20} className="sm:w-6 sm:h-6" />
                    <span className={`text-[10px] sm:text-xs font-bold ${formData.platform === p.id ? 'text-slate-800' : 'text-slate-400'}`}>{p.name}</span>
@@ -182,7 +197,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
             </div>
             
             <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-3 pb-4 border-b border-slate-100">
-               <button onClick={() => handleAI('fix')} disabled={isGenerating} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-indigo-50 text-indigo-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"><Wand2 size={12}/>{isGenerating ? 'Fixing...' : 'Fix Grammar'}</button>
+               {AI_ENABLED && <button onClick={() => handleAI('fix')} disabled={isGenerating} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-indigo-50 text-indigo-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"><Wand2 size={12}/>{isGenerating ? 'Fixing...' : 'Fix Grammar'}</button>}
                <button onClick={() => handleAI('punchy')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-orange-50 text-orange-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-orange-100 flex items-center gap-1.5"><Smartphone size={12}/>Punchy</button>
                <button onClick={() => handleAI('professional')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-blue-50 text-blue-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-blue-100 flex items-center gap-1.5"><RefreshCw size={12}/>Professional</button>
                <button onClick={() => handleAI('emojify')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-pink-50 text-pink-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-pink-100 flex items-center gap-1.5"><Wand2 size={12}/>Emojify</button>
