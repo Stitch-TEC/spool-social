@@ -52,28 +52,3 @@ export const processImageFile = (file) => {
     reader.onerror = (err) => reject(err);
   });
 };
-
-export const TRANSFORMATIONS = {
-  punchy: (text) => {
-    const suffix = "\n\n👇\n#Growth #Building";
-    if (text.includes("#Growth #Building")) return text; 
-    let clean = text.replace(/\b(I think|I believe|Just wanted to say|basically|actually)\b/gi, '').replace(/\s+/g, ' ').trim();
-    return `${clean}${suffix}`;
-  },
-  professional: (text) => {
-    const prefix = "💡 Professional Update:\n\n";
-    const suffix = "\n\nI'd love to hear your perspective on this in the comments below.\n\n#Leadership #IndustryTrends";
-    if (text.startsWith("💡 Professional Update")) return text;
-    return `${prefix}${text}${suffix}`;
-  },
-  emojify: (text) => {
-    const map = { 'launch': '🚀', 'growth': '📈', 'money': '💰', 'team': '👥', 'idea': '💡', 'love': '❤️', 'happy': '😊', 'work': '💼' };
-    let newText = text;
-    Object.keys(map).forEach(key => {
-      const emoji = map[key];
-      const regex = new RegExp(`\\b${key}\\b(?!\\s*${emoji})`, 'gi'); 
-      newText = newText.replace(regex, `${key} ${emoji}`);
-    });
-    return newText;
-  }
-};

@@ -1,22 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  X, Save, Wand2, RefreshCw, Smartphone, Image as ImageIcon, 
+import {
+  X, Save, Wand2, Smartphone, Image as ImageIcon,
   Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
 } from 'lucide-react';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
-import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helpers'; // ✅ NEW
-
-// NOTE: Calling Gemini directly from the browser exposes the API key in the client
-// bundle (every VITE_* var is public). The "Fix Grammar" button is therefore only
-// shown when a key is configured, and the call should be moved behind a server-side
-// proxy (e.g. a Cloud Function) before enabling AI in production.
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const AI_ENABLED = !!GEMINI_KEY && GEMINI_KEY !== 'your_gemini_api_key_here';
-const genAI = AI_ENABLED ? new GoogleGenerativeAI(GEMINI_KEY) : null;
+import { resolveImage, processImageFile } from '../utils/helpers';
 
 // Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
 const PLATFORM_ACTIVE_CLASSES = {
@@ -42,7 +33,6 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
     tags: []
   });
   const [previewMode, setPreviewMode] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -108,28 +98,6 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
       });
     }
   }, [post]);
-
-  const handleAI = async (mode) => {
-    if (!formData.content) return showToast("Write some content first!", "error");
-    setIsGenerating(true);
-    try {
-      if (mode === 'fix') {
-        if (!genAI) return showToast("AI grammar fix isn't configured.", "error");
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const result = await model.generateContent(`Fix grammar and spelling, keep tone casual: "${formData.content}"`);
-        setFormData(prev => ({ ...prev, content: result.response.text() }));
-      } else {
-        const transform = TRANSFORMATIONS[mode];
-        if (transform) setFormData(prev => ({ ...prev, content: transform(formData.content) }));
-      }
-      showToast("Content polished! ✨");
-    } catch (error) {
-      console.error("AI Error:", error);
-      showToast("AI Service unavailable.", "error");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -216,13 +184,6 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
             {/* ✅ RESTORED: Char Counter */}
             <div className="absolute bottom-16 right-4">
                <CharCountCircle current={wordCount} max={currentPlatform.maxChars} />
-            </div>
-            
-            <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-3 pb-4 border-b border-slate-100">
-               {AI_ENABLED && <button onClick={() => handleAI('fix')} disabled={isGenerating} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-indigo-50 text-indigo-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"><Wand2 size={12}/>{isGenerating ? 'Fixing...' : 'Fix Grammar'}</button>}
-               <button onClick={() => handleAI('punchy')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-orange-50 text-orange-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-orange-100 flex items-center gap-1.5"><Smartphone size={12}/>Punchy</button>
-               <button onClick={() => handleAI('professional')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-blue-50 text-blue-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-blue-100 flex items-center gap-1.5"><RefreshCw size={12}/>Professional</button>
-               <button onClick={() => handleAI('emojify')} className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 bg-pink-50 text-pink-700 text-[10px] sm:text-xs font-bold rounded-lg hover:bg-pink-100 flex items-center gap-1.5"><Wand2 size={12}/>Emojify</button>
             </div>
           </div>
 
