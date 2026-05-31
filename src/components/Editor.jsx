@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, Save, Wand2, RefreshCw, Smartphone, Image as ImageIcon, 
-  Trash2, UploadCloud, Calendar as CalendarIcon 
+  Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
 } from 'lucide-react';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
-import { PLATFORMS, STATUS } from '../constants';
+import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { resolveImage, TRANSFORMATIONS, processImageFile } from '../utils/helpers'; // ✅ NEW
 
 // NOTE: Calling Gemini directly from the browser exposes the API key in the client
@@ -26,7 +26,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   instagram: 'border-pink-500 bg-pink-50',
 };
 
-const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck }) => {
+const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck, isReadOnly }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -44,6 +44,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
   const [previewMode, setPreviewMode] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -146,6 +147,16 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
   const wordCount = formData.content.length;
   const isOverLimit = wordCount > currentPlatform.maxChars;
 
+  const handleSaveWrapper = async () => {
+    if (isReadOnly || isOverLimit || !formData.content || isSaving) return;
+    setIsSaving(true);
+    try {
+      await onSave(formData);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col md:flex-row bg-white overflow-hidden animate-in slide-in-from-right duration-300">
       {/* Left Panel: Edit */}
@@ -155,8 +166,13 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
              <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">New Thread</h2>
           </div>
-          <button onClick={() => onSave(formData)} disabled={isOverLimit || !formData.content} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg">
-             <Save size={18} /> <span>Save</span>
+          <button
+            onClick={handleSaveWrapper}
+            disabled={isOverLimit || !formData.content || isReadOnly || isSaving}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
+          >
+             {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+             <span>{isSaving ? 'Saving...' : 'Save'}</span>
           </button>
         </div>
 
@@ -190,6 +206,12 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
                placeholder={currentPlatform.placeholder}
                value={formData.content}
                onChange={(e) => setFormData({ ...formData, content: e.target.value })}
+               onKeyDown={(e) => {
+                 if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                   e.preventDefault();
+                   handleSaveWrapper();
+                 }
+               }}
             />
             {/* ✅ RESTORED: Char Counter */}
             <div className="absolute bottom-16 right-4">
@@ -228,24 +250,34 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
                     {formData.tags?.map((tag, i) => (
                       <span key={i} className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1">
                         #{tag}
-                        <button onClick={() => setFormData(prev => ({...prev, tags: prev.tags.filter((_, index) => index !== i)}))} className="hover:text-rose-500"><X size={12}/></button>
+                        <button
+                          onClick={() => setFormData(prev => ({...prev, tags: prev.tags.filter((_, index) => index !== i)}))}
+                          className="hover:text-rose-500 p-0.5 rounded-full hover:bg-rose-100 transition-colors"
+                          title={`Remove tag #${tag}`}
+                          aria-label={`Remove tag #${tag}`}
+                        >
+                          <X size={12}/>
+                        </button>
                       </span>
                     ))}
                 </div>
                 <input 
                   type="text" 
-                  placeholder="Type a tag and press Enter..." 
+                  placeholder={formData.tags?.length >= 10 ? "Limit reached (10 tags)" : "Type a tag and press Enter..."}
+                  disabled={formData.tags?.length >= 10 || isReadOnly}
                   onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                         e.preventDefault();
-                        const val = e.target.value.trim().replace(/^#/, '');
+                        if (formData.tags?.length >= 10) return;
+
+                        const val = e.target.value.trim().replace(/^#/, '').slice(0, 20);
                         if (val && !formData.tags?.includes(val)) {
                            setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
                         }
                         e.target.value = '';
                      }
                   }} 
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" 
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-50"
                 />
              </div>
           </div>
@@ -283,7 +315,10 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
          <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
-            <MobilePreview post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}} clientMap={clientMap} />
+            <MobilePreview
+              post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}}
+              clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
+            />
          </div>
       </div>
       

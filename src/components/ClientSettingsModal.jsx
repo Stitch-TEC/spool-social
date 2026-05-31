@@ -4,24 +4,35 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
-  const [logoUrl, setLogoUrl] = useState('');
-  const [brandColor, setBrandColor] = useState('#4f46e5');
+
+  // ⚡ OPTIMIZATION: Initialize state from props to avoid unnecessary effect/re-render
+  const [logoUrl, setLogoUrl] = useState(() => {
+    const initial = uniqueClients[0];
+    return (initial && clientMap[initial]) ? (clientMap[initial].logoUrl || '') : '';
+  });
+  const [brandColor, setBrandColor] = useState(() => {
+    const initial = uniqueClients[0];
+    return (initial && clientMap[initial]) ? (clientMap[initial].brandColor || '#4f46e5') : '#4f46e5';
+  });
+
   const [isSaving, setIsSaving] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // Load the selected client's branding into editable state when the selection
-  // changes (React-recommended "adjust state during render" pattern — no effect,
-  // and it won't clobber in-progress edits when the Firestore snapshot updates).
-  const [syncedClient, setSyncedClient] = useState(null);
-  if (selectedClient !== syncedClient) {
-    setSyncedClient(selectedClient);
-    const settings = selectedClient && selectedClient !== 'NEW' ? clientMap[selectedClient] : null;
-    setLogoUrl(settings?.logoUrl || '');
-    setBrandColor(settings?.brandColor || '#4f46e5');
-  }
+  // ⚡ OPTIMIZATION: Handle state updates in the change handler instead of a sync effect
+  // to prevent cascading renders and improve performance.
+  const handleClientChange = (val) => {
+    setSelectedClient(val);
+    if (val && val !== 'NEW' && clientMap[val]) {
+      setLogoUrl(clientMap[val].logoUrl || '');
+      setBrandColor(clientMap[val].brandColor || '#4f46e5');
+    } else {
+      setLogoUrl('');
+      setBrandColor('#4f46e5');
+    }
+  };
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -52,9 +63,16 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
   };
 
   const handleSave = async () => {
-    const activeClient = selectedClient === 'NEW' ? newClientName.trim().slice(0, 50) : selectedClient;
+    if (isReadOnly) return;
+    const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).replace(/\//g, '').slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
     if (!uid) return alert('You must be signed in to save brand settings');
+
+    // 🛡️ SECURITY: Validate brandColor format
+    const hexRegex = /^#[0-9A-F]{6}$/i;
+    if (brandColor && !hexRegex.test(brandColor)) {
+      return alert('Invalid brand color format');
+    }
 
     setIsSaving(true);
     try {
@@ -63,7 +81,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
       await setDoc(doc(db, 'clients', clientDocId), {
         uid,
         name: activeClient,
-        logoUrl,
+        logoUrl: (logoUrl || '').slice(0, 500000),
         brandColor
       }, { merge: true });
       setIsSaving(false);
@@ -97,7 +115,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
             <label className="block text-sm font-bold text-slate-700 mb-2">Select Client</label>
             <select
               value={selectedClient}
-              onChange={(e) => setSelectedClient(e.target.value)}
+              onChange={(e) => handleClientChange(e.target.value)}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all font-medium"
             >
               <optgroup label="Extracted From Threads">
@@ -117,6 +135,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
               <input
                 type="text"
                 placeholder="e.g. My Awesome Startup"
+                maxLength={50}
                 value={newClientName}
                 onChange={(e) => setNewClientName(e.target.value)}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all"
@@ -188,7 +207,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid }) => {
           </button>
           <button 
             onClick={handleSave}
-            disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim())}
+            disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim()) || isReadOnly}
             className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {isSaving ? <span className="animate-pulse">Saving...</span> : <><Save size={16}/> Save Brand Info</>}

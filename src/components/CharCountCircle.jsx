@@ -11,8 +11,15 @@ const CharCountCircle = ({ current, max }) => {
   if (percentage > 95) color = 'stroke-rose-500';
 
   return (
-    <div className="relative w-8 h-8 flex items-center justify-center">
-      <svg className="transform -rotate-90 w-full h-full">
+    <div
+      className="relative w-8 h-8 flex items-center justify-center"
+      role="progressbar"
+      aria-valuenow={current}
+      aria-valuemin="0"
+      aria-valuemax={max}
+      aria-label={`${current} of ${max} characters used`}
+    >
+      <svg className="transform -rotate-90 w-full h-full" aria-hidden="true">
         <circle className="text-slate-200" strokeWidth="3" stroke="currentColor" fill="transparent" r={radius} cx="16" cy="16" />
         <circle className={`${color} transition-all duration-300`} strokeWidth="3" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} strokeLinecap="round" stroke="currentColor" fill="transparent" r={radius} cx="16" cy="16" />
       </svg>
