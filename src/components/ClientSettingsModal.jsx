@@ -4,7 +4,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, isReadOnly }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
 
@@ -66,16 +66,20 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, isReadOnly }) 
     if (isReadOnly) return;
     const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).replace(/\//g, '').slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
+    if (!uid) return alert('You must be signed in to save brand settings');
 
     // 🛡️ SECURITY: Validate brandColor format
     const hexRegex = /^#[0-9A-F]{6}$/i;
     if (brandColor && !hexRegex.test(brandColor)) {
       return alert('Invalid brand color format');
     }
-    
+
     setIsSaving(true);
     try {
-      await setDoc(doc(db, 'clients', activeClient), {
+      // 🔒 Per-user doc id keeps each workspace's branding isolated.
+      const clientDocId = `${uid}__${encodeURIComponent(activeClient)}`;
+      await setDoc(doc(db, 'clients', clientDocId), {
+        uid,
         name: activeClient,
         logoUrl: (logoUrl || '').slice(0, 500000),
         brandColor

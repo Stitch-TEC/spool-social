@@ -11,7 +11,7 @@ const Wrapper = ({ children }) => (
   </div>
 );
 
-// ⚡ OPTIMIZATION: Moved Avatar out of render loop to prevent re-creation.
+// Declared at module scope so it isn't recreated on every render (react-hooks/static-components).
 const Avatar = ({ sizeClass, hasLogo, logoUrl }) => (
   <div className={`${sizeClass} rounded-full overflow-hidden flex items-center justify-center shrink-0 ${hasLogo ? 'bg-white border border-slate-100' : 'bg-slate-200'}`}>
     {hasLogo ? <img src={logoUrl} className="w-full h-full object-contain" alt="Client Logo" /> : null}

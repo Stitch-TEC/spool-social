@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// =============================================================================
+// Spool — Firestore Security Rules
+//
+// ⚠️  AUTHORED FROM THE APP'S DATA MODEL AS A REVIEWABLE STARTING POINT.
+//     These were written by inspecting the client code, NOT exported from the
+//     live project. Before deploying:
+//       1. Diff against the rules currently live in the Firebase console.
+//       2. Test every flow in the Rules Playground:
+//            - owner can create/read/update/delete their own posts
+//            - guest (anonymous) can approve + request changes ONLY
+//            - guest CANNOT edit content, delete, or reassign uid/client
+//            - users only see their own client-branding docs
+//       3. Deploy with:  firebase deploy --only firestore:rules
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // A non-owner reviewer (guest) may only approve or request changes —
+    // never edit content, reassign ownership, or change the client.
+    function isGuestReviewUpdate() {
+      return isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'approvalStatus', 'feedback'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.client == resource.data.client;
+    }
+
+    // --- Posts ---------------------------------------------------------------
+    match /posts/{postId} {
+      // NOTE: share links work by passing ?uid=<owner>&client=<name>, so any
+      // signed-in user (incl. anonymous guests) can read posts they query; the
+      // uid/client narrowing happens client-side. Tighten this if share links
+      // should be the *only* read path (e.g. move shared content to a
+      // dedicated collection with per-link tokens).
+      allow read: if isSignedIn();
+
+      allow create: if isOwner(request.resource.data.uid);
+      allow update: if isOwner(resource.data.uid) || isGuestReviewUpdate();
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // --- Client branding -----------------------------------------------------
+    // Doc id is `${uid}__${encodeURIComponent(name)}` (see ClientSettingsModal).
+    match /clients/{clientId} {
+      allow read: if isSignedIn();
+      allow create, update: if isOwner(request.resource.data.uid)
+        && clientId.split('__')[0] == request.auth.uid;
+      allow delete: if isOwner(resource.data.uid);
+    }
+  }
+}

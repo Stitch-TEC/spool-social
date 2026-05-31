@@ -230,19 +230,23 @@ const App = () => {
       setIsLoading(false);
     });
 
-    // ⚡ OPTIMIZATION: Use docChanges() for O(M) updates to clientMap.
-    // This preserves object references for individual clients, preventing
-    // unnecessary re-renders in components that only depend on a subset of clients.
-    const clientUnsub = onSnapshot(collection(db, 'clients'), (snapshot) => {
+    // 🔒 Scope client branding to the workspace owner (multi-tenant isolation), and
+    // ⚡ use docChanges() for O(M) updates that preserve per-client object references.
+    // Keyed by client *name* so PostCard/MobilePreview lookups by post.client resolve
+    // even though the doc id is `${uid}__${name}` (see ClientSettingsModal).
+    const clientQuery = query(collection(db, 'clients'), where('uid', '==', targetUid));
+    const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
       setClientMap(prev => {
         let hasChanges = false;
         const next = { ...prev };
         snapshot.docChanges().forEach(change => {
+          const data = change.doc.data();
+          if (!data.name) return;
           if (change.type === 'added' || change.type === 'modified') {
-            next[change.doc.id] = change.doc.data();
+            next[data.name] = data;
             hasChanges = true;
           } else if (change.type === 'removed') {
-            delete next[change.doc.id];
+            delete next[data.name];
             hasChanges = true;
           }
         });
@@ -625,26 +629,27 @@ const App = () => {
 
   if (view === 'editor') {
     return (
-      // ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
-      // and improves the first paint time for the main dashboard.
-      <Suspense fallback={
-        <div className="flex flex-col items-center justify-center h-screen bg-white">
-          <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-          <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
-        </div>
-      }>
-        <Editor
-          post={editingPost}
-          isReadOnly={isReadOnly}
-          mediaMap={mediaMap}
-          clientMap={clientMap}
-          uniqueClients={uniqueClients}
-          onSave={handleSavePost}
-          onCancel={() => { setView('grid'); setEditingPost(null); }}
-          onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
-          showToast={showToast}
-        />
-      </Suspense>
+      <ErrorBoundary>
+        {/* ⚡ Lazy-loaded Editor keeps the initial dashboard bundle small. */}
+        <Suspense fallback={
+          <div className="flex flex-col items-center justify-center h-screen bg-white">
+            <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+            <p className="text-slate-400 font-medium animate-pulse">Loading Editor...</p>
+          </div>
+        }>
+          <Editor
+            post={editingPost}
+            isReadOnly={isReadOnly}
+            clientMap={clientMap}
+            mediaMap={mediaMap}
+            uniqueClients={uniqueClients}
+            showToast={showToast}
+            onSave={handleSavePost}
+            onCancel={() => { setView('grid'); setEditingPost(null); }}
+            onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
+          />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
 
@@ -946,8 +951,8 @@ const App = () => {
       {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
       {isSparkDeckOpen && <SparkDeck onClose={() => setIsSparkDeckOpen(false)} onSelect={(txt) => { setEditingPost(prev => ({...prev, content: txt})); setIsSparkDeckOpen(false); }} />}
       {reviewingPost && (
-        <ReviewModal 
-           post={reviewingPost} 
+        <ReviewModal
+           post={reviewingPost}
            clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
            resolvedImageUrl={resolveImage(reviewingPost.imageUrl, mediaMap)}
            onClose={() => setReviewingPost(null)}
@@ -956,7 +961,7 @@ const App = () => {
         />
       )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} isReadOnly={isReadOnly} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} />
       )}
     </ErrorBoundary>
   );
