@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { MapPin, MoreHorizontal } from 'lucide-react';
 import { PLATFORMS } from '../constants';
 
@@ -18,10 +18,9 @@ const Avatar = ({ sizeClass, hasLogo, logoUrl }) => (
   </div>
 );
 
-const MobilePreview = ({ post, clientMap = {} }) => {
+const MobilePreview = memo(({ post, clientSettings = {} }) => {
   const _platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const content = post.content || "No content yet...";
-  const clientSettings = clientMap[post.client] || {};
   const hasLogo = !!clientSettings.logoUrl;
   const brandColor = clientSettings.brandColor || '#2563eb'; // blue-600 default
 
@@ -109,6 +108,17 @@ const MobilePreview = ({ post, clientMap = {} }) => {
         </div>
     </Wrapper>
   );
-};
+}, (prev, next) => {
+  // ⚡ OPTIMIZATION: Custom comparison to prevent re-renders on non-visual changes.
+  // This ensures the preview doesn't flicker or re-render when the user edits
+  // metadata like scheduled dates, tags, or status in the editor.
+  return (
+    prev.post.content === next.post.content &&
+    prev.post.imageUrl === next.post.imageUrl &&
+    prev.post.platform === next.post.platform &&
+    prev.post.client === next.post.client &&
+    prev.clientSettings === next.clientSettings
+  );
+});
 
 export default MobilePreview;

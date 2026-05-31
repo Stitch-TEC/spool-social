@@ -15,11 +15,11 @@ describe('MobilePreview', () => {
     expect(screen.getByText(/@handle/)).toBeInTheDocument();
   });
 
-  it('renders client branding (logo + name) from the clientMap', () => {
+  it('renders client branding (logo + name) from clientSettings', () => {
     render(
       <MobilePreview
         post={{ platform: 'gmb', content: 'x', client: 'Acme' }}
-        clientMap={{ Acme: { logoUrl: 'data:image/png;base64,AAA', brandColor: '#ff0000' } }}
+        clientSettings={{ logoUrl: 'data:image/png;base64,AAA', brandColor: '#ff0000' }}
       />
     );
     expect(screen.getByText('Acme')).toBeInTheDocument();

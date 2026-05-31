@@ -74,3 +74,7 @@ export const SPARK_PROMPTS = [
   "Share what you are currently reading or learning.",
   "Answer a Frequently Asked Question (FAQ)."
 ];
+
+// ⚡ OPTIMIZATION: A stable empty object to prevent unnecessary re-renders
+// when a component doesn't have associated client settings.
+export const DEFAULT_CLIENT_SETTINGS = Object.freeze({});
