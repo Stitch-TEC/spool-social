@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
-import { resolveImage } from '../utils/helpers';
+import CharCountCircle from './CharCountCircle';
+import { DATE_FORMATTERS } from '../utils/helpers';
 
-const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) => {
+const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, onRequestChanges, onClose }) => {
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
   
-  const displayImage = resolveImage(post.imageUrl, mediaMap);
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
 
   const toggleTag = (tag) => {
@@ -25,14 +25,17 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] sm:h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
         <div className="flex-1 bg-slate-100 p-4 sm:p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto">
              <div className="scale-75 sm:scale-90 md:scale-100 origin-center">
-                <MobilePreview post={{...post, imageUrl: displayImage}} />
+                <MobilePreview post={{...post, imageUrl: resolvedImageUrl}} clientSettings={clientSettings} />
              </div>
         </div>
         <div className="flex-1 flex flex-col bg-white">
           <div className="p-6 border-b border-slate-100 flex justify-between items-start">
             <div>
               <h3 className="text-xl font-bold text-slate-800">Review Thread</h3>
-              <p className="text-sm text-slate-500">Scheduled: {new Date(post.scheduledDate).toLocaleString()}</p>
+              {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
+              <p className="text-sm text-slate-500">
+                Scheduled: {post.scheduledDate ? DATE_FORMATTERS.full.format(post.scheduledDate instanceof Date ? post.scheduledDate : new Date(post.scheduledDate)) : 'No date set'}
+              </p>
             </div>
             <button onClick={onClose} title="Close Review" aria-label="Close Review" className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
           </div>
@@ -60,18 +63,28 @@ const ReviewModal = ({ post, mediaMap, onApprove, onRequestChanges, onClose }) =
                  </div>
                  <div className="flex flex-wrap gap-2">
                     {feedbackTags.map(tag => (
-                      <button key={tag} onClick={() => toggleTag(tag)} className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                      <button
+                        key={tag}
+                        onClick={() => toggleTag(tag)}
+                        aria-pressed={activeTags.includes(tag)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                      >
                         {tag}
                       </button>
                     ))}
                  </div>
-                 <textarea 
-                    className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
-                    placeholder="Add specific notes..."
-                    maxLength={500}
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                 />
+                 <div className="relative">
+                    <textarea
+                        className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
+                        placeholder="Add specific notes..."
+                        maxLength={500}
+                        value={feedback}
+                        onChange={(e) => setFeedback(e.target.value)}
+                    />
+                    <div className="absolute bottom-3 right-3">
+                        <CharCountCircle current={feedback.length} max={500} />
+                    </div>
+                 </div>
                </div>
              )}
           </div>

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense, useDeferredValue, useRef } from 'react';
 import { 
   Layout, LogOut, Plus, Search, Menu, 
   Calendar as CalendarIcon, Grid, Share2, 
   ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X, Download, Upload, Archive, Settings
+  Loader2, Filter, X, Download, Upload, Archive, Settings,
+  CheckCircle, ChevronRight
 } from 'lucide-react';
 import { 
   signInWithPopup, 
@@ -24,7 +25,7 @@ import {
 } from 'firebase/firestore';
 
 import { auth, db, googleProvider } from './config/firebase';
-import { STATUS, PLATFORMS, APPROVAL_STATUS } from './constants';
+import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
 import { resolveImage } from './utils/helpers';
 import { uploadImageIfNeeded } from './utils/storage';
@@ -69,13 +70,18 @@ const App = () => {
   const [posts, setPosts] = useState([]);
   const [mediaMap, setMediaMap] = useState({});
   const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
-  const [currentDate, setCurrentDate] = useState(new Date());
+  // ⚡ OPTIMIZATION: Use lazy initializer to avoid creating a new Date object on every render of App.
+  const [currentDate, setCurrentDate] = useState(() => new Date());
   const [clientMap, setClientMap] = useState({});
 
   // Filtering & Search
   const [filterClient, setFilterClient] = useState(null); 
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');     
+  // ⚡ OPTIMIZATION: Use deferred value for the search query.
+  // This keeps the input field responsive while the expensive filtering
+  // of the post list is deferred until the main thread is free.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sidebarOpen, setSidebarOpen] = useState(false);  
 
   // UI States
@@ -86,6 +92,14 @@ const App = () => {
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const searchInputRef = useRef(null);
+  const postsRef = useRef([]);
+
+  // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks
+  useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
 
   // Derived State (Read Only Mode)
   const sharedUid = new URLSearchParams(window.location.search).get('uid');
@@ -134,44 +148,63 @@ const App = () => {
         setFilterClient(clientParam);
       }
 
+      // ⚡ OPTIMIZATION: Use docChanges() for O(M) updates to posts.
+      // This avoids redundant data parsing and object creation for unchanged documents,
+      // significantly improving performance as the collection grows.
       setPosts(prevPosts => {
-        // Create a map for quick lookup of existing posts
-        const postMap = new Map(prevPosts.map(p => [p.id, p]));
-        
-        const newPosts = snapshot.docs.map(doc => {
-          const data = doc.data();
-          const existingPost = postMap.get(doc.id);
+        // ⚡ OPTIMIZATION: Initialize Map with a loop to avoid intermediate array allocations.
+        const postMap = new Map();
+        prevPosts.forEach(p => postMap.set(p.id, p));
 
-          // Check if post actually changed (using updatedAt as a proxy for efficiency)
-          // or if it's new. Convert to string to ensure value comparison.
-          const currentUpdate = data.updatedAt?.toString();
-          const prevUpdate = existingPost?.updatedAt?.toString();
+        let hasChanges = false;
 
-          if (existingPost && prevUpdate === currentUpdate) {
-            return existingPost;
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added' || change.type === 'modified') {
+            const data = change.doc.data();
+            const existing = postMap.get(change.doc.id);
+
+            // ⚡ OPTIMIZATION: Preserve Date object references by comparing raw strings.
+            // This prevents unnecessary re-renders in components that depend on stable props.
+            const getStableDate = (newVal, field) => {
+              if (!newVal) return null;
+              if (existing && existing[`_raw_${field}`] === newVal) {
+                return existing[field];
+              }
+              const d = new Date(newVal);
+              return isNaN(d.getTime()) ? null : d;
+            };
+
+            const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
+            const createdAt = getStableDate(data.createdAt, 'createdAt') || new Date();
+
+            // ⚡ OPTIMIZATION: Pre-calculate numeric timestamp for O(1) sort comparisons.
+            const _sortTs = (scheduledDate || createdAt).getTime();
+
+            postMap.set(change.doc.id, {
+              id: change.doc.id,
+              ...data,
+              scheduledDate,
+              createdAt,
+              _raw_scheduledDate: data.scheduledDate,
+              _raw_createdAt: data.createdAt,
+              _sortTs,
+              // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering
+              _searchContent: (data.content || "").toLowerCase(),
+              _searchClient: (data.client || "").toLowerCase()
+            });
+            hasChanges = true;
+          } else if (change.type === 'removed') {
+            postMap.delete(change.doc.id);
+            hasChanges = true;
           }
-
-          // --- SAFE DATE PARSER ---
-          const parseDate = (val) => {
-            if (!val) return null;
-            const d = new Date(val);
-            return isNaN(d.getTime()) ? null : d; // Returns null if invalid
-          };
-
-          return {
-            id: doc.id,
-            ...data,
-            scheduledDate: parseDate(data.scheduledDate),
-            createdAt: parseDate(data.createdAt) || new Date()
-          };
         });
 
-        // Sort: Newest First (Safe sort handles nulls)
-        newPosts.sort((a, b) => {
-          const dateA = a.scheduledDate || a.createdAt;
-          const dateB = b.scheduledDate || b.createdAt;
-          return dateB - dateA;
-        });
+        if (!hasChanges) return prevPosts;
+
+        const newPosts = Array.from(postMap.values());
+
+        // ⚡ OPTIMIZATION: Sort using pre-calculated numeric timestamp (O(1) comparison).
+        newPosts.sort((a, b) => b._sortTs - a._sortTs);
 
         return newPosts;
       });
@@ -198,13 +231,28 @@ const App = () => {
       setIsLoading(false);
     });
 
-    // 🔒 Scope client branding to the workspace owner (multi-tenant isolation).
-    // Keyed by client name in memory so PostCard/MobilePreview lookups by post.client work.
+    // 🔒 Scope client branding to the workspace owner (multi-tenant isolation), and
+    // ⚡ use docChanges() for O(M) updates that preserve per-client object references.
+    // Keyed by client *name* so PostCard/MobilePreview lookups by post.client resolve
+    // even though the doc id is `${uid}__${name}` (see ClientSettingsModal).
     const clientQuery = query(collection(db, 'clients'), where('uid', '==', targetUid));
     const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
-      const map = {};
-      snapshot.forEach(d => { const data = d.data(); if (data.name) map[data.name] = data; });
-      setClientMap(map);
+      setClientMap(prev => {
+        let hasChanges = false;
+        const next = { ...prev };
+        snapshot.docChanges().forEach(change => {
+          const data = change.doc.data();
+          if (!data.name) return;
+          if (change.type === 'added' || change.type === 'modified') {
+            next[data.name] = data;
+            hasChanges = true;
+          } else if (change.type === 'removed') {
+            delete next[data.name];
+            hasChanges = true;
+          }
+        });
+        return hasChanges ? next : prev;
+      });
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
@@ -241,6 +289,8 @@ const App = () => {
 
     navigator.clipboard.writeText(link);
     showToast(message);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
   }, [filterClient, user, showToast]);
 
   // --- CRUD Handlers ---
@@ -248,10 +298,16 @@ const App = () => {
     if (isReadOnly) return;
 
     // 🔒 SECURITY: Input Validation & Sanitization
-    const client = (formData.client || "").trim().slice(0, 50);
+    const client = (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
     const content = (formData.content || "").trim();
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
+
+    // Sanitize tags: max 10 tags, 20 chars each
+    const tags = (formData.tags || [])
+      .slice(0, 10)
+      .map(tag => String(tag).trim().slice(0, 20))
+      .filter(Boolean);
 
     if (!client) return showToast("Client name is required", "error");
     if (!content) return showToast("Content cannot be empty", "error");
@@ -268,18 +324,23 @@ const App = () => {
         return null; // Invalid/Empty
       };
 
-      // 2. Prepare Data
+      // 2. Prepare Data - EXPLICIT MAPPING to prevent mass assignment
+      const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
+      const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
+
       const postData = { 
-        ...formData, 
         client,
         content,
+        platform: platformId,
+        status,
+        approvalStatus,
+        feedback: (formData.feedback || "").trim().slice(0, 500),
+        imageUrl: (formData.imageUrl || '').slice(0, 500000),
+        tags,
         uid: user.uid, 
         scheduledDate: getSafeDateString(formData.scheduledDate), 
         updatedAt: new Date().toISOString() 
       };
-      
-      // 3. Clean undefined fields (Firestore rejects them)
-      Object.keys(postData).forEach(key => postData[key] === undefined && delete postData[key]);
 
       // 3b. Upload a freshly-added inline image to Storage (keeps base64 out of Firestore docs).
       if (postData.imageUrl) {
@@ -287,8 +348,8 @@ const App = () => {
       }
 
       // 4. Save
-      if (postData.id) {
-        await updateDoc(doc(db, 'posts', postData.id), postData);
+      if (formData.id) {
+        await updateDoc(doc(db, 'posts', formData.id), postData);
         showToast("Thread updated");
       } else {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
@@ -338,9 +399,19 @@ const App = () => {
   }, [isReadOnly, showToast]);
 
   const handleStatusChange = useCallback(async (postId, newStatus) => {
+    // 🔒 SECURITY: Validate status enum
+    if (!Object.values(STATUS).includes(newStatus)) return;
+
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
-    if (isReadOnly && !isApproving) return;
+    if (isReadOnly) {
+      if (!isApproving) return;
+      // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
+      if (!postsRef.current.some(p => p.id === postId)) {
+        console.warn("⛔ ACCESS DENIED: Post not in guest view.");
+        return;
+      }
+    }
 
     try {
       await updateDoc(doc(db, 'posts', postId), {
@@ -374,16 +445,22 @@ const App = () => {
           // 🔒 SECURITY: Explicit field mapping & sanitization to prevent mass assignment
           const platformId = item.platform || 'gmb';
           const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
+          const status = Object.values(STATUS).includes(item.status) ? item.status : STATUS.DRAFT;
+          const approvalStatus = Object.values(APPROVAL_STATUS).includes(item.approvalStatus) ? item.approvalStatus : APPROVAL_STATUS.PENDING;
 
           batch.set(newDocRef, {
             uid: user.uid,
-            client: (item.client || "").trim().slice(0, 50),
+            client: (item.client || "").trim().replace(/\//g, '').slice(0, 50),
             content: (item.content || "").trim().slice(0, platform.maxChars),
             platform: platformId,
-            status: item.status || STATUS.DRAFT,
-            approvalStatus: item.approvalStatus || APPROVAL_STATUS.PENDING,
+            status,
+            approvalStatus,
             feedback: (item.feedback || "").trim().slice(0, 500),
-            imageUrl: item.imageUrl || '',
+            imageUrl: (item.imageUrl || '').slice(0, 500000),
+            tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
+              .slice(0, 10)
+              .map(tag => String(tag).trim().slice(0, 20))
+              .filter(Boolean),
             scheduledDate: item.scheduledDate || null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -406,6 +483,12 @@ const App = () => {
     const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
     if (!sanitizedFeedback) return showToast("Feedback cannot be empty", "error");
 
+    // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
+    if (isReadOnly && !postsRef.current.some(p => p.id === postId)) {
+       console.warn("⛔ ACCESS DENIED: Post not in guest view.");
+       return;
+    }
+
     try {
       await updateDoc(doc(db, 'posts', postId), {
         feedback: sanitizedFeedback,
@@ -417,48 +500,65 @@ const App = () => {
       console.error("Feedback Error:", error);
       showToast("Failed to send feedback", "error");
     }
-  }, [showToast]);
+  }, [isReadOnly, showToast]);
   
   // --- Filtering Logic ---
-  const uniqueClients = useMemo(() => {
-    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort();
+  // ⚡ OPTIMIZATION: Stabilize uniqueClients reference.
+  // We first create a stable string representation of the unique clients.
+  // This string only changes when the set of clients actually changes.
+  // Using a null-character separator (\0) to robustly handle names with commas.
+  const clientsHash = useMemo(() => {
+    return [...new Set(posts.map(p => p.client).filter(Boolean))].sort().join('\0');
   }, [posts]);
 
+  // Then we derive the uniqueClients array from that stable string.
+  // This ensures that uniqueClients (and callbacks that depend on it,
+  // like handleCloneToAll) maintains referential stability.
+  const uniqueClients = useMemo(() => {
+    return clientsHash ? clientsHash.split('\0') : [];
+  }, [clientsHash]);
+
   // ⚡ OPTIMIZATION: Move handler after uniqueClients to reuse memoized value
-  const handleCloneToAll = useCallback(async (post) => {
+  const handleCloneToAll = useCallback((post) => {
     if (isReadOnly) return;
-    if (uniqueClients.length === 0) return showToast("No other clients found.");
     
-    try {
-      const batch = writeBatch(db);
-      let count = 0;
+    const targetClients = uniqueClients.filter(c => c !== post.client);
+    if (targetClients.length === 0) return showToast("No other clients found.");
 
-      uniqueClients.forEach(clientName => {
-        if (clientName === post.client) return;
+    setConfirmModal({
+      title: "Blast: Clone to All Clients?",
+      message: `This will create a draft of this thread for ${targetClients.length} other clients.`,
+      onConfirm: async () => {
+        try {
+          const batch = writeBatch(db);
+          targetClients.forEach(clientName => {
+            const newDocRef = doc(collection(db, 'posts'));
 
-        const { id: _, ...cloneData } = post;
-        const newDocRef = doc(collection(db, 'posts'));
-
-        batch.set(newDocRef, {
-          ...cloneData,
-          client: clientName,
-          status: STATUS.DRAFT,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
-        });
-        count++;
-      });
-
-      if (count > 0) {
-        await batch.commit();
-        showToast(`Cloned to ${count} clients! 🚀`);
+            batch.set(newDocRef, {
+              uid: user.uid,
+              client: String(clientName).replace(/\//g, '').slice(0, 50),
+              content: post.content || "",
+              platform: post.platform || 'gmb',
+              status: STATUS.DRAFT,
+              approvalStatus: APPROVAL_STATUS.PENDING,
+              feedback: "",
+              imageUrl: (post.imageUrl || '').slice(0, 500000),
+              tags: post.tags || [],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              scheduledDate: post.scheduledDate instanceof Date ? post.scheduledDate.toISOString() : post.scheduledDate
+            });
+          });
+          await batch.commit();
+          showToast(`Cloned to ${targetClients.length} clients! 🚀`);
+          setConfirmModal(null);
+        } catch (error) {
+          console.error("Clone Error:", error);
+          showToast("Cloning failed", "error");
+        }
       }
-    } catch (error) {
-      console.error("Clone Error:", error);
-      showToast("Cloning failed", "error");
-    }
-  }, [isReadOnly, uniqueClients, showToast]);
+    });
+  }, [isReadOnly, uniqueClients, showToast, user]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
@@ -474,22 +574,28 @@ const App = () => {
   }, [handleSavePost]);
 
   const filteredPosts = useMemo(() => {
+    // ⚡ OPTIMIZATION: Normalize search query once per filter pass instead of inside the loop (O(1) vs O(N))
+    const searchLower = deferredSearchQuery.toLowerCase();
+
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
       const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
-      const searchLower = searchQuery.toLowerCase();
       const matchesSearch = 
-        !searchQuery ||
-        (post.content && post.content.toLowerCase().includes(searchLower)) ||
-        (post.client && post.client.toLowerCase().includes(searchLower));
+        !searchLower ||
+        post._searchContent?.includes(searchLower) ||
+        post._searchClient?.includes(searchLower);
 
       return matchesClient && matchesArchive && matchesSearch;
     });
-  }, [posts, filterClient, showArchived, searchQuery]);
+  }, [posts, filterClient, showArchived, deferredSearchQuery]);
 
   const calendarPosts = useMemo(() => {
+    // ⚡ OPTIMIZATION: Only perform filtering for calendar posts if the user
+    // is actually in the calendar view. This avoids unnecessary processing
+    // of the full post list in the grid or editor views.
+    if (view !== 'calendar') return [];
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
-  }, [filteredPosts]);
+  }, [filteredPosts, view]);
 
   const handleExport = useCallback((mode) => {
     let exportPosts = [];
@@ -530,8 +636,7 @@ const App = () => {
   if (view === 'editor') {
     return (
       <ErrorBoundary>
-        {/* ⚡ OPTIMIZATION: Lazy loading the Editor component reduces the initial bundle size
-            and improves the first paint time for the main dashboard. */}
+        {/* ⚡ Lazy-loaded Editor keeps the initial dashboard bundle small. */}
         <Suspense fallback={
           <div className="flex flex-col items-center justify-center h-screen bg-white">
             <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
@@ -540,6 +645,7 @@ const App = () => {
         }>
           <Editor
             post={editingPost}
+            isReadOnly={isReadOnly}
             clientMap={clientMap}
             mediaMap={mediaMap}
             uniqueClients={uniqueClients}
@@ -648,11 +754,15 @@ const App = () => {
                           <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
                         </label>
                         <div className="relative group">
-                          <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+                          <button
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                            aria-haspopup="true"
+                          >
                             <Download size={16} />
                             <span>Export CSV</span>
+                            <ChevronRight size={14} className="ml-auto opacity-40" />
                           </button>
-                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
+                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block group-focus-within:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
                             <button onClick={() => handleExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
                             <button onClick={() => handleExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
                             <button onClick={() => handleExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
@@ -689,12 +799,27 @@ const App = () => {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input 
+                  ref={searchInputRef}
                   type="text"
                   placeholder="Search..."
+                  aria-label="Search threads"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+                  className="w-full pl-9 pr-10 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
                 />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.focus();
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -709,11 +834,11 @@ const App = () => {
               {!isReadOnly && (
                 <button 
                   onClick={handleCopyLink} 
-                  className="flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-100 px-3 py-2 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-all"
+                  className={`flex items-center gap-2 border px-3 py-2 rounded-xl font-bold text-sm transition-all ${linkCopied ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-indigo-50 text-indigo-700 border-indigo-100 hover:bg-indigo-100'}`}
                   title="Copy Link for Client"
                 >
-                    <LinkIcon size={16} /> 
-                    <span className="hidden sm:inline">{filterClient ? `${filterClient} Link` : 'Master Link'}</span>
+                    {linkCopied ? <CheckCircle size={16} /> : <LinkIcon size={16} />}
+                    <span className="hidden sm:inline">{linkCopied ? 'Copied!' : (filterClient ? `${filterClient} Link` : 'Master Link')}</span>
                 </button>
               )}
 
@@ -792,7 +917,7 @@ const App = () => {
                                  <PostCard 
                                    key={p.id} 
                                    post={p} 
-                                   clientMap={clientMap}
+                                   clientSettings={clientMap[p.client] || DEFAULT_CLIENT_SETTINGS}
                                    resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
                                    isReadOnly={isReadOnly}
                                    onEdit={handleSelectPost}
@@ -834,15 +959,15 @@ const App = () => {
       {reviewingPost && (
         <ReviewModal
            post={reviewingPost}
-           mediaMap={mediaMap}
-           clientMap={clientMap}
+           clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
+           resolvedImageUrl={resolveImage(reviewingPost.imageUrl, mediaMap)}
            onClose={() => setReviewingPost(null)}
            onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
            onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} />
       )}
     </ErrorBoundary>
   );
