@@ -14,7 +14,6 @@
 
 * **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
 * **🔗 Client Approval Links:** Generate unique, shareable URLs for clients to review content without needing an account.
-* **🤖 AI Magic Rewriting:** (V2) Integrated Gemini AI to rephrase content instantly (Professional, Punchy, or Emojified).
 * **🖼️ Smart Media Handling:** Automatic client-side image compression to optimize storage within Firestore constraints.
 * **📅 Calendar & Grid Views:** Visualize content schedules at a glance.
 * **🔒 Secure Architecture:** Environment variable protection for API keys and sensitive data.
@@ -40,8 +39,8 @@
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/YOUR_USERNAME/spool-app.git](https://github.com/YOUR_USERNAME/spool-app.git)
-    cd spool-app
+    git clone https://github.com/Stitch-TEC/spool-social.git
+    cd spool-social
     ```
 
 2.  **Install dependencies:**
@@ -58,7 +57,6 @@
     VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
     VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
     VITE_FIREBASE_APP_ID=your_app_id
-    VITE_GEMINI_API_KEY=your_gemini_key_optional
     ```
 
 4.  **Run Locally:**
@@ -70,10 +68,10 @@
 
 ## 📦 Deployment
 
-This project is configured for automated deployment to **GitHub Pages**.
+Every push to `main` is automatically built and deployed to **GitHub Pages** via GitHub Actions (`.github/workflows/deploy.yml`). The Firebase web config is injected from repository **Actions variables**.
 
-### Manual Deploy
-To build and deploy the project from your local machine:
+### Manual Deploy (fallback)
+To build and deploy from your local machine:
 
 ```bash
 npm run deploy
