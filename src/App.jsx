@@ -102,17 +102,28 @@ const App = () => {
 
   // Derived State (Read Only Mode)
   const sharedUid = new URLSearchParams(window.location.search).get('uid');
-  const isReadOnly = !!sharedUid; 
+  // The owner viewing their own ?uid= link gets the full dashboard; everyone else
+  // (real guests) is read-only and must use a per-client review link.
+  const isReadOnly = !!sharedUid && sharedUid !== user?.uid; 
 
   // --- 1. Auth Listener ---
   useEffect(() => {
-    if (sharedUid) {
-      signInAnonymously(auth).catch(err => console.error("Guest Auth Failed", err));
-    }
-    
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsLoading(false);
+      if (currentUser) {
+        // A real session (the owner, or an already-signed-in guest).
+        setUser(currentUser);
+        setIsLoading(false);
+      } else if (sharedUid) {
+        // No session but viewing a share link → sign in as an anonymous guest.
+        // (Done here, not eagerly, so an owner opening their own link keeps their session.)
+        signInAnonymously(auth).catch(err => {
+          console.error("Guest Auth Failed", err);
+          setIsLoading(false);
+        });
+      } else {
+        setUser(null);
+        setIsLoading(false);
+      }
     });
     return () => unsubscribe();
   }, [sharedUid]);
@@ -129,10 +140,12 @@ const App = () => {
     const params = new URLSearchParams(window.location.search);
     const clientParam = params.get('client');
 
-    // 🔒 SECURITY: Guests MUST have a client param
-    if (sharedUid && !clientParam) {
+    // 🔒 SECURITY: Real guests (anyone but the owner) MUST scope to a client.
+    // The owner viewing their own ?uid= link loads all their clients (dashboard).
+    const isGuest = sharedUid && sharedUid !== user?.uid;
+    if (isGuest && !clientParam) {
       console.warn("⛔ ACCESS DENIED: Missing client filter for guest.");
-      return; 
+      return;
     }
 
     const constraints = [where('uid', '==', targetUid)];
