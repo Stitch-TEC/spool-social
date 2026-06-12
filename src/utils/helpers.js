@@ -1,5 +1,3 @@
-import { PLATFORMS } from '../constants';
-
 // ⚡ OPTIMIZATION: Shared Intl.DateTimeFormat instances are ~50x faster than
 // repeated toLocaleString() calls because they avoid re-compiling formatting patterns.
 export const DATE_FORMATTERS = {
@@ -9,12 +7,7 @@ export const DATE_FORMATTERS = {
   time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' })
 };
 
-export const resolveImage = (imgRef, mediaMap) => {
-    if (!imgRef) return null;
-    return imgRef.startsWith('data:') ? imgRef : mediaMap[imgRef] || null;
-};
-
-// ✅ RESTORED: Image Compression Logic
+// Image Compression Logic
 export const processImageFile = (file) => {
   return new Promise((resolve, reject) => {
     if (!file) reject("No file provided");

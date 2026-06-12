@@ -8,7 +8,7 @@ import MobilePreview from './MobilePreview';
 import SparkDeck from './SparkDeck';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
-import { resolveImage, processImageFile } from '../utils/helpers';
+import { processImageFile } from '../utils/helpers';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -25,7 +25,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   instagram: 'border-pink-500 bg-pink-50',
 };
 
-const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, isReadOnly }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, isReadOnly }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -264,7 +264,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
               </label>
             ) : (
               <div className="relative rounded-xl overflow-hidden border border-slate-200 group">
-                <img src={resolveImage(formData.imageUrl, mediaMap)} className="w-full h-48 object-cover" alt="Preview" />
+                <img src={formData.imageUrl} className="w-full h-48 object-cover" alt="Preview" />
                 <button onClick={() => setFormData({ ...formData, imageUrl: '' })} title="Remove Image" aria-label="Remove Image" className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full hover:bg-rose-600 transition-colors backdrop-blur-sm"><Trash2 size={16}/></button>
               </div>
             )}
@@ -280,7 +280,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
          </div>
          <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
             <MobilePreview
-              post={{...formData, imageUrl: resolveImage(formData.imageUrl, mediaMap)}}
+              post={formData}
               clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
             />
          </div>

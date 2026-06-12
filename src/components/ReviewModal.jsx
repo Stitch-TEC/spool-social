@@ -4,7 +4,7 @@ import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, onRequestChanges, onClose }) => {
+const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, onClose }) => {
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
@@ -25,7 +25,7 @@ const ReviewModal = ({ post, clientSettings = {}, resolvedImageUrl, onApprove, o
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] sm:h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
         <div className="flex-1 bg-slate-100 p-4 sm:p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto">
              <div className="scale-75 sm:scale-90 md:scale-100 origin-center">
-                <MobilePreview post={{...post, imageUrl: resolvedImageUrl}} clientSettings={clientSettings} />
+                <MobilePreview post={post} clientSettings={clientSettings} />
              </div>
         </div>
         <div className="flex-1 flex flex-col bg-white">

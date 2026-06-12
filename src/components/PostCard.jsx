@@ -7,7 +7,7 @@ import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
@@ -78,7 +78,7 @@ const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, on
         {/* ⚡ OPTIMIZATION: Use native browser-level lazy loading for post images to reduce initial network and memory usage for off-screen items. */}
         <div className="mb-4 flex-1 cursor-pointer" onClick={() => onEdit(post)}>
           <p className="text-slate-600 text-sm line-clamp-3 leading-relaxed font-medium">{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
-          {resolvedImageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={resolvedImageUrl} alt="Asset" className="w-full h-full object-cover" loading="lazy" /></div>}
+          {post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt="Asset" className="w-full h-full object-cover" loading="lazy" /></div>}
         </div>
         
         {post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">"{post.feedback}"</div>}

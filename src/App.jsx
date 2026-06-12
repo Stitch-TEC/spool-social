@@ -1,291 +1,76 @@
-import React, { useState, useEffect, useMemo, Component, useCallback, lazy, Suspense, useDeferredValue, useRef } from 'react';
-import { 
-  Layout, LogOut, Plus, Search, Menu, 
-  Calendar as CalendarIcon, Grid, Share2, 
-  ShieldCheck, Link as LinkIcon, AlertTriangle,
-  Loader2, Filter, X, Download, Upload, Archive, Settings,
-  CheckCircle, ChevronRight
-} from 'lucide-react';
-import { 
-  signInWithPopup, 
-  signInAnonymously, 
-  signOut, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  collection, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  onSnapshot,
-  query, 
-  where,
+import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
+import { Loader2, ShieldCheck, X } from 'lucide-react';
+import {
+  collection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
   writeBatch
 } from 'firebase/firestore';
 
-import { auth, db, googleProvider } from './config/firebase';
+import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
 import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
-import { resolveImage } from './utils/helpers';
+import useAuth from './hooks/useAuth';
+import usePosts from './hooks/usePosts';
+import useToast from './hooks/useToast';
+import ErrorBoundary from './components/ErrorBoundary';
+import LoginScreen from './components/LoginScreen';
+import Sidebar from './components/Sidebar';
+import DashboardHeader from './components/DashboardHeader';
+import PostGrid from './components/PostGrid';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
-import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 
 const Editor = lazy(() => import('./components/Editor'));
 
-// --- Error Boundary Component ---
-class ErrorBoundary extends Component {
-  constructor(props) { super(props); this.state = { hasError: false }; }
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="h-screen flex items-center justify-center bg-slate-50 p-6">
-          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md text-center border border-rose-100">
-            <div className="w-12 h-12 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
-              <AlertTriangle className="text-rose-500" />
-            </div>
-            <h2 className="text-xl font-bold text-slate-800 mb-2">Something went wrong</h2>
-            <p className="text-slate-500 mb-6">We encountered an unexpected error.</p>
-            <button onClick={() => window.location.reload()} className="bg-slate-900 text-white px-6 py-2 rounded-lg font-bold">
-              Reload App
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 const App = () => {
-  // --- State ---
-  const [user, setUser] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [mediaMap, setMediaMap] = useState({});
-  const [view, setView] = useState('grid'); // 'grid', 'calendar', 'editor'
-  // ⚡ OPTIMIZATION: Use lazy initializer to avoid creating a new Date object on every render of App.
+  // --- Session & data ---
+  const { toast, showToast, hideToast } = useToast();
+  const { user, authLoading, sharedUid, isReadOnly, signIn, signOutAndExit } = useAuth(showToast);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid);
+  const isLoading = authLoading || postsLoading;
+
+  const clientParam = useMemo(
+    () => new URLSearchParams(window.location.search).get('client'),
+    []
+  );
+
+  // --- UI state ---
+  const [view, setView] = useState('grid'); // 'grid' | 'calendar' | 'editor'
   const [currentDate, setCurrentDate] = useState(() => new Date());
-  const [clientMap, setClientMap] = useState({});
-
-  // Filtering & Search
-  const [filterClient, setFilterClient] = useState(null); 
+  const [filterClient, setFilterClient] = useState(clientParam);
   const [showArchived, setShowArchived] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');     
-  // ⚡ OPTIMIZATION: Use deferred value for the search query.
-  // This keeps the input field responsive while the expensive filtering
-  // of the post list is deferred until the main thread is free.
+  const [searchQuery, setSearchQuery] = useState('');
+  // Deferred so the input stays responsive while filtering large lists.
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [sidebarOpen, setSidebarOpen] = useState(false);  
-
-  // UI States
-  const [isLoading, setIsLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingPost, setEditingPost] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
-  const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const searchInputRef = useRef(null);
-  const postsRef = useRef([]);
 
-  // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks
+  // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
+  const postsRef = useRef([]);
   useEffect(() => {
     postsRef.current = posts;
   }, [posts]);
 
-  // Derived State (Read Only Mode)
-  const sharedUid = new URLSearchParams(window.location.search).get('uid');
-  // The owner viewing their own ?uid= link gets the full dashboard; everyone else
-  // (real guests) is read-only and must use a per-client review link.
-  const isReadOnly = !!sharedUid && sharedUid !== user?.uid; 
-
-  // --- 1. Auth Listener ---
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        // A real session (the owner, or an already-signed-in guest).
-        setUser(currentUser);
-        setIsLoading(false);
-      } else if (sharedUid) {
-        // No session but viewing a share link → sign in as an anonymous guest.
-        // (Done here, not eagerly, so an owner opening their own link keeps their session.)
-        signInAnonymously(auth).catch(err => {
-          console.error("Guest Auth Failed", err);
-          setIsLoading(false);
-        });
-      } else {
-        setUser(null);
-        setIsLoading(false);
-      }
-    });
-    return () => unsubscribe();
-  }, [sharedUid]);
-
-  // --- 2. Data Fetcher (Secure & Smart) ---
-  useEffect(() => {
-    if (!user && !sharedUid) return;
-
-    const targetUid = sharedUid || user?.uid;
-    if (!targetUid) {
-        return;
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    const clientParam = params.get('client');
-
-    // 🔒 SECURITY: Real guests (anyone but the owner) MUST scope to a client.
-    // The owner viewing their own ?uid= link loads all their clients (dashboard).
-    const isGuest = sharedUid && sharedUid !== user?.uid;
-    if (isGuest && !clientParam) {
-      console.warn("⛔ ACCESS DENIED: Missing client filter for guest.");
-      return;
-    }
-
-    const constraints = [where('uid', '==', targetUid)];
-    if (clientParam) {
-      constraints.push(where('client', '==', clientParam));
-    }
-
-    const q = query(collection(db, 'posts'), ...constraints);
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (clientParam) {
-        setFilterClient(clientParam);
-      }
-
-      // ⚡ OPTIMIZATION: Use docChanges() for O(M) updates to posts.
-      // This avoids redundant data parsing and object creation for unchanged documents,
-      // significantly improving performance as the collection grows.
-      setPosts(prevPosts => {
-        // ⚡ OPTIMIZATION: Initialize Map with a loop to avoid intermediate array allocations.
-        const postMap = new Map();
-        prevPosts.forEach(p => postMap.set(p.id, p));
-
-        let hasChanges = false;
-
-        snapshot.docChanges().forEach(change => {
-          if (change.type === 'added' || change.type === 'modified') {
-            const data = change.doc.data();
-            const existing = postMap.get(change.doc.id);
-
-            // ⚡ OPTIMIZATION: Preserve Date object references by comparing raw strings.
-            // This prevents unnecessary re-renders in components that depend on stable props.
-            const getStableDate = (newVal, field) => {
-              if (!newVal) return null;
-              if (existing && existing[`_raw_${field}`] === newVal) {
-                return existing[field];
-              }
-              const d = new Date(newVal);
-              return isNaN(d.getTime()) ? null : d;
-            };
-
-            const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
-            const createdAt = getStableDate(data.createdAt, 'createdAt') || new Date();
-
-            // ⚡ OPTIMIZATION: Pre-calculate numeric timestamp for O(1) sort comparisons.
-            const _sortTs = (scheduledDate || createdAt).getTime();
-
-            postMap.set(change.doc.id, {
-              id: change.doc.id,
-              ...data,
-              scheduledDate,
-              createdAt,
-              _raw_scheduledDate: data.scheduledDate,
-              _raw_createdAt: data.createdAt,
-              _sortTs,
-              // ⚡ OPTIMIZATION: Cache lowercase versions for faster search filtering
-              _searchContent: (data.content || "").toLowerCase(),
-              _searchClient: (data.client || "").toLowerCase()
-            });
-            hasChanges = true;
-          } else if (change.type === 'removed') {
-            postMap.delete(change.doc.id);
-            hasChanges = true;
-          }
-        });
-
-        if (!hasChanges) return prevPosts;
-
-        const newPosts = Array.from(postMap.values());
-
-        // ⚡ OPTIMIZATION: Sort using pre-calculated numeric timestamp (O(1) comparison).
-        newPosts.sort((a, b) => b._sortTs - a._sortTs);
-
-        return newPosts;
-      });
-
-      // ⚡ OPTIMIZATION: Only process changed documents to update media map (O(M) vs O(N))
-      setMediaMap(prev => {
-        let hasNew = false;
-        const next = { ...prev };
-        snapshot.docChanges().forEach(change => {
-          if (change.type === 'added' || change.type === 'modified') {
-            const img = change.doc.data().imageUrl;
-            if (img && !next[img]) {
-              next[img] = img;
-              hasNew = true;
-            }
-          }
-        });
-        return hasNew ? next : prev;
-      });
-
-      setIsLoading(false);
-    }, (err) => {
-      console.error("🔥 Firestore Error:", err);
-      setIsLoading(false);
-    });
-
-    // 🔒 Scope client branding to the workspace owner (multi-tenant isolation), and
-    // ⚡ use docChanges() for O(M) updates that preserve per-client object references.
-    // Keyed by client *name* so PostCard/MobilePreview lookups by post.client resolve
-    // even though the doc id is `${uid}__${name}` (see ClientSettingsModal).
-    const clientQuery = query(collection(db, 'clients'), where('uid', '==', targetUid));
-    const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
-      setClientMap(prev => {
-        let hasChanges = false;
-        const next = { ...prev };
-        snapshot.docChanges().forEach(change => {
-          const data = change.doc.data();
-          if (!data.name) return;
-          if (change.type === 'added' || change.type === 'modified') {
-            next[data.name] = data;
-            hasChanges = true;
-          } else if (change.type === 'removed') {
-            delete next[data.name];
-            hasChanges = true;
-          }
-        });
-        return hasChanges ? next : prev;
-      });
-    }, (err) => console.error("🔥 Clients fetch error:", err));
-
-    return () => { unsubscribe(); clientUnsub(); };
-  }, [user, sharedUid]);
-
-  // --- 3. Dynamic Title ---
+  // --- Dynamic Title ---
   useEffect(() => {
     if (isReadOnly) {
-      const clientName = new URLSearchParams(window.location.search).get('client');
-      document.title = clientName ? `${clientName} | Spool Review` : 'Spool Client View';
+      document.title = clientParam ? `${clientParam} | Spool Review` : 'Spool Client View';
     } else {
       document.title = 'Spool | Creator Dashboard';
     }
-  }, [isReadOnly]);
+  }, [isReadOnly, clientParam]);
 
-  // --- Helpers ---
-  // Toast dismissal is owned by the <Toast> component itself (re-armed per
-  // message), so consecutive toasts each get their full display time.
-  const showToast = useCallback((message, type = 'success') => {
-    setToast({ message, type });
-  }, []);
-
+  // --- Link sharing ---
   const handleCopyLink = useCallback(async () => {
     if (!user) return;
 
@@ -308,25 +93,6 @@ const App = () => {
       showToast("Couldn't copy — your browser blocked clipboard access", "error");
     }
   }, [filterClient, user, showToast]);
-
-  const handleSignIn = useCallback(() => {
-    signInWithPopup(auth, googleProvider).catch((err) => {
-      // Closing the popup isn't an error worth surfacing.
-      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') return;
-      console.error("Sign-in Error:", err);
-      showToast("Sign-in failed. Please try again.", "error");
-    });
-  }, [showToast]);
-
-  // Sign out and strip query params. Reloading with ?uid= intact would
-  // instantly re-sign a guest in anonymously (an inescapable loop).
-  const handleSignOut = useCallback(() => {
-    signOut(auth)
-      .catch(() => {})
-      .finally(() => {
-        window.location.href = window.location.origin + window.location.pathname;
-      });
-  }, []);
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData) => {
@@ -351,7 +117,7 @@ const App = () => {
     }
 
     try {
-      // 1. Safe Date Conversion Helper
+      // Safe Date Conversion Helper
       const getSafeDateString = (val) => {
         if (!val) return null;
         if (typeof val === 'string') return val; // Already a string from the input
@@ -359,11 +125,11 @@ const App = () => {
         return null; // Invalid/Empty
       };
 
-      // 2. Prepare Data - EXPLICIT MAPPING to prevent mass assignment
+      // 🔒 EXPLICIT MAPPING to prevent mass assignment
       const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
       const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
 
-      const postData = { 
+      const postData = {
         client,
         content,
         platform: platformId,
@@ -372,12 +138,11 @@ const App = () => {
         feedback: (formData.feedback || "").trim().slice(0, 500),
         imageUrl: (formData.imageUrl || '').slice(0, 500000),
         tags,
-        uid: user.uid, 
-        scheduledDate: getSafeDateString(formData.scheduledDate), 
-        updatedAt: new Date().toISOString() 
+        uid: user.uid,
+        scheduledDate: getSafeDateString(formData.scheduledDate),
+        updatedAt: new Date().toISOString()
       };
 
-      // 3. Save
       if (formData.id) {
         await updateDoc(doc(db, 'posts', formData.id), postData);
         showToast("Thread updated");
@@ -385,7 +150,7 @@ const App = () => {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
         showToast("New thread created!");
       }
-      
+
       setView('grid');
       setEditingPost(null);
     } catch (error) {
@@ -460,7 +225,6 @@ const App = () => {
     }
   }, [isReadOnly, showToast]);
 
-
   const handleImport = useCallback(async (e) => {
     if (isReadOnly) return;
     const file = e.target.files[0];
@@ -521,8 +285,8 @@ const App = () => {
 
     // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
     if (isReadOnly && !postsRef.current.some(p => p.id === postId)) {
-       console.warn("⛔ ACCESS DENIED: Post not in guest view.");
-       return;
+      console.warn("⛔ ACCESS DENIED: Post not in guest view.");
+      return;
     }
 
     try {
@@ -537,27 +301,22 @@ const App = () => {
       showToast("Failed to send feedback", "error");
     }
   }, [isReadOnly, showToast]);
-  
-  // --- Filtering Logic ---
-  // ⚡ OPTIMIZATION: Stabilize uniqueClients reference.
-  // We first create a stable string representation of the unique clients.
-  // This string only changes when the set of clients actually changes.
-  // Using a null-character separator (\0) to robustly handle names with commas.
+
+  // --- Derived data ---
+  // ⚡ Stabilize uniqueClients reference: derive from a hash string that only
+  // changes when the set of clients actually changes. Null-char separator
+  // handles names containing commas.
   const clientsHash = useMemo(() => {
     return [...new Set(posts.map(p => p.client).filter(Boolean))].sort().join('\0');
   }, [posts]);
 
-  // Then we derive the uniqueClients array from that stable string.
-  // This ensures that uniqueClients (and callbacks that depend on it,
-  // like handleCloneToAll) maintains referential stability.
   const uniqueClients = useMemo(() => {
     return clientsHash ? clientsHash.split('\0') : [];
   }, [clientsHash]);
 
-  // ⚡ OPTIMIZATION: Move handler after uniqueClients to reuse memoized value
   const handleCloneToAll = useCallback((post) => {
     if (isReadOnly) return;
-    
+
     const targetClients = uniqueClients.filter(c => c !== post.client);
     if (targetClients.length === 0) return showToast("No other clients found.");
 
@@ -618,13 +377,12 @@ const App = () => {
   }, [handleSavePost]);
 
   const filteredPosts = useMemo(() => {
-    // ⚡ OPTIMIZATION: Normalize search query once per filter pass instead of inside the loop (O(1) vs O(N))
     const searchLower = deferredSearchQuery.toLowerCase();
 
     return posts.filter(post => {
       const matchesClient = filterClient ? post.client === filterClient : true;
       const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
-      const matchesSearch = 
+      const matchesSearch =
         !searchLower ||
         post._searchContent?.includes(searchLower) ||
         post._searchClient?.includes(searchLower);
@@ -634,9 +392,6 @@ const App = () => {
   }, [posts, filterClient, showArchived, deferredSearchQuery]);
 
   const calendarPosts = useMemo(() => {
-    // ⚡ OPTIMIZATION: Only perform filtering for calendar posts if the user
-    // is actually in the calendar view. This avoids unnecessary processing
-    // of the full post list in the grid or editor views.
     if (view !== 'calendar') return [];
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts, view]);
@@ -654,27 +409,10 @@ const App = () => {
     showToast("Export complete! 📥");
   }, [posts, filteredPosts, showToast]);
 
-
   // --- Render ---
 
   if (!user && !sharedUid) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-sm w-full text-center">
-          <div className="w-16 h-16 bg-indigo-600 rounded-xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-indigo-200">
-             <Layout className="text-white" size={32} />
-          </div>
-          <h1 className="text-3xl font-black text-slate-900 mb-2">Spool</h1>
-          <p className="text-slate-500 mb-8">Creative Workflow Management</p>
-          <button
-            onClick={handleSignIn}
-            className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-2"
-          >
-            <Layout size={20} /> Sign in with Google
-          </button>
-        </div>
-      </div>
-    );
+    return <LoginScreen onSignIn={signIn} />;
   }
 
   if (view === 'editor') {
@@ -691,7 +429,6 @@ const App = () => {
             post={editingPost}
             isReadOnly={isReadOnly}
             clientMap={clientMap}
-            mediaMap={mediaMap}
             uniqueClients={uniqueClients}
             showToast={showToast}
             onSave={handleSavePost}
@@ -705,285 +442,93 @@ const App = () => {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 flex">
-        
-        {/* --- SIDEBAR (Desktop/Mobile) --- */}
+
         {!isReadOnly && (
-          <>
-            {/* Mobile Sidebar Overlay */}
-            {sidebarOpen && (
-              <div
-                className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden transition-opacity"
-                onClick={() => setSidebarOpen(false)}
-              />
-            )}
-
-            <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:static`}>
-              <div className="p-6 h-full flex flex-col">
-              {/* Sidebar Header with Branding */}
-              <div className="flex flex-col mb-8">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                     <Layout className="text-white" size={18} />
-                  </div>
-                  <span className="font-black text-xl text-slate-900">Spool</span>
-                </div>
-                {/* ✅ BRANDING RESTORED */}
-                <a 
-                   href="https://stitchtec.com" 
-                   target="_blank" 
-                   rel="noopener noreferrer" 
-                   className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600 mt-2 ml-1"
-                >
-                   by Stitch TEC
-                </a>
-              </div>
-
-              {/* Navigation */}
-              <div className="flex-1 overflow-y-auto">
-                 <div className="mb-6">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Views</h3>
-                    <div className="space-y-1">
-                        <button
-                          onClick={() => { setShowArchived(false); setSidebarOpen(false); }}
-                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${!showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Grid size={16} /> <span>Active Threads</span>
-                          </div>
-                        </button>
-                        <button
-                          onClick={() => { setShowArchived(true); setSidebarOpen(false); }}
-                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${showArchived ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Archive size={16} /> <span>Archived</span>
-                          </div>
-                        </button>
-                    </div>
-                 </div>
-
-                 <div className="mb-6">
-                    <div className="flex items-center justify-between mb-3 w-full">
-                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Clients</h3>
-                       {!isReadOnly && (
-                         <button onClick={() => setIsClientSettingsOpen(true)} className="p-1 rounded-md text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors" title="Brand Settings"><Settings size={14}/></button>
-                       )}
-                    </div>
-                    <div className="space-y-1">
-                        <button 
-                          onClick={() => { setFilterClient(null); setSidebarOpen(false); }}
-                          className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${!filterClient ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
-                        >
-                          All Clients
-                        </button>
-                        {uniqueClients.map(client => (
-                          <button 
-                            key={client}
-                            onClick={() => { setFilterClient(client); setSidebarOpen(false); }}
-                            className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${filterClient === client ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}
-                          >
-                            {client}
-                          </button>
-                        ))}
-                    </div>
-                 </div>
-
-                 <div className="mb-6">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
-                    <div className="space-y-2">
-                        <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
-                          <Upload size={16} />
-                          <span>Import CSV</span>
-                          <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
-                        </label>
-                        {/* Click-toggled (hover-only flyouts are unreachable on touch devices) */}
-                        <div className="relative group">
-                          <button
-                            onClick={() => setExportMenuOpen(o => !o)}
-                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                            aria-haspopup="true"
-                            aria-expanded={exportMenuOpen}
-                          >
-                            <Download size={16} />
-                            <span>Export CSV</span>
-                            <ChevronRight size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-90' : ''}`} />
-                          </button>
-                          <div className={`absolute left-full top-0 ml-2 ${exportMenuOpen ? 'block' : 'hidden [@media(pointer:fine)]:group-hover:block group-focus-within:block'} bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40`}>
-                            <button onClick={() => { handleExport('current'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
-                            <button onClick={() => { handleExport('archived'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
-                            <button onClick={() => { handleExport('all'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
-                          </div>
-                        </div>
-                    </div>
-                 </div>
-                </div>
-              </div>
-            </aside>
-          </>
+          <Sidebar
+            open={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+            showArchived={showArchived}
+            onShowArchived={setShowArchived}
+            filterClient={filterClient}
+            onFilterClient={setFilterClient}
+            uniqueClients={uniqueClients}
+            onOpenClientSettings={() => setIsClientSettingsOpen(true)}
+            onImport={handleImport}
+            onExport={handleExport}
+          />
         )}
 
-        {/* --- MAIN CONTENT --- */}
         <main className="flex-1 min-w-0 flex flex-col min-h-screen">
-          
-          <header className="bg-white border-b border-slate-200 sticky top-0 z-40 px-4 sm:px-6 h-16 flex items-center justify-between shadow-sm">
-            
-            <div className="flex items-center gap-3">
-              {!isReadOnly && (
-                <button onClick={() => setSidebarOpen(!sidebarOpen)} title="Toggle Sidebar" aria-label="Toggle Sidebar" className="lg:hidden p-2 text-slate-500 hover:bg-slate-100 rounded-lg">
-                  <Menu size={24} />
-                </button>
-              )}
-              
-              {/* Mobile/Client Branding (owners get branding in the sidebar; hide on
-                  narrow screens to leave room for the view/new/link actions) */}
-              <div className={`flex-col leading-none ${!isReadOnly ? 'hidden sm:flex lg:hidden' : 'flex'}`}>
-                <h1 className="text-xl font-black text-slate-900">Spool</h1>
-                <a href="https://stitchtec.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
-              </div>
+
+          <DashboardHeader
+            isReadOnly={isReadOnly}
+            view={view}
+            onViewChange={setView}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onToggleSidebar={() => setSidebarOpen(o => !o)}
+            linkCopied={linkCopied}
+            onCopyLink={handleCopyLink}
+            filterClient={filterClient}
+            onNew={() => setView('editor')}
+            onSignOut={signOutAndExit}
+          />
+
+          {postsError && (
+            <div className="bg-rose-50 border-b border-rose-100 px-4 sm:px-6 py-2 text-sm text-rose-700 font-medium text-center" role="alert">
+              Connection issue — live updates may be delayed. Retrying automatically…
             </div>
-
-            <div className="flex-1 max-w-md mx-2 sm:mx-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input 
-                  ref={searchInputRef}
-                  type="text"
-                  placeholder="Search..."
-                  aria-label="Search threads"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-10 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => {
-                      setSearchQuery('');
-                      searchInputRef.current?.focus();
-                    }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
-                    aria-label="Clear search"
-                    title="Clear search"
-                  >
-                    <X size={16} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 sm:gap-3">
-              {!isReadOnly && (
-                <div className="flex bg-slate-100 p-1 rounded-lg">
-                  <button onClick={() => setView('grid')} className={`p-1.5 rounded-md ${view === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Grid View" aria-label="Grid View"><Grid size={18}/></button>
-                  <button onClick={() => setView('calendar')} className={`p-1.5 rounded-md ${view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Calendar View" aria-label="Calendar View"><CalendarIcon size={18}/></button>
-                </div>
-              )}
-
-              {!isReadOnly && (
-                <button 
-                  onClick={handleCopyLink} 
-                  className={`flex items-center gap-2 border px-3 py-2 rounded-xl font-bold text-sm transition-all ${linkCopied ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-indigo-50 text-indigo-700 border-indigo-100 hover:bg-indigo-100'}`}
-                  title="Copy Link for Client"
-                >
-                    {linkCopied ? <CheckCircle size={16} /> : <LinkIcon size={16} />}
-                    <span className="hidden sm:inline">{linkCopied ? 'Copied!' : (filterClient ? `${filterClient} Link` : 'Master Link')}</span>
-                </button>
-              )}
-
-              {!isReadOnly && (
-                <button
-                  onClick={() => setView('editor')}
-                  className="flex items-center gap-2 bg-indigo-600 text-white px-3 sm:px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 hover:scale-105 transition-transform"
-                  aria-label="Create New Thread"
-                >
-                  <Plus size={18} /> <span className="hidden md:inline">New</span>
-                </button>
-              )}
-              
-              <button
-                 onClick={handleSignOut}
-                 className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
-                 title={isReadOnly ? "Exit View" : "Log Out"}
-                 aria-label={isReadOnly ? "Exit View" : "Log Out"}
-               >
-                 <LogOut size={20} />
-              </button>
-            </div>
-          </header>
+          )}
 
           <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-             <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                  {view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}
-                  {filterClient && !isReadOnly && (
-                    <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
-                  )}
-                </h2>
-             </div>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                {view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}
+                {filterClient && !isReadOnly && (
+                  <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
+                )}
+              </h2>
+            </div>
 
-             {isLoading ? (
-               <div className="flex flex-col items-center justify-center h-64">
-                 <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
-                 <p className="text-slate-400 font-medium animate-pulse">Loading content...</p>
-               </div>
-             ) : (
-               <>
-                 {isReadOnly && !new URLSearchParams(window.location.search).get('client') ? (
-                    <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
-                        <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                          <ShieldCheck className="text-rose-400" size={32} />
-                        </div>
-                        <h3 className="text-slate-900 font-bold text-lg">Access Restricted</h3>
-                        <p className="text-slate-500 mt-2">You must use a specific client link to view content.</p>
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center h-64">
+                <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+                <p className="text-slate-400 font-medium animate-pulse">Loading content...</p>
+              </div>
+            ) : (
+              <>
+                {isReadOnly && !clientParam ? (
+                  <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
+                    <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <ShieldCheck className="text-rose-400" size={32} />
                     </div>
-                 ) : (
-                    <>
-                       {view === 'calendar' ? (
-                         // 🛡️ SAFE CALENDAR: Only show posts that actually have a date
-                         <CalendarView 
-                            posts={calendarPosts}
-                            currentDate={currentDate}
-                            onDateChange={setCurrentDate}
-                            onEdit={handleSelectPost}
-                         />
-                       ) : (
-                         <>
-                           {filteredPosts.length === 0 ? (
-                             <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
-                               <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4"><Grid className="text-slate-300" /></div>
-                               <h3 className="text-slate-900 font-bold text-lg">No threads found</h3>
-                               {!isReadOnly && <button onClick={() => setView('editor')} className="text-indigo-600 font-bold hover:underline">Create Thread</button>}
-                             </div>
-                           ) : (
-                             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                               {filteredPosts.map(p => (
-                                 // ⚡ OPTIMIZATION: Resolve image URLs here instead of inside PostCard.
-                                 // Passing a primitive string (resolvedImageUrl) instead of the entire mediaMap object
-                                 // makes React.memo(PostCard) much more effective, as it won't re-render
-                                 // Pass the resolved image as string rather than computing it down below.
-                                 // Now also pass clientMap directly
-                                 <PostCard 
-                                   key={p.id} 
-                                   post={p} 
-                                   clientSettings={clientMap[p.client] || DEFAULT_CLIENT_SETTINGS}
-                                   resolvedImageUrl={resolveImage(p.imageUrl, mediaMap)}
-                                   isReadOnly={isReadOnly}
-                                   onEdit={handleSelectPost}
-                                   onCloneToAll={handleCloneToAll} 
-                                   onDuplicate={handleDuplicatePost}
-                                   onDelete={handleDeleteClick}
-                                   onStatusChange={handleStatusChange}
-                                   onArchive={handleArchivePost}
-                                   onRestore={handleRestorePost}
-                                 />
-                               ))}
-                             </div>
-                           )}
-                         </>
-                       )}
-                    </>
-                 )}
-               </>
-             )}
+                    <h3 className="text-slate-900 font-bold text-lg">Access Restricted</h3>
+                    <p className="text-slate-500 mt-2">You must use a specific client link to view content.</p>
+                  </div>
+                ) : view === 'calendar' ? (
+                  <CalendarView
+                    posts={calendarPosts}
+                    currentDate={currentDate}
+                    onDateChange={setCurrentDate}
+                    onEdit={handleSelectPost}
+                  />
+                ) : (
+                  <PostGrid
+                    posts={filteredPosts}
+                    clientMap={clientMap}
+                    isReadOnly={isReadOnly}
+                    onEdit={handleSelectPost}
+                    onCloneToAll={handleCloneToAll}
+                    onDuplicate={handleDuplicatePost}
+                    onDelete={handleDeleteClick}
+                    onStatusChange={handleStatusChange}
+                    onArchive={handleArchivePost}
+                    onRestore={handleRestorePost}
+                    onCreate={() => setView('editor')}
+                  />
+                )}
+              </>
+            )}
           </div>
 
           <footer className="py-6 text-center border-t border-slate-200 bg-white">
@@ -1001,15 +546,14 @@ const App = () => {
           onCancel={() => setConfirmModal(null)}
         />
       )}
-      {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast}/>}
       {reviewingPost && (
         <ReviewModal
-           post={reviewingPost}
-           clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
-           resolvedImageUrl={resolveImage(reviewingPost.imageUrl, mediaMap)}
-           onClose={() => setReviewingPost(null)}
-           onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
-           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
+          post={reviewingPost}
+          clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
+          onClose={() => setReviewingPost(null)}
+          onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
+          onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
       {isClientSettingsOpen && (
