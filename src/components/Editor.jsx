@@ -5,9 +5,17 @@ import {
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
+import SparkDeck from './SparkDeck';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { resolveImage, processImageFile } from '../utils/helpers';
+
+// Converts a Date to a `datetime-local` input value in the user's local timezone.
+// (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
+const toLocalISOString = (date) => {
+  const tzOffset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - tzOffset).toISOString().slice(0, 16);
+};
 
 // Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
 const PLATFORM_ACTIVE_CLASSES = {
@@ -17,7 +25,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   instagram: 'border-pink-500 bg-pink-50',
 };
 
-const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, onOpenSparkDeck, isReadOnly }) => {
+const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, showToast, isReadOnly }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -28,11 +36,12 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
     content: '',
     client: '',
     imageUrl: '',
-    scheduledDate: new Date().toISOString().slice(0, 16),
+    scheduledDate: toLocalISOString(new Date()),
     status: STATUS.DRAFT,
     tags: []
   });
   const [previewMode, setPreviewMode] = useState(false);
+  const [isSparkOpen, setIsSparkOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -60,12 +69,6 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
 
   useEffect(() => {
     if (post) {
-      // SAFE DATE CONVERSION FOR INPUT (Local Timezone Aware)
-      const toLocalISOString = (date) => {
-        const tzOffset = date.getTimezoneOffset() * 60000;
-        return new Date(date.getTime() - tzOffset).toISOString().slice(0, 16);
-      };
-
       let safeDateString = toLocalISOString(new Date()); // Default to now (local time)
       
       if (post.scheduledDate) {
@@ -132,7 +135,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex items-center gap-3">
              <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
-             <h2 className="font-bold text-slate-800 text-lg">New Thread</h2>
+             <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
           </div>
           <button
             onClick={handleSaveWrapper}
@@ -167,7 +170,7 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
           <div className="relative group">
             <div className="flex justify-between items-center mb-2">
                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Content</label>
-               <button onClick={onOpenSparkDeck} className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline"><Wand2 size={12}/> <span>Spark Deck</span></button>
+               <button onClick={() => setIsSparkOpen(true)} className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline"><Wand2 size={12}/> <span>Spark Deck</span></button>
             </div>
             <textarea 
                className={`w-full h-64 p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
@@ -285,6 +288,18 @@ const Editor = ({ post, onSave, onCancel, mediaMap, clientMap, uniqueClients, sh
       
       {/* Mobile Toggle */}
       <button onClick={() => setPreviewMode(true)} title="Open Preview" aria-label="Open Preview" className="md:hidden fixed bottom-6 right-6 z-50 bg-slate-900 text-white p-4 rounded-full shadow-xl"><Smartphone size={24}/></button>
+
+      {/* Spark Deck lives here (not in App) so picking a prompt only updates
+          `content` and never resets unsaved client/platform/tags/image state. */}
+      {isSparkOpen && (
+        <SparkDeck
+          onClose={() => setIsSparkOpen(false)}
+          onSelect={(txt) => {
+            setFormData(prev => ({ ...prev, content: txt }));
+            setIsSparkOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 };

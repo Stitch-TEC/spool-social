@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm audit *)",
+      "Bash(npm outdated *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'fix: remediate critical audit findings \\(auth, editor crash, multi-tenancy\\)' -m '- Remove hardcoded mock admin user that bypassed auth for all visitors *)",
+      "Bash(git commit *)",
+      "Bash(git commit -q -m 'chore: remove stray files, drop duplicate pnpm lockfile, patch deps' -m '- Delete zero-byte stray files \\(vite, spool-social@0.0.0\\) *)",
+      "Bash(echo \"[commit exit: $?]\")",
+      "Bash(gh auth *)",
+      "Bash(gh repo *)",
+      "Bash(git push *)",
+      "Bash(gh pr *)",
+      "Bash(echo \"[pr exit: $?]\")",
+      "Bash(git ls-tree *)",
+      "Bash(gh run *)",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)",
+      "Bash(echo \"[commit: $?]\")",
+      "Bash(echo \"[pr: $?]\")",
+      "Bash(set -e)",
+      "Bash(gh variable *)",
+      "Bash(gh api *)",
+      "Bash(echo \"[watch exit: $?]\")",
+      "Bash(git merge *)",
+      "Bash(echo \"[merge exit: $?]\")",
+      "Bash(npm run *)",
+      "Bash(echo \"[codeql exit: $?]\")",
+      "Bash(echo \"[merge: $?]\")",
+      "Bash(echo \"[deploy exit: $?]\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" https://stitch-tec.github.io/spool-social/)",
+      "Bash(git pull *)",
+      "Bash(npm uninstall *)",
+      "Bash(echo \"[uninstall: $?]\")",
+      "Bash(echo \"[deploy: $?]\")",
+      "Bash(firebase --version)",
+      "Bash(firebase login:list)",
+      "Bash(firebase projects:list)"
+    ]
+  }
+}

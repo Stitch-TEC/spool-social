@@ -25,9 +25,12 @@ const PostCard = memo(({ post, clientSettings = {}, resolvedImageUrl, onEdit, on
 
   // ⚡ OPTIMIZATION: Memoize clipboard handler to prevent unnecessary re-renders of the button.
   const copyToClipboard = useCallback((text) => {
-     navigator.clipboard.writeText(text);
-     setCopied(true);
-     setTimeout(() => setCopied(false), 2000);
+     navigator.clipboard.writeText(text).then(() => {
+       setCopied(true);
+       setTimeout(() => setCopied(false), 2000);
+     }).catch(() => {
+       // Clipboard unavailable (insecure context / permissions) — fail quietly.
+     });
   }, []);
 
   const getStatusColor = () => { 

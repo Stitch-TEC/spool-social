@@ -32,7 +32,6 @@ import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import PostCard from './components/PostCard';
 import ReviewModal from './components/ReviewModal';
-import SparkDeck from './components/SparkDeck';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 
@@ -87,11 +86,11 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [editingPost, setEditingPost] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
-  const [isSparkDeckOpen, setIsSparkDeckOpen] = useState(false);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const searchInputRef = useRef(null);
   const postsRef = useRef([]);
 
@@ -281,16 +280,17 @@ const App = () => {
   }, [isReadOnly]);
 
   // --- Helpers ---
+  // Toast dismissal is owned by the <Toast> component itself (re-armed per
+  // message), so consecutive toasts each get their full display time.
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const handleCopyLink = useCallback(() => {
+  const handleCopyLink = useCallback(async () => {
     if (!user) return;
-    
+
     const baseUrl = window.location.origin + window.location.pathname;
-    
+
     let link = `${baseUrl}?uid=${user.uid}`;
     let message = "Master Link (All Clients) Copied! 📋";
 
@@ -299,11 +299,34 @@ const App = () => {
       message = `Review Link for "${filterClient}" Copied! 📋`;
     }
 
-    navigator.clipboard.writeText(link);
-    showToast(message);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast(message);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      showToast("Couldn't copy — your browser blocked clipboard access", "error");
+    }
   }, [filterClient, user, showToast]);
+
+  const handleSignIn = useCallback(() => {
+    signInWithPopup(auth, googleProvider).catch((err) => {
+      // Closing the popup isn't an error worth surfacing.
+      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') return;
+      console.error("Sign-in Error:", err);
+      showToast("Sign-in failed. Please try again.", "error");
+    });
+  }, [showToast]);
+
+  // Sign out and strip query params. Reloading with ?uid= intact would
+  // instantly re-sign a guest in anonymously (an inescapable loop).
+  const handleSignOut = useCallback(() => {
+    signOut(auth)
+      .catch(() => {})
+      .finally(() => {
+        window.location.href = window.location.origin + window.location.pathname;
+      });
+  }, []);
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData) => {
@@ -378,9 +401,15 @@ const App = () => {
       message: "This action cannot be undone.",
       type: "danger",
       onConfirm: async () => {
-        await deleteDoc(doc(db, 'posts', postId));
-        setConfirmModal(null);
-        showToast("Thread deleted.");
+        try {
+          await deleteDoc(doc(db, 'posts', postId));
+          showToast("Thread deleted.");
+        } catch (error) {
+          console.error("Delete Error:", error);
+          showToast("Delete failed", "error");
+        } finally {
+          setConfirmModal(null);
+        }
       }
     });
   }, [isReadOnly, showToast]);
@@ -577,7 +606,15 @@ const App = () => {
   }, [isReadOnly]);
 
   const handleDuplicatePost = useCallback((p) => {
-    handleSavePost({ ...p, id: undefined, status: STATUS.DRAFT });
+    // Reset review state — a copy of an approved post is a fresh draft,
+    // and inherited client feedback wouldn't apply to it.
+    handleSavePost({
+      ...p,
+      id: undefined,
+      status: STATUS.DRAFT,
+      approvalStatus: APPROVAL_STATUS.PENDING,
+      feedback: ''
+    });
   }, [handleSavePost]);
 
   const filteredPosts = useMemo(() => {
@@ -629,8 +666,8 @@ const App = () => {
           </div>
           <h1 className="text-3xl font-black text-slate-900 mb-2">Spool</h1>
           <p className="text-slate-500 mb-8">Creative Workflow Management</p>
-          <button 
-            onClick={() => signInWithPopup(auth, googleProvider)}
+          <button
+            onClick={handleSignIn}
             className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-2"
           >
             <Layout size={20} /> Sign in with Google
@@ -659,7 +696,6 @@ const App = () => {
             showToast={showToast}
             onSave={handleSavePost}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
-            onOpenSparkDeck={() => setIsSparkDeckOpen(true)}
           />
         </Suspense>
       </ErrorBoundary>
@@ -760,19 +796,22 @@ const App = () => {
                           <span>Import CSV</span>
                           <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
                         </label>
+                        {/* Click-toggled (hover-only flyouts are unreachable on touch devices) */}
                         <div className="relative group">
                           <button
+                            onClick={() => setExportMenuOpen(o => !o)}
                             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                             aria-haspopup="true"
+                            aria-expanded={exportMenuOpen}
                           >
                             <Download size={16} />
                             <span>Export CSV</span>
-                            <ChevronRight size={14} className="ml-auto opacity-40" />
+                            <ChevronRight size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-90' : ''}`} />
                           </button>
-                          <div className="absolute left-full top-0 ml-2 hidden group-hover:block group-focus-within:block bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40">
-                            <button onClick={() => handleExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
-                            <button onClick={() => handleExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
-                            <button onClick={() => handleExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
+                          <div className={`absolute left-full top-0 ml-2 ${exportMenuOpen ? 'block' : 'hidden [@media(pointer:fine)]:group-hover:block group-focus-within:block'} bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40`}>
+                            <button onClick={() => { handleExport('current'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
+                            <button onClick={() => { handleExport('archived'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
+                            <button onClick={() => { handleExport('all'); setExportMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
                           </div>
                         </div>
                     </div>
@@ -795,8 +834,9 @@ const App = () => {
                 </button>
               )}
               
-              {/* Mobile/Client Branding */}
-              <div className={`flex flex-col leading-none ${!isReadOnly ? 'lg:hidden' : ''}`}>
+              {/* Mobile/Client Branding (owners get branding in the sidebar; hide on
+                  narrow screens to leave room for the view/new/link actions) */}
+              <div className={`flex-col leading-none ${!isReadOnly ? 'hidden sm:flex lg:hidden' : 'flex'}`}>
                 <h1 className="text-xl font-black text-slate-900">Spool</h1>
                 <a href="https://stitchtec.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
               </div>
@@ -832,7 +872,7 @@ const App = () => {
 
             <div className="flex items-center gap-2 sm:gap-3">
               {!isReadOnly && (
-                <div className="hidden sm:flex bg-slate-100 p-1 rounded-lg">
+                <div className="flex bg-slate-100 p-1 rounded-lg">
                   <button onClick={() => setView('grid')} className={`p-1.5 rounded-md ${view === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Grid View" aria-label="Grid View"><Grid size={18}/></button>
                   <button onClick={() => setView('calendar')} className={`p-1.5 rounded-md ${view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Calendar View" aria-label="Calendar View"><CalendarIcon size={18}/></button>
                 </div>
@@ -852,15 +892,15 @@ const App = () => {
               {!isReadOnly && (
                 <button
                   onClick={() => setView('editor')}
-                  className="hidden sm:flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 hover:scale-105 transition-transform"
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-3 sm:px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 hover:scale-105 transition-transform"
                   aria-label="Create New Thread"
                 >
                   <Plus size={18} /> <span className="hidden md:inline">New</span>
                 </button>
               )}
               
-              <button 
-                 onClick={() => { signOut(auth); window.location.reload(); }} 
+              <button
+                 onClick={handleSignOut}
                  className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
                  title={isReadOnly ? "Exit View" : "Log Out"}
                  aria-label={isReadOnly ? "Exit View" : "Log Out"}
@@ -962,7 +1002,6 @@ const App = () => {
         />
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
-      {isSparkDeckOpen && <SparkDeck onClose={() => setIsSparkDeckOpen(false)} onSelect={(txt) => { setEditingPost(prev => ({...prev, content: txt})); setIsSparkDeckOpen(false); }} />}
       {reviewingPost && (
         <ReviewModal
            post={reviewingPost}

@@ -2,10 +2,12 @@ import React, { useEffect } from 'react';
 import { CheckCircle, AlertCircle } from 'lucide-react';
 
 const Toast = ({ message, type = 'success', onClose }) => {
+  // Re-arm the dismiss timer whenever the message changes, so a second toast
+  // shown within 3s isn't killed early by the first toast's timer.
   useEffect(() => {
     const timer = setTimeout(onClose, 3000);
     return () => clearTimeout(timer);
-  }, [onClose]);
+  }, [message, type, onClose]);
 
   return (
     <div
