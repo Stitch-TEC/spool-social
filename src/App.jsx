@@ -20,6 +20,7 @@ import LoginScreen from './components/LoginScreen';
 import Sidebar from './components/Sidebar';
 import DashboardHeader from './components/DashboardHeader';
 import PostGrid from './components/PostGrid';
+import StatusFilterChips from './components/StatusFilterChips';
 import Toast from './components/Toast';
 import ConfirmModal from './components/ConfirmModal';
 import ReviewModal from './components/ReviewModal';
@@ -44,6 +45,7 @@ const App = () => {
   const [view, setView] = useState('grid'); // 'grid' | 'calendar' | 'editor'
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [filterClient, setFilterClient] = useState(clientParam);
+  const [filterStatus, setFilterStatus] = useState(null); // null | status | 'changes_requested'
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   // Deferred so the input stays responsive while filtering large lists.
@@ -159,25 +161,45 @@ const App = () => {
     }
   }, [isReadOnly, user, showToast]);
 
-  const handleDeleteClick = useCallback((postId) => {
-    if (isReadOnly) return;
-    setConfirmModal({
-      title: "Delete Thread?",
-      message: "This action cannot be undone.",
-      type: "danger",
-      onConfirm: async () => {
-        try {
-          await deleteDoc(doc(db, 'posts', postId));
-          showToast("Thread deleted.");
-        } catch (error) {
-          console.error("Delete Error:", error);
-          showToast("Delete failed", "error");
-        } finally {
-          setConfirmModal(null);
+  // Delete immediately with an Undo toast (less friction than a confirm modal,
+  // but still recoverable). Undo re-creates the doc with explicit field mapping.
+  const handleDeleteClick = useCallback(async (postId) => {
+    if (isReadOnly || !user) return;
+    const post = postsRef.current.find(p => p.id === postId);
+    if (!post) return;
+
+    try {
+      await deleteDoc(doc(db, 'posts', postId));
+      showToast("Thread deleted", "success", {
+        label: "Undo",
+        onClick: async () => {
+          try {
+            await addDoc(collection(db, 'posts'), {
+              uid: user.uid,
+              client: post.client || '',
+              content: post.content || '',
+              platform: post.platform || 'gmb',
+              status: Object.values(STATUS).includes(post.status) ? post.status : STATUS.DRAFT,
+              approvalStatus: Object.values(APPROVAL_STATUS).includes(post.approvalStatus) ? post.approvalStatus : APPROVAL_STATUS.PENDING,
+              feedback: (post.feedback || '').slice(0, 500),
+              imageUrl: (post.imageUrl || '').slice(0, 500000),
+              tags: post.tags || [],
+              scheduledDate: post._raw_scheduledDate || null,
+              createdAt: post._raw_createdAt || new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+            showToast("Thread restored");
+          } catch (error) {
+            console.error("Undo Error:", error);
+            showToast("Couldn't restore thread", "error");
+          }
         }
-      }
-    });
-  }, [isReadOnly, showToast]);
+      });
+    } catch (error) {
+      console.error("Delete Error:", error);
+      showToast("Delete failed", "error");
+    }
+  }, [isReadOnly, user, showToast]);
 
   const handleArchivePost = useCallback(async (postId) => {
     if (isReadOnly) return;
@@ -376,7 +398,9 @@ const App = () => {
     });
   }, [handleSavePost]);
 
-  const filteredPosts = useMemo(() => {
+  // Client/archive/search filters (status chips applied separately so chip
+  // counts always reflect the current context).
+  const baseFilteredPosts = useMemo(() => {
     const searchLower = deferredSearchQuery.toLowerCase();
 
     return posts.filter(post => {
@@ -390,6 +414,29 @@ const App = () => {
       return matchesClient && matchesArchive && matchesSearch;
     });
   }, [posts, filterClient, showArchived, deferredSearchQuery]);
+
+  const statusCounts = useMemo(() => {
+    const counts = {
+      all: baseFilteredPosts.length,
+      [STATUS.DRAFT]: 0,
+      [STATUS.SCHEDULED]: 0,
+      [STATUS.POSTED]: 0,
+      [APPROVAL_STATUS.CHANGES_REQUESTED]: 0
+    };
+    baseFilteredPosts.forEach(p => {
+      if (counts[p.status] !== undefined) counts[p.status]++;
+      if (p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) counts[APPROVAL_STATUS.CHANGES_REQUESTED]++;
+    });
+    return counts;
+  }, [baseFilteredPosts]);
+
+  const filteredPosts = useMemo(() => {
+    if (!filterStatus) return baseFilteredPosts;
+    if (filterStatus === APPROVAL_STATUS.CHANGES_REQUESTED) {
+      return baseFilteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED);
+    }
+    return baseFilteredPosts.filter(p => p.status === filterStatus);
+  }, [baseFilteredPosts, filterStatus]);
 
   const calendarPosts = useMemo(() => {
     if (view !== 'calendar') return [];
@@ -448,7 +495,7 @@ const App = () => {
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
             showArchived={showArchived}
-            onShowArchived={setShowArchived}
+            onShowArchived={(v) => { setShowArchived(v); setFilterStatus(null); }}
             filterClient={filterClient}
             onFilterClient={setFilterClient}
             uniqueClients={uniqueClients}
@@ -513,6 +560,10 @@ const App = () => {
                     onEdit={handleSelectPost}
                   />
                 ) : (
+                  <>
+                  {!showArchived && (
+                    <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
+                  )}
                   <PostGrid
                     posts={filteredPosts}
                     clientMap={clientMap}
@@ -526,6 +577,7 @@ const App = () => {
                     onRestore={handleRestorePost}
                     onCreate={() => setView('editor')}
                   />
+                  </>
                 )}
               </>
             )}
@@ -546,7 +598,7 @@ const App = () => {
           onCancel={() => setConfirmModal(null)}
         />
       )}
-      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast}/>}
+      {toast && <Toast message={toast.message} type={toast.type} action={toast.action} onClose={hideToast}/>}
       {reviewingPost && (
         <ReviewModal
           post={reviewingPost}

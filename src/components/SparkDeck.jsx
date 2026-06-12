@@ -1,9 +1,12 @@
 import React from 'react';
 import { X, Sparkles, Copy } from 'lucide-react';
 import { SPARK_PROMPTS } from '../constants';
+import useEscapeKey from '../hooks/useEscapeKey';
 
-const SparkDeck = ({ onClose, onSelect }) => (
-  <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[80] flex items-end sm:items-center justify-center p-4">
+const SparkDeck = ({ onClose, onSelect }) => {
+  useEscapeKey(onClose);
+  return (
+  <div role="dialog" aria-modal="true" aria-label="Spark Deck" className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[80] flex items-end sm:items-center justify-center p-4">
     <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[85vh] animate-in slide-in-from-bottom-10 duration-200">
       <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-indigo-600 rounded-t-2xl text-white">
         <div className="flex items-center gap-2">
@@ -24,6 +27,7 @@ const SparkDeck = ({ onClose, onSelect }) => (
       </div>
     </div>
   </div>
-);
+  );
+};
 
 export default SparkDeck;

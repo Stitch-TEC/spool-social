@@ -3,8 +3,10 @@ import { X, Upload, Trash2, CheckCircle, Palette, Save } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
+import useEscapeKey from '../hooks/useEscapeKey';
 
 const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly }) => {
+  useEscapeKey(onClose);
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
 
@@ -94,7 +96,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div role="dialog" aria-modal="true" aria-label="Client Brand Settings" className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
