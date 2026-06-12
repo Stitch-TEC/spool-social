@@ -1,7 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { initializeFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -19,5 +18,4 @@ export const auth = getAuth(app);
 // WebChannel stream is blocked (Safari ITP, proxies, some networks), which clears
 // the "WebChannelConnection transport errored / could not reach backend" errors.
 export const db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
-export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
