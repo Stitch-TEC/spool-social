@@ -10,8 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "worker:dev": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:pages": "DEPLOY_TARGET=pages npm run build && gh-pages -d dist"
   },
   "dependencies": {
     "firebase": "^12.7.0",
@@ -37,6 +38,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "vite": "^7.2.4",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "wrangler": "^4.0.0"
   }
 }

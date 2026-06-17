@@ -4,7 +4,16 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/spool-social/', // <--- IMPORTANT: This must match your GitHub Repo name
+  // Cloudflare Worker serves the app at the root path, so base is '/'.
+  // Set DEPLOY_TARGET=pages to build for the legacy GitHub Pages subpath.
+  base: process.env.DEPLOY_TARGET === 'pages' ? '/spool-social/' : '/',
+  // In `vite dev`, proxy API + media calls to the local `wrangler dev` server.
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8787',
+      '/media': 'http://localhost:8787',
+    },
+  },
   build: {
     rollupOptions: {
       output: {

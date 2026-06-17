@@ -1,0 +1,39 @@
+# Cloudflare Worker config for Spool.
+# One Worker serves the built SPA (./dist) AND the /api + /media routes.
+#
+# First-time setup (see CLOUDFLARE_MIGRATION.md for the full runbook):
+#   npx wrangler r2 bucket create spool-media
+#   npx wrangler secret put GEMINI_API_KEY
+#   npx wrangler secret put INTERNAL_API_KEY
+#   npm run build && npx wrangler deploy
+
+name = "spool"
+main = "worker/index.js"
+compatibility_date = "2026-06-01"
+
+# Serve the Vite build output as static assets from the same Worker.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Generated-image storage. R2 has no egress fees, so serving images is ~free.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "spool-media"
+
+[vars]
+# Firebase project whose ID tokens authenticate Spool app users.
+FIREBASE_PROJECT_ID = "REPLACE_WITH_FIREBASE_PROJECT_ID"
+# Default Gemini models — override here without code changes.
+# On the free tier start with these Flash models; switch to gemini-3-flash-image
+# / gemini-3-pro-image once billing is enabled (see runbook).
+GEMINI_TEXT_MODEL = "gemini-2.5-flash"
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+# Comma-separated origins allowed to call /api cross-site (your other projects).
+# "*" is fine to start since auth is bearer-token, not cookies.
+ALLOWED_ORIGINS = "*"
+
+# Secrets are NOT stored here. Set them with `wrangler secret put`:
+#   GEMINI_API_KEY     — your Google AI Studio / Gemini API key
+#   INTERNAL_API_KEY   — a long random string your own projects send as a Bearer token
