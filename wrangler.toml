@@ -59,7 +59,11 @@ RL_PER_DAY = "100"
 # Internal API key (trusted server-to-server) — generous; runaway-loop guard.
 RL_INTERNAL_PER_MIN = "120"
 RL_INTERNAL_PER_DAY = "10000"
+# Firebase uid that API-created drafts (POST /api/drafts) are owned by — your
+# account's uid (Firebase console → Authentication). Empty disables drafts.
+OWNER_UID = ""
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
-#   GEMINI_API_KEY     — your Google AI Studio / Gemini API key
-#   INTERNAL_API_KEY   — a long random string your own projects send as a Bearer token
+#   GEMINI_API_KEY            — your Google AI Studio / Gemini API key
+#   INTERNAL_API_KEY          — a long random string your own projects send as a Bearer token
+#   FIREBASE_SERVICE_ACCOUNT  — the downloaded Firebase service-account JSON (for POST /api/drafts)
