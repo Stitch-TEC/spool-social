@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Layout, Grid, Archive, Settings, Upload, Download, ChevronRight, Image as ImageIcon
+  Layout, Grid, Archive, Settings, Upload, Download, ChevronDown, Image as ImageIcon, FileText, Database
 } from 'lucide-react';
 
 const navButtonClass = (active) =>
@@ -21,13 +21,16 @@ const Sidebar = ({
   onImport,
   onExport
 }) => {
-  // Click-toggled (hover-only flyouts are unreachable on touch devices).
+  // Inline accordion — a left-full flyout gets clipped by the sidebar's
+  // overflow-y-auto scroll container (the old bug where Export "did nothing").
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
-  const runExport = (mode) => {
-    onExport(mode);
+  const runExport = (mode, format = 'csv') => {
+    onExport(mode, format);
     setExportMenuOpen(false);
   };
+
+  const exportRowClass = 'w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors';
 
   return (
     <>
@@ -94,29 +97,33 @@ const Sidebar = ({
 
             <div className="mb-6">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
-              <div className="space-y-2">
+              <div className="space-y-1">
                 <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
                   <Upload size={16} />
-                  <span>Import CSV</span>
-                  <input type="file" accept=".csv" onChange={onImport} className="hidden" />
+                  <span>Import CSV / JSON</span>
+                  <input type="file" accept=".csv,.json,text/csv,application/json" onChange={onImport} className="hidden" />
                 </label>
-                <div className="relative group">
-                  <button
-                    onClick={() => setExportMenuOpen(o => !o)}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                    aria-haspopup="true"
-                    aria-expanded={exportMenuOpen}
-                  >
-                    <Download size={16} />
-                    <span>Export CSV</span>
-                    <ChevronRight size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-90' : ''}`} />
-                  </button>
-                  <div className={`absolute left-full top-0 ml-2 ${exportMenuOpen ? 'block' : 'hidden [@media(pointer:fine)]:group-hover:block group-focus-within:block'} bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50 w-40`}>
-                    <button onClick={() => runExport('current')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Current View</button>
-                    <button onClick={() => runExport('archived')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">Archived Only</button>
-                    <button onClick={() => runExport('all')} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md">All Posts</button>
+                <button
+                  onClick={() => setExportMenuOpen(o => !o)}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                  aria-haspopup="true"
+                  aria-expanded={exportMenuOpen}
+                >
+                  <Download size={16} />
+                  <span>Export</span>
+                  <ChevronDown size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {/* Inline (in-flow) so it can never be clipped by the scroll container. */}
+                {exportMenuOpen && (
+                  <div className="ml-3 pl-3 border-l border-slate-100 py-1 space-y-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                    <p className="px-3 pt-1 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Spreadsheet (CSV)</p>
+                    <button onClick={() => runExport('current', 'csv')} className={exportRowClass}><FileText size={13} /> Current view</button>
+                    <button onClick={() => runExport('all', 'csv')} className={exportRowClass}><FileText size={13} /> All threads</button>
+                    <button onClick={() => runExport('archived', 'csv')} className={exportRowClass}><FileText size={13} /> Archived only</button>
+                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Backup</p>
+                    <button onClick={() => runExport('all', 'json')} className={exportRowClass}><Database size={13} /> Full backup (JSON)</button>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </div>

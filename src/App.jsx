@@ -11,7 +11,7 @@ import {
 
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
-import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
+import { convertToCSV, parseImportFile, postsToJSON, downloadFile } from './utils/csv';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -27,6 +27,7 @@ import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
+import ImportModal from './components/ImportModal';
 
 const Editor = lazy(() => import('./components/Editor'));
 
@@ -58,6 +59,7 @@ const App = () => {
   const [isMediaOpen, setIsMediaOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
 
   // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
   const postsRef = useRef([]);
@@ -255,57 +257,67 @@ const App = () => {
     }
   }, [isReadOnly, showToast]);
 
-  const handleImport = useCallback(async (e) => {
+  // Parse a CSV/JSON file and open the preview modal — nothing is written until
+  // the user confirms (see handleConfirmImport). parseImportFile normalizes &
+  // sanitizes every row (single source of truth for field mapping).
+  const handleImportFile = useCallback((e) => {
     if (isReadOnly) return;
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
+    reader.onload = (event) => {
       try {
-        const csvText = event.target.result;
-        const importedData = parseCSV(csvText);
-
-        if (importedData.length === 0) return showToast("No valid data found in CSV", "error");
-
-        const batch = writeBatch(db);
-        importedData.forEach(item => {
-          const newDocRef = doc(collection(db, 'posts'));
-
-          // 🔒 SECURITY: Explicit field mapping & sanitization to prevent mass assignment
-          const platformId = item.platform || 'gmb';
-          const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
-          const status = Object.values(STATUS).includes(item.status) ? item.status : STATUS.DRAFT;
-          const approvalStatus = Object.values(APPROVAL_STATUS).includes(item.approvalStatus) ? item.approvalStatus : APPROVAL_STATUS.PENDING;
-
-          batch.set(newDocRef, {
-            uid: user.uid,
-            client: (item.client || "").trim().replace(/\//g, '').slice(0, 50),
-            content: (item.content || "").trim().slice(0, platform.maxChars),
-            platform: platformId,
-            status,
-            approvalStatus,
-            feedback: (item.feedback || "").trim().slice(0, 500),
-            imageUrl: (item.imageUrl || '').slice(0, 500000),
-            tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
-              .slice(0, 10)
-              .map(tag => String(tag).trim().slice(0, 20))
-              .filter(Boolean),
-            scheduledDate: item.scheduledDate || null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          });
-        });
-
-        await batch.commit();
-        showToast(`Imported ${importedData.length} threads! 🚀`);
+        const parsed = parseImportFile(event.target.result, file.name);
+        setImportData({ posts: parsed, fileName: file.name });
       } catch (err) {
-        console.error("Import error:", err);
-        showToast("Import failed. Check CSV format.", "error");
+        console.error("Import parse error:", err);
+        showToast("Couldn't read that file — use a Spool CSV or JSON export", "error");
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; // Reset input so re-selecting the same file fires again
+  }, [isReadOnly, showToast]);
+
+  // Commit the previewed rows. Rows are already sanitized by parseImportFile;
+  // here we only attach ownership/timestamps and chunk to the 500-op batch cap.
+  const handleConfirmImport = useCallback(async (rows) => {
+    if (isReadOnly || !user || !rows?.length) { setImportData(null); return; }
+    try {
+      const now = new Date().toISOString();
+      const CHUNK = 450; // Firestore writeBatch hard limit is 500 ops
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        rows.slice(i, i + CHUNK).forEach(item => {
+          batch.set(doc(collection(db, 'posts')), {
+            uid: user.uid,
+            client: item.client,
+            content: item.content,
+            title: item.title || '',
+            altText: item.altText || '',
+            metaDescription: item.metaDescription || '',
+            slug: item.slug || '',
+            platform: item.platform,
+            status: item.status,
+            approvalStatus: item.approvalStatus,
+            feedback: item.feedback || '',
+            imageUrl: item.imageUrl || '',
+            tags: item.tags || [],
+            scheduledDate: item.scheduledDate || null,
+            createdAt: now,
+            updatedAt: now,
+            source: 'import'
+          });
+        });
+        await batch.commit();
+      }
+      showToast(`Imported ${rows.length} thread${rows.length === 1 ? '' : 's'}! 🚀`);
+    } catch (err) {
+      console.error("Import error:", err);
+      showToast("Import failed. Please try again.", "error");
+    } finally {
+      setImportData(null);
+    }
   }, [isReadOnly, user, showToast]);
 
   const handleRequestChanges = useCallback(async (postId, feedback) => {
@@ -483,7 +495,7 @@ const App = () => {
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts, view]);
 
-  const handleExport = useCallback((mode) => {
+  const handleExport = useCallback((mode, format = 'csv') => {
     let exportPosts = [];
     if (mode === 'current') exportPosts = filteredPosts;
     else if (mode === 'archived') exportPosts = posts.filter(p => p.status === STATUS.ARCHIVED);
@@ -491,9 +503,13 @@ const App = () => {
 
     if (exportPosts.length === 0) return showToast("Nothing to export", "error");
 
-    const csvData = convertToCSV(exportPosts);
-    downloadCSV(csvData, `spool-export-${mode}-${new Date().toISOString().split('T')[0]}.csv`);
-    showToast("Export complete! 📥");
+    const date = new Date().toISOString().split('T')[0];
+    if (format === 'json') {
+      downloadFile(postsToJSON(exportPosts), `spool-backup-${mode}-${date}.json`, 'application/json');
+    } else {
+      downloadFile(convertToCSV(exportPosts), `spool-export-${mode}-${date}.csv`, 'text/csv;charset=utf-8;');
+    }
+    showToast(`Exported ${exportPosts.length} thread${exportPosts.length === 1 ? '' : 's'} 📥`);
   }, [posts, filteredPosts, showToast]);
 
   // --- Render ---
@@ -542,7 +558,7 @@ const App = () => {
             uniqueClients={uniqueClients}
             onOpenClientSettings={() => setIsClientSettingsOpen(true)}
             onOpenMedia={() => setIsMediaOpen(true)}
-            onImport={handleImport}
+            onImport={handleImportFile}
             onExport={handleExport}
           />
         )}
@@ -659,6 +675,15 @@ const App = () => {
           uniqueClients={uniqueClients}
           initialClient={filterClient || ''}
           showToast={showToast}
+        />
+      )}
+      {importData && (
+        <ImportModal
+          posts={importData.posts}
+          existingPosts={posts}
+          fileName={importData.fileName}
+          onConfirm={handleConfirmImport}
+          onCancel={() => setImportData(null)}
         />
       )}
     </ErrorBoundary>

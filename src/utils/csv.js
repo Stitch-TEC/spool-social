@@ -1,31 +1,52 @@
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 
+// Data transfer (CSV + JSON) for posts.
+//
+// CSV is the human-friendly, spreadsheet-editable format; JSON is the
+// full-fidelity backup. Both round-trip through the SAME normalizer
+// (`normalizeImportedPost`) so an import is consistent regardless of source.
+
+// Lossless column set — order is the on-disk CSV column order. Adding
+// title/altText/metaDescription/slug/tags here is what makes long-form (blog/
+// job) content survive an export → edit → import round-trip.
+export const CSV_COLUMNS = [
+  'id', 'client', 'platform', 'title', 'content', 'altText', 'metaDescription',
+  'slug', 'status', 'approvalStatus', 'tags', 'scheduledDate', 'createdAt',
+  'updatedAt', 'feedback', 'imageUrl'
+];
+
+// Multi-value fields (tags) are joined with this so they survive inside a
+// single CSV cell without colliding with the comma field-separator.
+const TAG_DELIM = '|';
+
+const toISO = (value) => {
+  if (!value) return '';
+  if (value instanceof Date) return isNaN(value) ? '' : value.toISOString();
+  return String(value);
+};
+
+const serializeCell = (header, post) => {
+  if (header === 'tags') {
+    return Array.isArray(post.tags) ? post.tags.join(TAG_DELIM) : (post.tags || '');
+  }
+  const value = post[header];
+  if (value instanceof Date) return toISO(value);
+  return value == null ? '' : String(value);
+};
+
 /**
  * Converts an array of post objects into a CSV string.
  * Handles escaping quotes and wrapping fields that contain commas or newlines.
  */
 export const convertToCSV = (posts) => {
-  const headers = ['id', 'client', 'platform', 'content', 'status', 'approvalStatus', 'scheduledDate', 'createdAt', 'feedback', 'imageUrl'];
-  const rows = posts.map(post => {
-    return headers.map(header => {
-      let value = post[header] || '';
-      if (value instanceof Date) {
-        value = value.toISOString();
-      }
-
-      const stringValue = String(value);
-      // Escape double quotes by doubling them
-      const escapedValue = stringValue.replace(/"/g, '""');
-
-      // Wrap in quotes if it contains a comma, newline, or a quote
-      if (/[,\n"]/.test(stringValue)) {
-        return `"${escapedValue}"`;
-      }
-      return stringValue;
-    }).join(',');
-  });
-
-  return [headers.join(','), ...rows].join('\n');
+  const rows = (posts || []).map(post =>
+    CSV_COLUMNS.map(header => {
+      const stringValue = serializeCell(header, post);
+      const escaped = stringValue.replace(/"/g, '""');
+      return /[,\n\r"]/.test(stringValue) ? `"${escaped}"` : stringValue;
+    }).join(',')
+  );
+  return [CSV_COLUMNS.join(','), ...rows].join('\n');
 };
 
 /**
@@ -33,6 +54,7 @@ export const convertToCSV = (posts) => {
  * 1. Quoted fields containing commas
  * 2. Quoted fields containing newlines
  * 3. Escaped double quotes ("")
+ * Returns normalized, validated post objects (see normalizeImportedPost).
  */
 export const parseCSV = (csvText) => {
   const result = [];
@@ -46,43 +68,33 @@ export const parseCSV = (csvText) => {
 
     if (inQuotes) {
       if (char === '"' && nextChar === '"') {
-        // Escaped quote: "" becomes "
         currentField += '"';
         i++; // skip next quote
       } else if (char === '"') {
-        // Closing quote
         inQuotes = false;
       } else {
-        // Any other character inside quotes
         currentField += char;
       }
     } else {
       if (char === '"') {
-        // Opening quote
         inQuotes = true;
       } else if (char === ',') {
-        // Field separator
         currentRow.push(currentField.trim());
         currentField = '';
       } else if (char === '\n' || char === '\r') {
-        // Row separator (handle \r\n as well)
         currentRow.push(currentField.trim());
         if (currentRow.length > 0 && (currentRow.length > 1 || currentRow[0] !== '')) {
-            result.push(currentRow);
+          result.push(currentRow);
         }
         currentRow = [];
         currentField = '';
-        if (char === '\r' && nextChar === '\n') {
-          i++; // skip \n in \r\n
-        }
+        if (char === '\r' && nextChar === '\n') i++; // skip \n in \r\n
       } else {
-        // Regular character
         currentField += char;
       }
     }
   }
 
-  // Handle last field if it exists
   if (currentField || currentRow.length > 0) {
     currentRow.push(currentField.trim());
     result.push(currentRow);
@@ -97,50 +109,119 @@ export const parseCSV = (csvText) => {
     const row = result[i];
     if (row.length === 0 || (row.length === 1 && row[0] === '')) continue;
 
-    const post = {};
+    const raw = {};
     headers.forEach((header, index) => {
-      post[header] = row[index] || '';
+      raw[header] = row[index] ?? '';
     });
 
-    // Basic Validation & Field Mapping
-    if (!post.content || !post.client) continue;
-
-    // Ensure platform is valid
-    if (!PLATFORMS[post.platform]) {
-      post.platform = 'gmb'; // Default
-    }
-
-    // Ensure status is valid
-    if (!Object.values(STATUS).includes(post.status)) {
-      post.status = STATUS.DRAFT;
-    }
-
-    // Ensure approvalStatus is valid
-    if (!Object.values(APPROVAL_STATUS).includes(post.approvalStatus)) {
-      post.approvalStatus = APPROVAL_STATUS.PENDING;
-    }
-
-    // Date parsing
-    if (post.scheduledDate) {
-      const d = new Date(post.scheduledDate);
-      if (!isNaN(d.getTime())) {
-        post.scheduledDate = d.toISOString();
-      } else {
-        post.scheduledDate = null;
-      }
-    }
-
-    posts.push(post);
+    const normalized = normalizeImportedPost(raw);
+    if (normalized) posts.push(normalized);
   }
 
   return posts;
 };
 
 /**
- * Triggers a browser download of a CSV file.
+ * Parses a JSON backup (an array of posts, or { posts: [...] }) into the same
+ * normalized shape that parseCSV produces. Throws on malformed JSON.
  */
-export const downloadCSV = (csvText, filename) => {
-  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+export const parseJSON = (jsonText) => {
+  const data = JSON.parse(jsonText);
+  const arr = Array.isArray(data) ? data : Array.isArray(data?.posts) ? data.posts : null;
+  if (!arr) return [];
+  return arr.map(normalizeImportedPost).filter(Boolean);
+};
+
+/**
+ * Detects the format from filename/content and parses accordingly.
+ * Returns normalized post objects ready for import.
+ */
+export const parseImportFile = (text, filename = '') => {
+  const isJSON = /\.json$/i.test(filename) || /^\s*[[{]/.test(text);
+  return isJSON ? parseJSON(text) : parseCSV(text);
+};
+
+const splitTags = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  // Accept either our pipe delimiter or a plain comma list.
+  return String(value).split(value.includes(TAG_DELIM) ? TAG_DELIM : ',');
+};
+
+/**
+ * The single source of truth for sanitizing an incoming row (CSV cell-map or
+ * JSON object) into a safe post. Mirrors the server-side limits in the Worker
+ * and the explicit field-mapping in App's save path (no mass-assignment).
+ * Returns null for rows missing the required client/content.
+ */
+export const normalizeImportedPost = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const client = String(raw.client || '').trim().replace(/\//g, '').slice(0, 50);
+  const content = String(raw.content || '').trim();
+  if (!client || !content) return null;
+
+  const platform = PLATFORMS[raw.platform] ? raw.platform : 'gmb';
+  const status = Object.values(STATUS).includes(raw.status) ? raw.status : STATUS.DRAFT;
+  const approvalStatus = Object.values(APPROVAL_STATUS).includes(raw.approvalStatus)
+    ? raw.approvalStatus
+    : APPROVAL_STATUS.PENDING;
+
+  const tags = splitTags(raw.tags)
+    .map(t => String(t).trim().replace(/^#/, '').slice(0, 20))
+    .filter(Boolean)
+    .slice(0, 10);
+
+  let scheduledDate = null;
+  if (raw.scheduledDate) {
+    const d = new Date(raw.scheduledDate);
+    scheduledDate = isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  const title = String(raw.title || '').trim().slice(0, 200);
+  const slug = (String(raw.slug || '') || title)
+    .toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+
+  return {
+    client,
+    content: content.slice(0, PLATFORMS[platform].maxChars),
+    title,
+    altText: String(raw.altText || '').trim().slice(0, 300),
+    metaDescription: String(raw.metaDescription || '').trim().slice(0, 200),
+    slug,
+    platform,
+    status,
+    approvalStatus,
+    feedback: String(raw.feedback || '').trim().slice(0, 500),
+    imageUrl: String(raw.imageUrl || '').slice(0, 500000),
+    tags,
+    scheduledDate
+  };
+};
+
+/**
+ * Full-fidelity JSON backup of posts. Strips the runtime-only `_*` cache fields
+ * and converts Date objects back to ISO strings.
+ */
+export const postsToJSON = (posts) => {
+  const clean = (posts || []).map(p => {
+    const out = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (k.startsWith('_')) continue;
+      out[k] = v instanceof Date ? toISO(v) : v;
+    }
+    return out;
+  });
+  return JSON.stringify({ exportedAt: new Date().toISOString(), count: clean.length, posts: clean }, null, 2);
+};
+
+/** A content fingerprint used to detect duplicate posts on import. */
+export const postFingerprint = (p) =>
+  `${(p.client || '').trim().toLowerCase()}|${p.platform || ''}|${(p.content || '').trim()}`;
+
+/** Triggers a browser download of a text file. */
+export const downloadFile = (text, filename, mime = 'text/csv;charset=utf-8;') => {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
@@ -149,4 +230,8 @@ export const downloadCSV = (csvText, filename) => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 };
+
+// Back-compat alias.
+export const downloadCSV = (csvText, filename) => downloadFile(csvText, filename);
