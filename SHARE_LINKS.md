@@ -37,33 +37,49 @@ generation / media / drafts APIs.
 
 ## Deploying this change ⚠️
 
-The Worker auto-deploys on push to `main` (`.github/workflows/deploy.yml`), but
-**Firestore rules deploy manually**. Order matters:
+The Worker + SPA **auto-deploy on push to `main`** (`.github/workflows/deploy.yml`),
+but **Firestore rules deploy manually** (`firebase deploy --only firestore:rules`).
+That asymmetry creates a short window you must manage.
 
-1. **Merge to `main`** → CI builds + deploys the Worker (share endpoints) and the
-   SPA (the `?s=` flow + Share Manager). At this point:
-   - New `?s=` links work.
-   - Old `?uid=` links **still work** (the app falls back to anonymous sign-in,
-     which the *old* rules still permit). Nothing breaks yet.
-2. **Deploy the new rules:**
+> **Mind the gap.** Once the new app is live but the *old* rules are still active,
+> guest **reads** work (old read rule = any signed-in user) but guest **writes**
+> (approve / request changes) are **rejected** — the new app sends `updatedAt` +
+> `feedbackThread`, which the old guest-update allowlist (`status`,
+> `approvalStatus`, `feedback`) forbids. So reviewers can *view but not act* until
+> the rules are deployed. The owner dashboard is unaffected throughout.
+
+**Recommended sequence (minimizes disruption):**
+
+1. **Merge to `main`** → CI deploys the Worker (share endpoints) + SPA
+   (`?s=` flow + Share Manager). Don't hand out any links yet.
+2. **Immediately deploy the new rules** (don't leave the gap open):
    ```bash
-   firebase deploy --only firestore:rules
+   firebase deploy --only firestore:rules   # verify in the Rules Playground first
    ```
-   After this:
-   - `?s=` links keep working (claim-scoped reads).
-   - Old `?uid=` anonymous links **stop working** (no `share` claim → rules deny
-     the read). Re-issue those clients a new link from the Share Manager.
-   - The owner dashboard is unaffected throughout (owner reads via `isOwner`).
-3. **(Recommended) Disable Firebase Anonymous sign-in** in the Firebase console
-   (Authentication → Sign-in method). Guests now use custom tokens, so anonymous
-   auth is no longer needed — disabling it closes the last path by which a random
-   visitor could obtain *any* session.
+   After this: `?s=` links work fully (read + write); old `?uid=` anonymous links
+   **stop working** (no `share` claim → reads denied).
+3. **Now create + distribute `?s=` links** from the Share Manager and re-issue them
+   to clients who had old `?uid=` links.
+4. **(Recommended) Disable Firebase Anonymous sign-in** (Firebase console →
+   Authentication → Sign-in method). Guests use custom tokens now, so disabling
+   anonymous auth closes the last path to obtaining *any* session.
+
+> **Why app-first, not rules-first?** Deploying the rules *before* the app is worse:
+> the new read rule would immediately break existing `?uid=` reviewers **and** the
+> Share Manager (the only way to mint `?s=` links) wouldn't exist yet — leaving a
+> window with *no* working review path at all.
+
+**Best fix (eliminates the gap):** automate the rules deploy in CI so it runs with
+the Worker deploy. Add a `firebase-tools` step gated on a `FIREBASE_TOKEN` (or
+service-account) secret to `deploy.yml`, ordered before the Worker publish. Until
+that's wired up, follow the manual sequence above and keep step 1→2 tight.
 
 ### Rollback
 
-Reverting the rules (`firebase deploy --only firestore:rules` from the previous
-file) restores the old behavior. The Worker/SPA changes are backward compatible
-with the old rules, so they don't need reverting.
+Re-deploying the previous `firestore.rules` restores the old behavior. The
+Worker/SPA changes read fine under the old rules (only guest *writes* differ), so
+they don't need reverting — but guest review actions will fail until the new rules
+are back.
 
 ## Data model
 
