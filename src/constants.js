@@ -1,4 +1,4 @@
-import { MapPin, Linkedin, Twitter, Instagram, FileText } from 'lucide-react';
+import { MapPin, Linkedin, Twitter, Instagram, FileText, Briefcase } from 'lucide-react';
 
 export const PLATFORMS = {
   gmb: { 
@@ -56,6 +56,18 @@ export const PLATFORMS = {
     placeholder: 'Write your post in Markdown — use # headings, **bold**, lists, and links…',
     maxChars: 100000,
     longForm: true
+  },
+  job: {
+    id: 'job',
+    name: 'Job Posting',
+    color: 'bg-violet-600',
+    text: 'text-violet-600',
+    border: 'border-violet-600',
+    icon: Briefcase,
+    url: '',
+    placeholder: 'Write the job posting in Markdown — role, responsibilities, requirements, how to apply…',
+    maxChars: 100000,
+    longForm: true
   }
 };
 
@@ -100,7 +112,8 @@ export const PLATFORM_AI_GUIDANCE = {
   linkedin: 'a LinkedIn post — professional and insightful, 1–3 short paragraphs; up to ~3 relevant hashtags.',
   twitter: 'an X/Twitter post — punchy and concise; it MUST stay under 280 characters; at most 1–2 hashtags.',
   instagram: 'an Instagram caption — engaging and friendly; a few relevant hashtags grouped at the end.',
-  blog: 'a long-form blog post in Markdown — start with an H1 title, use ## section headings, short scannable paragraphs, and a strong intro and conclusion. Format with Markdown (headings, bold, lists, links).'
+  blog: 'a long-form blog post in Markdown — start with an H1 title, use ## section headings, short scannable paragraphs, and a strong intro and conclusion. Format with Markdown (headings, bold, lists, links).',
+  job: 'a job posting in Markdown — H1 role title, then sections such as ## About the role, ## Responsibilities, ## Requirements, and ## How to apply. Be clear, specific, and inclusive; avoid hype and any discriminatory language.'
 };
 
 export const TONE_PRESETS = [
@@ -131,7 +144,8 @@ export const PLATFORM_IMAGE_ASPECT = {
   linkedin: 'landscape 1.91:1',
   twitter: 'landscape 16:9',
   instagram: 'square 1:1',
-  blog: 'landscape 16:9'
+  blog: 'landscape 16:9',
+  job: 'landscape 16:9'
 };
 
 // Stitch Suite apps for the cross-app tool-switcher header.

@@ -25,7 +25,12 @@ async function callGemini(env, model, body) {
 export async function generateText(env, prompt, opts = {}) {
   const model = env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
-  const body = { contents: [{ parts: [{ text: prompt }] }] };
+  const promptParts = [{ text: prompt }];
+  // Optional image for multimodal prompts (e.g. alt-text from the actual image).
+  if (opts.image?.data) {
+    promptParts.push({ inlineData: { mimeType: opts.image.mimeType || 'image/png', data: opts.image.data } });
+  }
+  const body = { contents: [{ parts: promptParts }] };
 
   // Optional system instruction sets voice/format/constraints (see aiPrompt.js).
   if (opts.system) {

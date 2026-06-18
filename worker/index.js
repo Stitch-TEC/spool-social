@@ -41,6 +41,37 @@ function clampMaxTokens(v) {
   return Math.min(n, 4096);
 }
 
+function bytesToB64(bytes) {
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+// Resolve an image reference to inline base64 for a multimodal prompt.
+// Only accepts data: URLs (client-supplied bytes) or our own /media/<key> R2
+// objects (read straight from the bucket — no outbound fetch, no SSRF surface).
+async function resolveImage(src, env) {
+  if (typeof src !== 'string' || !src) return null;
+  if (src.startsWith('data:')) {
+    const m = src.match(/^data:([^;]+);base64,(.+)$/);
+    return m ? { mimeType: m[1], data: m[2] } : null;
+  }
+  const marker = '/media/';
+  const idx = src.indexOf(marker);
+  if (idx !== -1 && env.MEDIA) {
+    const key = decodeURIComponent(src.slice(idx + marker.length).split('?')[0]);
+    const obj = await env.MEDIA.get(key);
+    if (!obj) return null;
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    if (bytes.length > 8_000_000) return null; // ~8MB cap
+    return { mimeType: obj.httpMetadata?.contentType || 'image/png', data: bytesToB64(bytes) };
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -85,13 +116,15 @@ export default {
 
       try {
         if (url.pathname === '/api/text') {
+          const image = body?.imageUrl ? await resolveImage(body.imageUrl, env) : undefined;
           const text = await generateText(env, prompt, {
             system: body?.system ? String(body.system).slice(0, 4000) : undefined,
             temperature:
               typeof body?.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2
                 ? body.temperature
                 : undefined,
-            maxTokens: clampMaxTokens(body?.maxTokens)
+            maxTokens: clampMaxTokens(body?.maxTokens),
+            image
           });
           return json({ text }, 200, cors);
         }

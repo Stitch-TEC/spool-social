@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash } from 'lucide-react';
 import { generateImage, generateText } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt } from '../utils/aiPrompt';
-import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS } from '../constants';
+import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '../constants';
 
 /**
  * Inline "generate with AI" control.
@@ -20,6 +20,7 @@ import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS } from '../constants'
 const AIGenerate = ({
   kind,
   onResult,
+  onAppend,
   showToast,
   platform = 'gmb',
   clientName = '',
@@ -59,27 +60,33 @@ const AIGenerate = ({
     setLoading(true);
     try {
       const { system, maxTokens } = buildTextContext({ platform, tone, length, clientName, clientSettings });
-      let result;
 
+      if (mode === 'hashtags') {
+        const tags = (await generateText(
+          `Suggest 3–6 relevant, high-quality hashtags for the post below. Return ONLY the hashtags separated by spaces — nothing else.\n\nPOST:\n${currentText}`,
+          { system, maxTokens: 60 }
+        )).trim();
+        // Append to the LATEST content (avoids clobbering edits made mid-request).
+        if (onAppend) onAppend(tags);
+        else onResult(`${currentText.trim()}\n\n${tags}`);
+        close();
+        showToast?.('Hashtags added');
+        return;
+      }
+
+      let result;
       if (mode === 'generate') {
         result = await generateText(p, { system, maxTokens });
-      } else if (mode === 'improve') {
+      } else {
         const guidance = p ? ` Additional guidance: ${p}.` : '';
         result = await generateText(
           `Rewrite and improve the post below for this platform and brand, keeping its core message.${guidance}\n\nPOST:\n${currentText}`,
           { system, maxTokens }
         );
-      } else {
-        const tags = await generateText(
-          `Suggest 3–6 relevant, high-quality hashtags for the post below. Return ONLY the hashtags separated by spaces — nothing else.\n\nPOST:\n${currentText}`,
-          { system, maxTokens: 60 }
-        );
-        result = `${currentText.trim()}\n\n${tags.trim()}`;
       }
-
       onResult(result);
       close();
-      showToast?.(mode === 'hashtags' ? 'Hashtags added' : mode === 'improve' ? 'Draft improved' : 'Draft generated');
+      showToast?.(mode === 'improve' ? 'Draft improved' : 'Draft generated');
     } catch (err) {
       showToast?.(err.message || 'Generation failed', 'error');
     } finally {
@@ -212,7 +219,7 @@ const AIGenerate = ({
           >
             <Wand2 size={12} /> Improve
           </button>
-          {platform !== 'blog' && (
+          {!PLATFORMS[platform]?.longForm && (
             <button
               type="button"
               onClick={() => runText('hashtags')}

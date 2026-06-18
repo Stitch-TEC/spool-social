@@ -36,10 +36,22 @@ export async function generateImage(prompt) {
 
 /**
  * Generate text/copy from a prompt. Resolves to the generated string.
- * `opts` may include { system, temperature, maxTokens } to steer voice,
- * creativity, and length (see src/utils/aiPrompt.js).
+ * `opts` may include { system, temperature, maxTokens, imageUrl } — imageUrl
+ * makes it a multimodal call (e.g. alt text from the actual image).
  */
 export async function generateText(prompt, opts = {}) {
   const { text } = await postJSON('/api/text', { prompt, ...opts });
+  return text;
+}
+
+/** Generate concise alt text for an image (data URL or hosted /media URL). */
+export async function describeImage(imageUrl) {
+  const { text } = await postJSON('/api/text', {
+    prompt:
+      'Write concise, descriptive alt text for this image in one sentence. ' +
+      'Do not start with "image of" or "a picture of". Plain text only.',
+    imageUrl,
+    maxTokens: 120
+  });
   return text;
 }
