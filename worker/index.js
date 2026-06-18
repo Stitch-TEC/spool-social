@@ -78,11 +78,18 @@ function b64ToBytes(b64) {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 }
 
+// Encode per path-segment so the URL round-trips through the /media route's
+// decodeURIComponent back to the exact (raw) R2 key — needed for keys that
+// contain spaces/special chars (e.g. a client name in the library prefix).
+function mediaUrl(origin, key) {
+  return `${origin}/media/${key.split('/').map(encodeURIComponent).join('/')}`;
+}
+
 async function storeImage(env, origin, bytes, mime, owner) {
   const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'bin';
   const key = `generated/${owner}/${crypto.randomUUID()}.${ext}`;
   await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
-  return { url: `${origin}/media/${key}`, key };
+  return { url: mediaUrl(origin, key), key };
 }
 
 // Resolve a draft image input to a /media URL: { prompt } generates, { base64 }
@@ -124,7 +131,7 @@ async function listMediaPrefix(env, origin, prefix) {
     for (const o of listed.objects) {
       const cm = o.customMetadata || {};
       if (cm.type === 'video') items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded });
-      else items.push({ key: o.key, type: 'image', url: `${origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
+      else items.push({ key: o.key, type: 'image', url: mediaUrl(origin, o.key), size: o.size, uploaded: o.uploaded });
     }
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
@@ -276,7 +283,7 @@ export default {
         const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
 
-        const base = `library/${owner}/${encodeURIComponent(client)}/`;
+        const base = `library/${owner}/${client}/`;
         const cap = parseInt(env.MEDIA_PER_CLIENT || '50', 10);
         const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
         if (existing.objects.length >= cap) {
@@ -300,7 +307,7 @@ export default {
           const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
           const key = `${base}${crypto.randomUUID()}.${ext}`;
           await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
-          return json({ key, type: 'image', url: `${url.origin}/media/${key}` }, 201, cors);
+          return json({ key, type: 'image', url: mediaUrl(url.origin, key) }, 201, cors);
         }
         return json({ error: 'image.base64 or videoUrl is required' }, 400, cors);
       }
@@ -312,7 +319,7 @@ export default {
           const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
           if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
           const client = clientParam.trim().replace(/\//g, '').slice(0, 50);
-          const media = await listMediaPrefix(env, url.origin, `library/${owner}/${encodeURIComponent(client)}/`);
+          const media = await listMediaPrefix(env, url.origin, `library/${owner}/${client}/`);
           return json({ media, count: media.length }, 200, cors);
         }
         // No client → the generated AI-cache pool (in-editor "Choose from library").
@@ -327,7 +334,7 @@ export default {
           do {
             const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
             for (const o of listed.objects) {
-              media.push({ key: o.key, type: 'image', url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
+              media.push({ key: o.key, type: 'image', url: mediaUrl(url.origin, o.key), size: o.size, uploaded: o.uploaded });
             }
             cursor = paginate && listed.truncated ? listed.cursor : undefined;
           } while (cursor);
