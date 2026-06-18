@@ -13,19 +13,26 @@
 ## ✨ Key Features
 
 * **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
+* **📝 Long-form content:** **Blog** and **Job Posting** channels with a Markdown editor, formatting toolbar, and live preview.
+* **🤖 AI throughout:** tone/length-aware drafting (Generate / Improve / Hashtags), per-client brand voice, **repurpose blog → social**, SEO meta descriptions, and brand-aware image generation with **vision alt-text**.
+* **🖼️ Media library:** reuse previously AI-generated images from an R2-backed pool instead of regenerating.
+* **🔌 Content API + Claude skill:** push and manage drafts from any tool (see [SPOOL_DRAFTS_API.md](SPOOL_DRAFTS_API.md) and the `/draft-to-spool` skill).
 * **🔗 Client Approval Links:** Generate unique, shareable URLs for clients to review content without needing an account.
-* **🖼️ Smart Media Handling:** Automatic client-side image compression to optimize storage within Firestore constraints.
 * **📅 Calendar & Grid Views:** Visualize content schedules at a glance.
-* **🔒 Secure Architecture:** Environment variable protection for API keys and sensitive data.
+* **🔒 Secure Architecture:** Key-/login-gated APIs, per-user rate limiting, and anonymous-token rejection.
+
+> New here? See the [feature walkthrough](WALKTHROUGH.md).
 
 ---
 
 ## 🛠️ Tech Stack
 
-* **Frontend:** React (Vite), Tailwind CSS
+* **Frontend:** React (Vite), Tailwind CSS, react-markdown
 * **Backend:** Firebase (Firestore, Auth)
+* **AI:** Google Gemini (text + image, multimodal)
+* **Edge/API/Storage:** Cloudflare Workers + R2 (app, generation + drafts API, image pool)
 * **Icons:** Lucide React
-* **Deployment:** Cloudflare Workers (app + generation API)
+* **Deployment:** Cloudflare Workers — auto-deploys on push to `main`
 
 ---
 

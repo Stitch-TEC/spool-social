@@ -8,6 +8,7 @@ import MobilePreview from './MobilePreview';
 import MarkdownPreview from './MarkdownPreview';
 import MarkdownToolbar from './MarkdownToolbar';
 import RepurposeBlog from './RepurposeBlog';
+import MediaPicker from './MediaPicker';
 import SparkDeck from './SparkDeck';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
@@ -52,6 +53,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   });
   const [previewMode, setPreviewMode] = useState(false);
   const [isSparkOpen, setIsSparkOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [altLoading, setAltLoading] = useState(false);
@@ -381,7 +383,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Visual Asset</label>
             {!isReadOnly && (
-              <div className="mb-3">
+              <div className="mb-3 space-y-2">
                 <AIGenerate
                   kind="image"
                   platform={formData.platform}
@@ -390,6 +392,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                   showToast={showToast}
                   onResult={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
                 />
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(true)}
+                  className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline"
+                >
+                  <ImageIcon size={12} /> Choose from library
+                </button>
               </div>
             )}
             {!formData.imageUrl ? (
@@ -465,6 +474,14 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
             setFormData(prev => ({ ...prev, content: txt }));
             setIsSparkOpen(false);
           }}
+        />
+      )}
+
+      {pickerOpen && (
+        <MediaPicker
+          onClose={() => setPickerOpen(false)}
+          onSelect={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
+          showToast={showToast}
         />
       )}
     </div>

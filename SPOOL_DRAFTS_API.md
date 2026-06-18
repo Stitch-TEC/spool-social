@@ -70,6 +70,8 @@ curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
   -d '{"image":{"url":"https://…/hero.png"}}'
 ```
 
+`GET /api/media` also accepts a **Firebase user token** (used by the in-app media-library picker), scoped to that user's own generated images — the configured owner additionally sees the shared API-created (`generated/internal/`) pool.
+
 ## ⚠️ User-Agent
 Cloudflare bot protection on this zone returns **403 / "error 1010"** for default library
 User-Agents (e.g. `python-urllib`). **curl is fine.** With raw HTTP libraries, set a normal

@@ -44,6 +44,17 @@ export async function generateText(prompt, opts = {}) {
   return text;
 }
 
+/** List the signed-in user's reusable images (the media pool). */
+export async function listMedia() {
+  const res = await fetch(`${API_BASE}/api/media`, { headers: await authHeaders() });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  const { media } = await res.json();
+  return media || [];
+}
+
 /** Generate concise alt text for an image (data URL or hosted /media URL). */
 export async function describeImage(imageUrl) {
   const { text } = await postJSON('/api/text', {

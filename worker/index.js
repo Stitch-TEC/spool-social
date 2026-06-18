@@ -207,14 +207,45 @@ export default {
       }
     }
 
+    // --- Reusable image pool (browser: Firebase token; tools: internal key) ---
+    if (url.pathname === '/api/media') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      // A server tool (api key) sees the whole pool; the configured owner also
+      // sees the shared API-created pool; any other signed-in user sees only
+      // their own images (tenancy enforced in code, not just by ALLOWED_EMAILS).
+      let prefixes;
+      if (auth.mode === 'apikey') prefixes = ['generated/'];
+      else if (auth.principal === env.OWNER_UID) prefixes = [`generated/${auth.principal}/`, 'generated/internal/'];
+      else prefixes = [`generated/${auth.principal}/`];
+      const paginate = auth.mode === 'apikey'; // the in-editor picker only needs one page
+      const media = [];
+      for (const prefix of prefixes) {
+        let cursor;
+        do {
+          const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
+          for (const o of listed.objects) {
+            media.push({ key: o.key, url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
+          }
+          cursor = paginate && listed.truncated ? listed.cursor : undefined;
+        } while (cursor);
+      }
+      media.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
+      return json({ media, count: media.length }, 200, cors);
+    }
+
     // --- Drafts management API (server-to-server: internal key) ---
     //   POST   /api/drafts       create
     //   GET    /api/drafts       list (filters: ?client= &platform= &status=)
     //   GET    /api/drafts/:id    fetch one
     //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags)
     //   DELETE /api/drafts/:id    delete
-    //   GET    /api/media         list reusable stored images
-    if (url.pathname === '/api/drafts' || url.pathname.startsWith('/api/drafts/') || url.pathname === '/api/media') {
+    if (url.pathname === '/api/drafts' || url.pathname.startsWith('/api/drafts/')) {
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
       if (auth.mode !== 'apikey') return json({ error: 'This API requires the internal API key' }, 403, cors);
@@ -224,16 +255,6 @@ export default {
         return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
       }
       if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
-
-      // GET /api/media — list reusable images from R2.
-      if (url.pathname === '/api/media') {
-        if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
-        const listed = await env.MEDIA.list({ prefix: 'generated/', limit: 1000 });
-        const media = listed.objects.map(o => ({
-          key: o.key, url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded
-        }));
-        return json({ media, count: media.length }, 200, cors);
-      }
 
       // /api/drafts/:id — fetch one / patch / delete.
       if (url.pathname.startsWith('/api/drafts/')) {

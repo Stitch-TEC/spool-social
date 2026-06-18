@@ -36,9 +36,10 @@ Set a client's **Brand Voice**, **Target Audience**, **Default Tone**, **Keyword
 
 - **Style presets** (Photo / Studio product / Illustration / Minimal / Bold graphic).
 - **Brand- & platform-aware** — uses the client's brand color/themes and the right aspect ratio per channel.
+- **Media library** — *"Choose from library"* opens a picker of your previously **AI-generated** images so you can **reuse** one instead of regenerating (saves cost). Orphaned images are swept automatically each night. *(Uploaded-from-disk images are stored on the post, not in this pool.)*
 - **Alt text** — once an image is set, click **Generate** next to *Alt text* and the AI describes the actual image (accessibility + SEO). Editable.
 
-**How to use:** Generate image → describe it → pick a style → **Generate**. Then generate alt text.
+**How to use:** **Generate image** (describe it → pick a style → **Generate**), or **Choose from library** to reuse one. Then generate alt text.
 
 ---
 
