@@ -8,6 +8,7 @@
 
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
+import { checkRateLimit } from './ratelimit.js';
 
 const MAX_PROMPT = 2000;
 
@@ -21,6 +22,9 @@ function corsHeaders(env, request) {
     'Access-Control-Allow-Headers': 'Authorization,Content-Type'
   };
   if (allowed) h['Access-Control-Allow-Origin'] = allowed;
+  // When a specific origin is reflected (not '*'), caches must key on Origin or
+  // one origin's CORS response could be served to a different origin.
+  if (allowed && allow !== '*') h['Vary'] = 'Origin';
   return h;
 }
 
@@ -51,6 +55,15 @@ export default {
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
 
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json(
+          { error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}). Slow down and retry shortly.` },
+          429,
+          { ...cors, 'Retry-After': String(rl.retryAfter) }
+        );
+      }
+
       let body;
       try {
         body = await request.json();
@@ -79,7 +92,10 @@ export default {
         await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
         return json({ url: `${url.origin}/media/${key}`, key }, 200, cors);
       } catch (err) {
-        return json({ error: err.message || 'Generation failed' }, 502, cors);
+        // Log upstream detail server-side (visible via `wrangler tail`), but do
+        // not reflect raw Gemini error text back to API callers.
+        console.error('Generation failed:', err?.message || err);
+        return json({ error: 'Generation failed' }, 502, cors);
       }
     }
 
@@ -88,8 +104,8 @@ export default {
       if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
       const key = decodeURIComponent(url.pathname.slice('/media/'.length));
       const obj = await env.MEDIA.get(key);
-      if (!obj) return new Response('Not found', { status: 404 });
-      const headers = new Headers();
+      if (!obj) return new Response('Not found', { status: 404, headers: cors });
+      const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
       return new Response(obj.body, { headers });

@@ -142,7 +142,7 @@ to cap spend.
 
 ## Roadmap / next steps
 
-1. **Switch models** to current-gen (`gemini-3-flash-image` / `gemini-3-pro-image`)
+1. **Switch models** to current-gen (`gemini-3.1-flash-image` / `gemini-3-pro-image`)
    once billing is on — just edit `wrangler.toml`, no code change. (The default
    `gemini-2.5-flash-image` is slated to sunset Oct 2026.)
 2. **Rate limiting / budget guardrails** — per-key daily cap via Cloudflare KV.

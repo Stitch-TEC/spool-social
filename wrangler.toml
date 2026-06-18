@@ -22,17 +22,33 @@ not_found_handling = "single-page-application"
 binding = "MEDIA"
 bucket_name = "spool-media"
 
+# Per-principal rate-limit counters (see worker/ratelimit.js).
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "52b2367d9e75470d92840c8fbcfbee05"
+
 [vars]
 # Firebase project whose ID tokens authenticate Spool app users.
-FIREBASE_PROJECT_ID = "REPLACE_WITH_FIREBASE_PROJECT_ID"
+FIREBASE_PROJECT_ID = "spool-social"
 # Default Gemini models — override here without code changes.
-# On the free tier start with these Flash models; switch to gemini-3-flash-image
+# On the free tier start with these Flash models; switch to gemini-3.1-flash-image
 # / gemini-3-pro-image once billing is enabled (see runbook).
 GEMINI_TEXT_MODEL = "gemini-2.5-flash"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 # Comma-separated origins allowed to call /api cross-site (your other projects).
 # "*" is fine to start since auth is bearer-token, not cookies.
 ALLOWED_ORIGINS = "*"
+# Comma-separated emails allowed to use the in-app generation API (Firebase auth).
+# Empty = allow any non-anonymous (Google) sign-in. Anonymous/guest tokens are
+# always rejected. Set to specific staff emails to lock generation down further.
+ALLOWED_EMAILS = ""
+# Per-user generation rate limits, backed by the RATE_LIMIT KV namespace below.
+# A value of "0" disables that tier. Firebase (in-app) users:
+RL_PER_MIN = "10"
+RL_PER_DAY = "100"
+# Internal API key (trusted server-to-server) — generous; runaway-loop guard.
+RL_INTERNAL_PER_MIN = "120"
+RL_INTERNAL_PER_DAY = "10000"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
 #   GEMINI_API_KEY     — your Google AI Studio / Gemini API key

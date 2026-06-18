@@ -5,9 +5,14 @@
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 async function callGemini(env, model, body) {
-  const res = await fetch(`${BASE}/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
+  // Auth via the x-goog-api-key header (works for both legacy AIza... keys and
+  // the newer AQ.... keys; keeps the key out of the request URL/logs).
+  const res = await fetch(`${BASE}/${model}:generateContent`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': env.GEMINI_API_KEY
+    },
     body: JSON.stringify(body)
   });
   const data = await res.json().catch(() => ({}));

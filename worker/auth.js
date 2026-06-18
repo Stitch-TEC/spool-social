@@ -26,9 +26,9 @@ function b64urlToString(s) {
 
 // Cache Google's signing keys in-isolate (~1h) to avoid refetching every request.
 let jwkCache = { exp: 0, keys: null };
-async function getJwks() {
+async function getJwks(force) {
   const now = Date.now();
-  if (jwkCache.keys && now < jwkCache.exp) return jwkCache.keys;
+  if (!force && jwkCache.keys && now < jwkCache.exp) return jwkCache.keys;
   const res = await fetch(JWK_URL);
   const data = await res.json();
   jwkCache = { exp: now + 60 * 60 * 1000, keys: data.keys || [] };
@@ -49,7 +49,10 @@ export async function verifyFirebaseToken(token, projectId) {
   }
   if (header.alg !== 'RS256' || !header.kid) return null;
 
-  const jwk = (await getJwks()).find(k => k.kid === header.kid);
+  // On a kid miss, Google may have rotated signing keys — force one refetch
+  // (bypassing the ~1h cache) before rejecting an otherwise-valid token.
+  let jwk = (await getJwks()).find(k => k.kid === header.kid);
+  if (!jwk) jwk = (await getJwks(true)).find(k => k.kid === header.kid);
   if (!jwk) return null;
 
   const key = await crypto.subtle.importKey(
@@ -85,6 +88,27 @@ export function timingSafeEqual(a, b) {
 }
 
 /**
+ * Decides which Firebase users may use the generation API.
+ *   - Anonymous/guest tokens are ALWAYS rejected. (Share-link reviewers sign in
+ *     anonymously; the public Firebase web config means anyone could otherwise
+ *     mint an anonymous token and call the API.)
+ *   - If ALLOWED_EMAILS is set (comma-separated), only those verified emails pass.
+ *     Leave it empty to allow any non-anonymous (e.g. Google) sign-in.
+ */
+function isAuthorizedUser(payload, env) {
+  if (payload.firebase?.sign_in_provider === 'anonymous') return false;
+
+  const allow = (env.ALLOWED_EMAILS || '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (allow.length === 0) return true; // any non-anonymous user
+
+  const email = (payload.email || '').toLowerCase();
+  return payload.email_verified === true && allow.includes(email);
+}
+
+/**
  * Returns { principal, mode } on success, or null on failure.
  *   mode 'apikey'   → principal 'internal'
  *   mode 'firebase' → principal is the user's uid
@@ -99,7 +123,9 @@ export async function authenticate(request, env) {
   }
   if (env.FIREBASE_PROJECT_ID) {
     const payload = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID);
-    if (payload) return { principal: payload.sub, mode: 'firebase' };
+    if (payload && isAuthorizedUser(payload, env)) {
+      return { principal: payload.sub, mode: 'firebase' };
+    }
   }
   return null;
 }
