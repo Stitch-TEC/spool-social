@@ -13,7 +13,7 @@ import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
-import { describeImage } from '../utils/generationApi';
+import { describeImage, generateText } from '../utils/generationApi';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -43,6 +43,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
     content: '',
     title: '',
     altText: '',
+    metaDescription: '',
     client: '',
     imageUrl: '',
     scheduledDate: toLocalISOString(new Date()),
@@ -54,6 +55,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [altLoading, setAltLoading] = useState(false);
+  const [metaLoading, setMetaLoading] = useState(false);
   const textareaRef = useRef(null);
 
   const handleDragOver = (e) => {
@@ -101,6 +103,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
         content: '',
         title: '',
         altText: '',
+        metaDescription: '',
         client: '',
         imageUrl: '',
         scheduledDate: safeDateString,
@@ -153,6 +156,23 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
       showToast?.(err.message || 'Alt text failed', 'error');
     } finally {
       setAltLoading(false);
+    }
+  };
+
+  const handleMeta = async () => {
+    if (metaLoading || !formData.content.trim()) return;
+    setMetaLoading(true);
+    try {
+      const meta = await generateText(
+        `Write a compelling SEO meta description (max 155 characters, one sentence, no quotes) for the post below.\n\nTITLE: ${formData.title || ''}\n\nPOST:\n${formData.content}`,
+        { maxTokens: 80 }
+      );
+      setFormData(prev => ({ ...prev, metaDescription: meta.trim().slice(0, 200) }));
+      showToast?.('Meta description generated');
+    } catch (err) {
+      showToast?.(err.message || 'Generation failed', 'error');
+    } finally {
+      setMetaLoading(false);
     }
   };
 
@@ -213,6 +233,30 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                 value={formData.title || ''}
                 onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                 className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base font-bold focus:border-indigo-500 focus:ring-0 transition-all"
+              />
+            </div>
+          )}
+
+          {isLongForm && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">Meta description (SEO)</label>
+                <button
+                  type="button"
+                  onClick={handleMeta}
+                  disabled={metaLoading || !formData.content.trim()}
+                  className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline disabled:opacity-50"
+                >
+                  {metaLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Generate
+                </button>
+              </div>
+              <input
+                type="text"
+                maxLength={200}
+                placeholder="One-sentence summary for search results…"
+                value={formData.metaDescription || ''}
+                onChange={(e) => setFormData({ ...formData, metaDescription: e.target.value })}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:border-indigo-500 focus:ring-0 transition-all"
               />
             </div>
           )}

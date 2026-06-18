@@ -136,6 +136,8 @@ const App = () => {
         content,
         title: (formData.title || "").trim().slice(0, 200),
         altText: (formData.altText || "").trim().slice(0, 300),
+        metaDescription: (formData.metaDescription || "").trim().slice(0, 200),
+        slug: (formData.title || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
         platform: platformId,
         status,
         approvalStatus,
