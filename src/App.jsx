@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
-import { Loader2, ShieldCheck, X } from 'lucide-react';
+import { Loader2, ShieldCheck, X, CheckSquare } from 'lucide-react';
 import {
   collection,
   addDoc,
   updateDoc,
   deleteDoc,
+  setDoc,
   doc,
   writeBatch
 } from 'firebase/firestore';
@@ -28,6 +29,7 @@ import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
 import ImportModal from './components/ImportModal';
+import BulkActionBar from './components/BulkActionBar';
 
 const Editor = lazy(() => import('./components/Editor'));
 
@@ -60,12 +62,19 @@ const App = () => {
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
   const postsRef = useRef([]);
   useEffect(() => {
     postsRef.current = posts;
   }, [posts]);
+
+  // Selection only makes sense in the grid — drop it when switching views.
+  useEffect(() => {
+    if (view !== 'grid') { setSelectionMode(false); setSelectedIds(new Set()); }
+  }, [view]);
 
   // --- Dynamic Title ---
   useEffect(() => {
@@ -499,6 +508,7 @@ const App = () => {
     let exportPosts = [];
     if (mode === 'current') exportPosts = filteredPosts;
     else if (mode === 'archived') exportPosts = posts.filter(p => p.status === STATUS.ARCHIVED);
+    else if (mode === 'selected') exportPosts = posts.filter(p => selectedIds.has(p.id));
     else exportPosts = posts;
 
     if (exportPosts.length === 0) return showToast("Nothing to export", "error");
@@ -510,7 +520,150 @@ const App = () => {
       downloadFile(convertToCSV(exportPosts), `spool-export-${mode}-${date}.csv`, 'text/csv;charset=utf-8;');
     }
     showToast(`Exported ${exportPosts.length} thread${exportPosts.length === 1 ? '' : 's'} 📥`);
-  }, [posts, filteredPosts, showToast]);
+  }, [posts, filteredPosts, selectedIds, showToast]);
+
+  // --- Selection & bulk actions (owner only) ---
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  // Apply a per-post patch to the whole selection (skips unchanged posts).
+  // `mutate(post)` returns a patch object or null to skip that post.
+  const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false } = {}) => {
+    if (isReadOnly || !user) return;
+    const byId = new Map(postsRef.current.map(p => [p.id, p]));
+    const now = new Date().toISOString();
+    const updates = [];
+    selectedIds.forEach(id => {
+      const post = byId.get(id);
+      if (!post) return;
+      const patch = mutate(post);
+      if (patch) updates.push([id, { ...patch, updatedAt: now }]);
+    });
+    if (updates.length === 0) return showToast("No changes to apply");
+    try {
+      const CHUNK = 450;
+      for (let i = 0; i < updates.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        updates.slice(i, i + CHUNK).forEach(([id, patch]) => batch.update(doc(db, 'posts', id), patch));
+        await batch.commit();
+      }
+      showToast(successMsg(updates.length));
+      if (clearAfter) clearSelection();
+    } catch (err) {
+      console.error("Bulk update error:", err);
+      showToast("Bulk update failed", "error");
+    }
+  }, [isReadOnly, user, selectedIds, showToast, clearSelection]);
+
+  const handleBulkReassignClient = useCallback((client) => {
+    const c = String(client).trim().replace(/\//g, '').slice(0, 50);
+    if (!c) return;
+    // Posts may leave the current client filter — clear selection after.
+    commitBulk(() => ({ client: c }), n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}"`, { clearAfter: true });
+  }, [commitBulk]);
+
+  const handleBulkAddTags = useCallback((tags) => {
+    commitBulk(post => {
+      const cur = Array.isArray(post.tags) ? post.tags : [];
+      const merged = [...new Set([...cur, ...tags])].slice(0, 10);
+      return merged.length === cur.length && merged.every((t, i) => t === cur[i]) ? null : { tags: merged };
+    }, n => `Tagged ${n} thread${n === 1 ? '' : 's'}`);
+  }, [commitBulk]);
+
+  const handleBulkRemoveTags = useCallback((tags) => {
+    const rm = new Set(tags);
+    commitBulk(post => {
+      const cur = Array.isArray(post.tags) ? post.tags : [];
+      const next = cur.filter(t => !rm.has(t));
+      return next.length === cur.length ? null : { tags: next };
+    }, n => `Updated tags on ${n} thread${n === 1 ? '' : 's'}`);
+  }, [commitBulk]);
+
+  const handleBulkStatus = useCallback((status) => {
+    if (!Object.values(STATUS).includes(status)) return;
+    commitBulk(() => ({ status }), n => `Set ${n} thread${n === 1 ? '' : 's'} to ${status}`, { clearAfter: status === STATUS.ARCHIVED });
+  }, [commitBulk]);
+
+  const handleBulkArchive = useCallback(() => {
+    commitBulk(() => ({ status: STATUS.ARCHIVED }), n => `Archived ${n} thread${n === 1 ? '' : 's'}`, { clearAfter: true });
+  }, [commitBulk]);
+
+  const handleBulkDelete = useCallback(() => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setConfirmModal({
+      title: `Delete ${ids.length} thread${ids.length === 1 ? '' : 's'}?`,
+      message: "This permanently removes the selected threads. This can't be undone.",
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          const CHUNK = 450;
+          for (let i = 0; i < ids.length; i += CHUNK) {
+            const batch = writeBatch(db);
+            ids.slice(i, i + CHUNK).forEach(id => batch.delete(doc(db, 'posts', id)));
+            await batch.commit();
+          }
+          showToast(`Deleted ${ids.length} thread${ids.length === 1 ? '' : 's'}`);
+          clearSelection();
+        } catch (err) {
+          console.error("Bulk delete error:", err);
+          showToast("Bulk delete failed", "error");
+        } finally {
+          setConfirmModal(null);
+        }
+      }
+    });
+  }, [selectedIds, showToast, clearSelection]);
+
+  // Rename or merge a client: reassign every post from `source` to `target`,
+  // and migrate the brand-settings doc if the target has none.
+  const handleMergeClient = useCallback(async (source, target) => {
+    if (isReadOnly || !user) return;
+    const from = String(source || '').trim();
+    const to = String(target || '').trim().replace(/\//g, '').slice(0, 50);
+    if (!from || !to || from === to) return showToast("Pick a different target name", "error");
+
+    const affected = postsRef.current.filter(p => p.client === from);
+    try {
+      const now = new Date().toISOString();
+      const CHUNK = 450;
+      for (let i = 0; i < affected.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id), { client: to, updatedAt: now }));
+        await batch.commit();
+      }
+
+      // Brand settings: copy source → target if target has none, then drop source.
+      const srcSettings = clientMap[from];
+      if (srcSettings) {
+        if (!clientMap[to]) {
+          await setDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(to)}`), {
+            ...srcSettings, uid: user.uid, name: to
+          }, { merge: true });
+        }
+        await deleteDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(from)}`)).catch(() => {});
+      }
+
+      const wasMerge = !!clientMap[to];
+      if (filterClient === from) setFilterClient(to);
+      showToast(`${wasMerge ? 'Merged' : 'Renamed'} "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`);
+    } catch (err) {
+      console.error("Merge client error:", err);
+      showToast("Couldn't rename/merge client", "error");
+    }
+  }, [isReadOnly, user, clientMap, filterClient, showToast]);
 
   // --- Render ---
 
@@ -585,14 +738,22 @@ const App = () => {
             </div>
           )}
 
-          <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                {view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}
+          <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
+            <div className="flex items-center justify-between mb-6 gap-3">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
+                <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
                 {filterClient && !isReadOnly && (
-                  <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
+                  <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500 shrink-0"><X size={20}/></button>
                 )}
               </h2>
+              {!isReadOnly && view === 'grid' && filteredPosts.length > 0 && (
+                <button
+                  onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+                  className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold border transition-colors ${selectionMode ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                >
+                  <CheckSquare size={16} /> {selectionMode ? 'Done' : 'Select'}
+                </button>
+              )}
             </div>
 
             {isLoading ? (
@@ -634,6 +795,9 @@ const App = () => {
                     onArchive={handleArchivePost}
                     onRestore={handleRestorePost}
                     onCreate={() => setView('editor')}
+                    selectable={!isReadOnly && selectionMode}
+                    selectedIds={selectedIds}
+                    onToggleSelect={toggleSelect}
                   />
                   </>
                 )}
@@ -666,8 +830,24 @@ const App = () => {
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
+      {!isReadOnly && selectionMode && selectedIds.size > 0 && (
+        <BulkActionBar
+          count={selectedIds.size}
+          totalFiltered={filteredPosts.length}
+          uniqueClients={uniqueClients}
+          onReassignClient={handleBulkReassignClient}
+          onAddTags={handleBulkAddTags}
+          onRemoveTags={handleBulkRemoveTags}
+          onSetStatus={handleBulkStatus}
+          onArchive={handleBulkArchive}
+          onDelete={handleBulkDelete}
+          onExport={() => handleExport('selected', 'csv')}
+          onSelectAll={() => setSelectedIds(new Set(filteredPosts.map(p => p.id)))}
+          onClear={clearSelection}
+        />
+      )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} />
       )}
       {isMediaOpen && (
         <MediaLibrary
