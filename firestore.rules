@@ -3,16 +3,15 @@ rules_version = '2';
 // =============================================================================
 // Spool — Firestore Security Rules
 //
-// ⚠️  AUTHORED FROM THE APP'S DATA MODEL AS A REVIEWABLE STARTING POINT.
-//     These were written by inspecting the client code, NOT exported from the
-//     live project. Before deploying:
-//       1. Diff against the rules currently live in the Firebase console.
-//       2. Test every flow in the Rules Playground:
-//            - owner can create/read/update/delete their own posts
-//            - guest (anonymous) can approve + request changes ONLY
-//            - guest CANNOT edit content, delete, or reassign uid/client
-//            - users only see their own client-branding docs
-//       3. Deploy with:  firebase deploy --only firestore:rules
+// ⚠️  Deploy these together with the Worker that mints share tokens:
+//       firebase deploy --only firestore:rules
+//     Test in the Rules Playground before deploying:
+//       - owner can create/read/update/delete their own posts
+//       - share guest (custom token w/ share claims) can read ONLY their
+//         (owner, client) and may only approve / request changes / add feedback
+//       - share guest CANNOT read another client, edit content, delete, or
+//         reassign uid/client
+//       - a plain anonymous token (no share claim) can read NOTHING
 // =============================================================================
 
 service cloud.firestore {
@@ -26,24 +25,34 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    // A non-owner reviewer (guest) may only approve or request changes —
-    // never edit content, reassign ownership, or change the client.
-    function isGuestReviewUpdate() {
+    // A token-scoped review guest: signed in via a Worker-minted custom token
+    // carrying { share, shareOwner, shareClient } claims, bound to exactly one
+    // (owner, client) pair. Replaces the old "any signed-in user can read"
+    // model — a leaked workspace uid no longer grants read access.
+    function isShareGuest(uid, client) {
       return isSignedIn()
+        && request.auth.token.share == true
+        && request.auth.token.shareOwner == uid
+        && request.auth.token.shareClient == client;
+    }
+
+    // A guest may ONLY approve / request changes / append feedback — never edit
+    // content, reassign ownership, or change the client.
+    function isGuestReviewUpdate() {
+      return isShareGuest(resource.data.uid, resource.data.client)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'approvalStatus', 'feedback'])
+             .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread', 'updatedAt'])
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.client == resource.data.client;
     }
 
     // --- Posts ---------------------------------------------------------------
     match /posts/{postId} {
-      // NOTE: share links work by passing ?uid=<owner>&client=<name>, so any
-      // signed-in user (incl. anonymous guests) can read posts they query; the
-      // uid/client narrowing happens client-side. Tighten this if share links
-      // should be the *only* read path (e.g. move shared content to a
-      // dedicated collection with per-link tokens).
-      allow read: if isSignedIn();
+      // Reads are scoped: the owner sees their own; a guest sees only the exact
+      // (owner, client) their token authorizes. App queries MUST filter on
+      // uid (+ client for guests) so the rule resolves against the result set.
+      allow read: if isOwner(resource.data.uid)
+        || isShareGuest(resource.data.uid, resource.data.client);
 
       allow create: if isOwner(request.resource.data.uid);
       allow update: if isOwner(resource.data.uid) || isGuestReviewUpdate();
@@ -52,11 +61,20 @@ service cloud.firestore {
 
     // --- Client branding -----------------------------------------------------
     // Doc id is `${uid}__${encodeURIComponent(name)}` (see ClientSettingsModal).
+    // A guest may read only the branding doc for their own client.
     match /clients/{clientId} {
-      allow read: if isSignedIn();
+      allow read: if isOwner(resource.data.uid)
+        || isShareGuest(resource.data.uid, resource.data.name);
       allow create, update: if isOwner(request.resource.data.uid)
         && clientId.split('__')[0] == request.auth.uid;
       allow delete: if isOwner(resource.data.uid);
+    }
+
+    // --- Share-link tokens ---------------------------------------------------
+    // Only the Worker (service account, which bypasses rules) ever reads or
+    // writes these. No client — owner or guest — touches this collection.
+    match /shares/{shareId} {
+      allow read, write: if false;
     }
   }
 }

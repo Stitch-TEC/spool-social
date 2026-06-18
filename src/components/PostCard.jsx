@@ -113,6 +113,20 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, isPosted ? STATUS.DRAFT : STATUS.POSTED); }} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 sm:px-2.5 sm:py-1.5 rounded-full transition-colors ${isPosted ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{isPosted ? 'Posted' : 'Mark Done'}</button>
           </div>
         )}
+
+        {/* Guest reviewer quick-actions (approve / request changes from the card) */}
+        {isReadOnly && (
+          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+            {post.approvalStatus === APPROVAL_STATUS.APPROVED ? (
+              <span className="flex-1 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg py-2 flex items-center justify-center gap-1"><CheckCircle size={14} /> Approved</span>
+            ) : (
+              <>
+                <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} className="flex-1 py-2 text-xs font-bold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">Request changes</button>
+                <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, STATUS.SCHEDULED); }} className="flex-1 py-2 text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"><CheckCircle size={14} /> Approve</button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import {
   Menu, Search, X, Grid, Calendar as CalendarIcon,
-  Link as LinkIcon, CheckCircle, Plus, LogOut
+  Share2, Plus, LogOut
 } from 'lucide-react';
 import ToolSwitcher from './ToolSwitcher';
 
@@ -12,8 +12,7 @@ const DashboardHeader = ({
   searchQuery,
   onSearchChange,
   onToggleSidebar,
-  linkCopied,
-  onCopyLink,
+  onShare,
   filterClient,
   onNew,
   onSignOut
@@ -89,12 +88,12 @@ const DashboardHeader = ({
 
         {!isReadOnly && (
           <button
-            onClick={onCopyLink}
-            className={`flex items-center gap-2 border px-3 py-2 rounded-xl font-bold text-sm transition-all ${linkCopied ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-indigo-50 text-indigo-700 border-indigo-100 hover:bg-indigo-100'}`}
-            title="Copy Link for Client"
+            onClick={onShare}
+            className="flex items-center gap-2 border px-3 py-2 rounded-xl font-bold text-sm transition-all bg-indigo-50 text-indigo-700 border-indigo-100 hover:bg-indigo-100"
+            title="Share for client review"
           >
-            {linkCopied ? <CheckCircle size={16} /> : <LinkIcon size={16} />}
-            <span className="hidden sm:inline">{linkCopied ? 'Copied!' : (filterClient ? `${filterClient} Link` : 'Master Link')}</span>
+            <Share2 size={16} />
+            <span className="hidden sm:inline">{filterClient ? `Share ${filterClient}` : 'Share'}</span>
           </button>
         )}
 

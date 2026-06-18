@@ -30,14 +30,15 @@ import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
 import ImportModal from './components/ImportModal';
 import BulkActionBar from './components/BulkActionBar';
+import ShareManager from './components/ShareManager';
 
 const Editor = lazy(() => import('./components/Editor'));
 
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
-  const { user, authLoading, sharedUid, isReadOnly, signIn, signOutAndExit } = useAuth(showToast);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid);
+  const { user, authLoading, sharedUid, shareClient, isReadOnly, shareError, signIn, signOutAndExit } = useAuth(showToast);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, shareClient);
   const isLoading = authLoading || postsLoading;
 
   const clientParam = useMemo(
@@ -59,8 +60,8 @@ const App = () => {
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
-  const [linkCopied, setLinkCopied] = useState(false);
   const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -79,35 +80,18 @@ const App = () => {
   // --- Dynamic Title ---
   useEffect(() => {
     if (isReadOnly) {
-      document.title = clientParam ? `${clientParam} | Spool Review` : 'Spool Client View';
+      document.title = shareClient ? `${shareClient} | Spool Review` : 'Spool Client View';
     } else {
       document.title = 'Spool | Creator Dashboard';
     }
-  }, [isReadOnly, clientParam]);
+  }, [isReadOnly, shareClient]);
 
   // --- Link sharing ---
-  const handleCopyLink = useCallback(async () => {
-    if (!user) return;
-
-    const baseUrl = window.location.origin + window.location.pathname;
-
-    let link = `${baseUrl}?uid=${user.uid}`;
-    let message = "Master Link (All Clients) Copied! 📋";
-
-    if (filterClient) {
-      link += `&client=${encodeURIComponent(filterClient)}`;
-      message = `Review Link for "${filterClient}" Copied! 📋`;
-    }
-
-    try {
-      await navigator.clipboard.writeText(link);
-      showToast(message);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    } catch {
-      showToast("Couldn't copy — your browser blocked clipboard access", "error");
-    }
-  }, [filterClient, user, showToast]);
+  // Opens the Share Manager (create/copy/revoke per-client review links).
+  const handleOpenShare = useCallback(() => {
+    if (!user || isReadOnly) return;
+    setIsShareOpen(true);
+  }, [user, isReadOnly]);
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData) => {
@@ -258,9 +242,10 @@ const App = () => {
     try {
       await updateDoc(doc(db, 'posts', postId), {
         status: newStatus,
+        updatedAt: new Date().toISOString(),
         ...(isApproving ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
       });
-      showToast(`Status updated to ${newStatus}`);
+      showToast(isApproving ? "Approved ✓" : `Status updated to ${newStatus}`);
     } catch {
       showToast("Update failed", "error");
     }
@@ -341,9 +326,18 @@ const App = () => {
     }
 
     try {
+      // Append to a feedback thread (history across review rounds) rather than
+      // overwriting. `feedback` keeps the latest note for back-compat / card display.
+      const post = postsRef.current.find(p => p.id === postId);
+      const prevThread = Array.isArray(post?.feedbackThread) ? post.feedbackThread : [];
+      const entry = { text: sanitizedFeedback, by: isReadOnly ? 'client' : 'you', at: new Date().toISOString() };
+      const feedbackThread = [...prevThread, entry].slice(-20);
+
       await updateDoc(doc(db, 'posts', postId), {
         feedback: sanitizedFeedback,
-        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED
+        feedbackThread,
+        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED,
+        updatedAt: new Date().toISOString()
       });
       showToast("Feedback sent!");
       setReviewingPost(null);
@@ -503,6 +497,15 @@ const App = () => {
     if (view !== 'calendar') return [];
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts, view]);
+
+  // Guest review progress ("5 of 8 approved").
+  const approvalProgress = useMemo(() => {
+    if (!isReadOnly) return null;
+    const total = filteredPosts.length;
+    const approved = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.APPROVED).length;
+    const changes = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED).length;
+    return { total, approved, changes, pending: Math.max(0, total - approved - changes) };
+  }, [isReadOnly, filteredPosts]);
 
   const handleExport = useCallback((mode, format = 'csv') => {
     let exportPosts = [];
@@ -667,6 +670,29 @@ const App = () => {
 
   // --- Render ---
 
+  // Expired / revoked / invalid share link.
+  if (shareError && !user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mb-4">
+          <ShieldCheck className="text-rose-400" size={32} />
+        </div>
+        <h1 className="text-xl font-bold text-slate-900">Review link unavailable</h1>
+        <p className="text-slate-500 mt-2 max-w-sm">{shareError} Please ask your team for an updated review link.</p>
+      </div>
+    );
+  }
+
+  // Resolving a share token / initial auth — avoid a flash of the login screen.
+  if (authLoading && !user) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-white">
+        <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+        <p className="text-slate-400 font-medium animate-pulse">Loading…</p>
+      </div>
+    );
+  }
+
   if (!user && !sharedUid) {
     return <LoginScreen onSignIn={signIn} />;
   }
@@ -725,8 +751,7 @@ const App = () => {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onToggleSidebar={() => setSidebarOpen(o => !o)}
-            linkCopied={linkCopied}
-            onCopyLink={handleCopyLink}
+            onShare={handleOpenShare}
             filterClient={filterClient}
             onNew={() => setView('editor')}
             onSignOut={signOutAndExit}
@@ -763,13 +788,13 @@ const App = () => {
               </div>
             ) : (
               <>
-                {isReadOnly && !clientParam ? (
+                {isReadOnly && !shareClient ? (
                   <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
                     <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
                       <ShieldCheck className="text-rose-400" size={32} />
                     </div>
                     <h3 className="text-slate-900 font-bold text-lg">Access Restricted</h3>
-                    <p className="text-slate-500 mt-2">You must use a specific client link to view content.</p>
+                    <p className="text-slate-500 mt-2">Please open the specific review link your team shared with you.</p>
                   </div>
                 ) : view === 'calendar' ? (
                   <CalendarView
@@ -780,6 +805,24 @@ const App = () => {
                   />
                 ) : (
                   <>
+                  {isReadOnly && approvalProgress && approvalProgress.total > 0 && (
+                    <div className="mb-6 bg-white border border-slate-200 rounded-2xl p-4 sm:p-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-bold text-slate-800 text-sm">
+                          {approvalProgress.approved} of {approvalProgress.total} approved
+                        </h3>
+                        <span className="text-xs font-medium text-slate-400">
+                          {approvalProgress.pending > 0 ? `${approvalProgress.pending} awaiting your review` : approvalProgress.changes > 0 ? `${approvalProgress.changes} with requested changes` : 'All set 🎉'}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                          style={{ width: `${approvalProgress.total ? Math.round((approvalProgress.approved / approvalProgress.total) * 100) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {!showArchived && (
                     <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
                   )}
@@ -848,6 +891,14 @@ const App = () => {
       )}
       {isClientSettingsOpen && (
         <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} />
+      )}
+      {isShareOpen && !isReadOnly && (
+        <ShareManager
+          onClose={() => setIsShareOpen(false)}
+          uniqueClients={uniqueClients}
+          initialClient={filterClient || ''}
+          showToast={showToast}
+        />
       )}
       {isMediaOpen && (
         <MediaLibrary

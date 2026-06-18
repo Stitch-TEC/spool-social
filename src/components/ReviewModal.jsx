@@ -5,12 +5,22 @@ import CharCountCircle from './CharCountCircle';
 import { DATE_FORMATTERS } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 
+const fmtDate = (iso) => {
+  try { return DATE_FORMATTERS.full.format(new Date(iso)); } catch { return ''; }
+};
+
 const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, onClose }) => {
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
   useEscapeKey(onClose);
-  
+
+  // Prior review rounds (newest last). Falls back to the legacy single `feedback`
+  // field for posts created before threaded history existed.
+  const feedbackHistory = Array.isArray(post.feedbackThread) && post.feedbackThread.length > 0
+    ? post.feedbackThread
+    : (post.feedback ? [{ text: post.feedback, by: 'client' }] : []);
+
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
 
   const toggleTag = (tag) => {
@@ -51,9 +61,25 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                      {post.content}
                    </div>
                  </div>
-                 {post.tags && (
-                   <div className="flex gap-2">
+                 {post.tags && post.tags.length > 0 && (
+                   <div className="flex flex-wrap gap-2">
                      {post.tags.map(t => <span key={t} className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full font-medium">{t}</span>)}
+                   </div>
+                 )}
+                 {feedbackHistory.length > 0 && (
+                   <div>
+                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Feedback history</label>
+                     <div className="space-y-2">
+                       {feedbackHistory.map((f, i) => (
+                         <div key={i} className="p-3 bg-rose-50/60 rounded-xl border border-rose-100">
+                           <div className="flex items-center justify-between mb-1">
+                             <span className="text-[11px] font-bold uppercase tracking-wider text-rose-600">{f.by === 'you' ? 'You' : 'Client'}</span>
+                             {f.at && <span className="text-[11px] text-slate-400">{fmtDate(f.at)}</span>}
+                           </div>
+                           <p className="text-sm text-slate-700 whitespace-pre-wrap">{f.text}</p>
+                         </div>
+                       ))}
+                     </div>
                    </div>
                  )}
                </div>
