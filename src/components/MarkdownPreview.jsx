@@ -11,11 +11,12 @@ const components = {
   ul: (p) => <ul className="list-disc pl-5 mb-3 text-sm text-slate-700 space-y-1" {...p} />,
   ol: (p) => <ol className="list-decimal pl-5 mb-3 text-sm text-slate-700 space-y-1" {...p} />,
   li: (p) => <li className="leading-relaxed" {...p} />,
-  a: (p) => <a className="text-indigo-600 underline" target="_blank" rel="noopener noreferrer" {...p} />,
+  a: (p) => <a className="text-indigo-600 underline break-words" target="_blank" rel="noopener noreferrer" {...p} />,
   strong: (p) => <strong className="font-bold text-slate-900" {...p} />,
   em: (p) => <em className="italic" {...p} />,
   blockquote: (p) => <blockquote className="border-l-4 border-slate-200 pl-3 italic text-slate-500 my-3" {...p} />,
   hr: () => <hr className="border-slate-200 my-4" />,
+  img: (p) => <img className="w-full rounded-lg border border-slate-200 my-3" loading="lazy" {...p} />,
   pre: (p) => <pre className="bg-slate-900 text-slate-100 rounded-lg p-3 text-xs overflow-x-auto my-3" {...p} />,
   // Inline code (no language- class) gets a chip; fenced blocks live inside <pre>.
   code: ({ className = '', ...p }) =>
@@ -27,9 +28,16 @@ const components = {
   td: (p) => <td className="border border-slate-200 px-2 py-1" {...p} />,
 };
 
-const MarkdownPreview = ({ content = '', title = '' }) => (
+const MarkdownPreview = ({ content = '', title = '', imageUrl = '' }) => (
   <div className="w-full max-w-none">
     {title && <h1 className="text-2xl font-black text-slate-900 mb-3">{title}</h1>}
+    {imageUrl && (
+      <img
+        src={imageUrl}
+        alt={title || 'Cover image'}
+        className="w-full max-h-72 object-cover rounded-lg border border-slate-200 mb-4"
+      />
+    )}
     {content ? (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>
     ) : (

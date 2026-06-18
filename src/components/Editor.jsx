@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  X, Save, Wand2, Smartphone, Image as ImageIcon,
+  X, Save, Wand2, Smartphone, Image as ImageIcon, Eye,
   Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
@@ -143,14 +143,23 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
              <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
           </div>
-          <button
-            onClick={handleSaveWrapper}
-            disabled={isOverLimit || !formData.content || isReadOnly || isSaving}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
-          >
-             {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
-             <span>{isSaving ? 'Saving...' : 'Save'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPreviewMode(p => !p)}
+              className="md:hidden flex items-center gap-1 text-xs font-bold text-slate-600 border border-slate-200 rounded-full px-3 py-2 hover:bg-slate-50"
+            >
+              <Eye size={14} /> {previewMode ? 'Edit' : 'Preview'}
+            </button>
+            <button
+              onClick={handleSaveWrapper}
+              disabled={isOverLimit || !formData.content || isReadOnly || isSaving}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
+            >
+               {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+               <span>{isSaving ? 'Saving...' : 'Save'}</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
@@ -328,7 +337,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
          <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 backdrop-blur-3xl overflow-hidden">
             {isBlog ? (
               <div className="w-full h-full overflow-y-auto bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-                <MarkdownPreview content={formData.content} title={formData.title} />
+                <MarkdownPreview content={formData.content} title={formData.title} imageUrl={formData.imageUrl} />
               </div>
             ) : (
               <MobilePreview
