@@ -15,7 +15,7 @@
 * **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
 * **📝 Long-form content:** **Blog** and **Job Posting** channels with a Markdown editor, formatting toolbar, and live preview.
 * **🤖 AI throughout:** tone/length-aware drafting (Generate / Improve / Hashtags), per-client brand voice, **repurpose blog → social**, SEO meta descriptions, and brand-aware image generation with **vision alt-text**.
-* **🖼️ Media library:** reuse previously AI-generated images from an R2-backed pool instead of regenerating.
+* **🖼️ Media library:** a per-client asset panel — upload (auto-optimized) images, add video URLs (YouTube / Vimeo / file), reuse or delete — backed by R2.
 * **🔌 Content API + Claude skill:** push and manage drafts from any tool (see [SPOOL_DRAFTS_API.md](SPOOL_DRAFTS_API.md) and the `/draft-to-spool` skill).
 * **🔗 Client Approval Links:** Generate unique, shareable URLs for clients to review content without needing an account.
 * **📅 Calendar & Grid Views:** Visualize content schedules at a glance.

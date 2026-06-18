@@ -26,6 +26,7 @@ import ConfirmModal from './components/ConfirmModal';
 import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
+import MediaLibrary from './components/MediaLibrary';
 
 const Editor = lazy(() => import('./components/Editor'));
 
@@ -54,6 +55,7 @@ const App = () => {
   const [editingPost, setEditingPost] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
+  const [isMediaOpen, setIsMediaOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
   const [linkCopied, setLinkCopied] = useState(false);
 
@@ -539,6 +541,7 @@ const App = () => {
             onFilterClient={setFilterClient}
             uniqueClients={uniqueClients}
             onOpenClientSettings={() => setIsClientSettingsOpen(true)}
+            onOpenMedia={() => setIsMediaOpen(true)}
             onImport={handleImport}
             onExport={handleExport}
           />
@@ -649,6 +652,14 @@ const App = () => {
       )}
       {isClientSettingsOpen && (
         <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} />
+      )}
+      {isMediaOpen && (
+        <MediaLibrary
+          onClose={() => setIsMediaOpen(false)}
+          uniqueClients={uniqueClients}
+          initialClient={filterClient || ''}
+          showToast={showToast}
+        />
       )}
     </ErrorBoundary>
   );

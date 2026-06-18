@@ -70,7 +70,14 @@ curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
   -d '{"image":{"url":"https://…/hero.png"}}'
 ```
 
-`GET /api/media` also accepts a **Firebase user token** (used by the in-app media-library picker), scoped to that user's own generated images — the configured owner additionally sees the shared API-created (`generated/internal/`) pool.
+### Media library (`/api/media`)
+
+- `GET /api/media` — the generated AI-image pool (in-editor reuse).
+- `GET /api/media?client=X` — a client's curated library (images + video references).
+- `POST /api/media` — `{ "client": "...", "image": { "base64": "data:..." } }` to upload an (optimized) image, or `{ "client": "...", "videoUrl": "..." }` for a YouTube / Vimeo / direct-file reference. **Max 50 items per client.**
+- `DELETE /api/media/{key}` — remove one item.
+
+Accepts the internal key (whole workspace) or a **Firebase user token** (the caller's own images; the configured owner also sees the shared `generated/internal/` pool).
 
 ## ⚠️ User-Agent
 Cloudflare bot protection on this zone returns **403 / "error 1010"** for default library

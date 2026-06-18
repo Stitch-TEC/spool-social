@@ -134,8 +134,8 @@ async function listMediaPrefix(env, origin, prefix) {
 
 // Owner-scoped delete authorization for an R2 key.
 function canManageKey(auth, env, key) {
-  if (auth.mode === 'apikey') return key.startsWith('media/') || key.startsWith('generated/');
-  if (key.startsWith(`media/${auth.principal}/`) || key.startsWith(`generated/${auth.principal}/`)) return true;
+  if (auth.mode === 'apikey') return key.startsWith('library/') || key.startsWith('generated/');
+  if (key.startsWith(`library/${auth.principal}/`) || key.startsWith(`generated/${auth.principal}/`)) return true;
   if (auth.principal === env.OWNER_UID && key.startsWith('generated/internal/')) return true;
   return false;
 }
@@ -276,7 +276,7 @@ export default {
         const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
 
-        const base = `media/${owner}/${encodeURIComponent(client)}/`;
+        const base = `library/${owner}/${encodeURIComponent(client)}/`;
         const cap = parseInt(env.MEDIA_PER_CLIENT || '50', 10);
         const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
         if (existing.objects.length >= cap) {
@@ -312,7 +312,7 @@ export default {
           const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
           if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
           const client = clientParam.trim().replace(/\//g, '').slice(0, 50);
-          const media = await listMediaPrefix(env, url.origin, `media/${owner}/${encodeURIComponent(client)}/`);
+          const media = await listMediaPrefix(env, url.origin, `library/${owner}/${encodeURIComponent(client)}/`);
           return json({ media, count: media.length }, 200, cors);
         }
         // No client → the generated AI-cache pool (in-editor "Choose from library").

@@ -75,7 +75,16 @@ Turn one long-form piece into channel-tailored drafts. Pick LinkedIn / X / Insta
 
 ---
 
-## 7. Behind the scenes
+## 7. Media Library (sidebar)
+**Where:** Sidebar → **Media Library**.
+
+A **per-client** asset library: **upload** images (auto-optimized to ~2048px — only the optimized version is stored), **add video URLs** (YouTube / Vimeo / direct `.mp4`/`.webm`/`.mov`), and **delete** anything manually. Each client holds up to **50 items**. Uploaded library images also show in the in-editor "Choose from library" picker.
+
+**How to use:** Sidebar → **Media Library** → pick a client → **Upload image** / paste a **video URL** / hover an item to **delete**.
+
+*(Auto-cleanup only ever touches the AI-generation cache, and only images unused for over a year — your library is manual-delete only.)*
+
+## 8. Behind the scenes
 - **Hosting:** moved to a single **Cloudflare Worker** serving the app + the generation/intake API; images stored in **R2**. Firebase still handles Auth + data.
 - **Custom domain:** `spool.stitchtec.dev` (the `workers.dev` URL still works too).
 - **Suite tool-switcher:** the grid icon (top-left) jumps between Stitch Suite apps (POM / Sender / Spool).

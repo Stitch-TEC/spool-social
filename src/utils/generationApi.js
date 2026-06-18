@@ -55,6 +55,37 @@ export async function listMedia() {
   return media || [];
 }
 
+/** List a client's curated media library (images + video references). */
+export async function listClientMedia(client) {
+  const res = await fetch(`${API_BASE}/api/media?client=${encodeURIComponent(client)}`, { headers: await authHeaders() });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  const { media } = await res.json();
+  return media || [];
+}
+
+/** Upload an optimized image (data URL) to a client's library. */
+export async function uploadMedia(client, base64) {
+  return postJSON('/api/media', { client, image: { base64 } });
+}
+
+/** Add a video URL reference (YouTube / Vimeo / direct file) to a client's library. */
+export async function addVideoUrl(client, videoUrl) {
+  return postJSON('/api/media', { client, videoUrl });
+}
+
+/** Delete a media item by its R2 key. */
+export async function deleteMedia(key) {
+  const res = await fetch(`${API_BASE}/api/media/${encodeURIComponent(key)}`, { method: 'DELETE', headers: await authHeaders() });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
 /** Generate concise alt text for an image (data URL or hosted /media URL). */
 export async function describeImage(imageUrl) {
   const { text } = await postJSON('/api/text', {

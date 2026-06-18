@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Layout, Grid, Archive, Settings, Upload, Download, ChevronRight
+  Layout, Grid, Archive, Settings, Upload, Download, ChevronRight, Image as ImageIcon
 } from 'lucide-react';
 
 const navButtonClass = (active) =>
@@ -17,6 +17,7 @@ const Sidebar = ({
   onFilterClient,
   uniqueClients,
   onOpenClientSettings,
+  onOpenMedia,
   onImport,
   onExport
 }) => {
@@ -67,6 +68,9 @@ const Sidebar = ({
                 </button>
                 <button onClick={() => { onShowArchived(true); onClose(); }} className={navButtonClass(showArchived)}>
                   <div className="flex items-center gap-2"><Archive size={16} /> <span>Archived</span></div>
+                </button>
+                <button onClick={() => { onOpenMedia(); onClose(); }} className={navButtonClass(false)}>
+                  <div className="flex items-center gap-2"><ImageIcon size={16} /> <span>Media Library</span></div>
                 </button>
               </div>
             </div>
