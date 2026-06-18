@@ -61,7 +61,7 @@ RL_INTERNAL_PER_MIN = "120"
 RL_INTERNAL_PER_DAY = "10000"
 # Firebase uid that API-created drafts (POST /api/drafts) are owned by — your
 # account's uid (Firebase console → Authentication). Empty disables drafts.
-OWNER_UID = ""
+OWNER_UID = "sLcLtGsm9SOKkR82a6cDoLCOOVO2"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
 #   GEMINI_API_KEY            — your Google AI Studio / Gemini API key
