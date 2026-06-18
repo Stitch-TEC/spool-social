@@ -1,0 +1,35 @@
+/* Stitch Suite — shared design tokens.
+ *
+ * Copy this file across Suite apps (Spool, Sender, POM) so every product shares
+ * one palette, type scale, and radii. The source of truth is stitchtec.dev's
+ * design system — update there first, then sync this file. Pixel-perfect parity
+ * isn't the goal; same palette + logo lockup + fonts is.
+ */
+:root {
+  /* Brand */
+  --stitch-primary: #4f46e5;        /* indigo-600 */
+  --stitch-primary-hover: #4338ca;  /* indigo-700 */
+  --stitch-primary-50: #eef2ff;
+  --stitch-accent: #10b981;         /* emerald-500 — long-form / blog */
+
+  /* Neutrals */
+  --stitch-ink: #0f172a;            /* slate-900 */
+  --stitch-muted: #64748b;          /* slate-500 */
+  --stitch-line: #e2e8f0;           /* slate-200 */
+  --stitch-surface: #ffffff;
+  --stitch-bg: #f8fafc;             /* slate-50 */
+
+  /* State */
+  --stitch-success: #10b981;
+  --stitch-warning: #f59e0b;
+  --stitch-danger: #e11d48;         /* rose-600 */
+
+  /* Type */
+  --stitch-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Radii */
+  --stitch-radius-sm: 0.5rem;
+  --stitch-radius: 0.75rem;
+  --stitch-radius-lg: 1rem;
+  --stitch-radius-xl: 1.5rem;
+}

@@ -401,6 +401,36 @@ const App = () => {
     });
   }, [handleSavePost]);
 
+  // Batch-create draft posts (used by "Repurpose blog → social"). Returns count.
+  const handleCreateDrafts = useCallback(async (drafts) => {
+    if (isReadOnly || !user) return 0;
+    const valid = (drafts || []).filter(d => d && d.content && PLATFORMS[d.platform]);
+    if (valid.length === 0) return 0;
+
+    const batch = writeBatch(db);
+    valid.forEach(d => {
+      const platform = PLATFORMS[d.platform] || PLATFORMS.gmb;
+      const ref = doc(collection(db, 'posts'));
+      batch.set(ref, {
+        uid: user.uid,
+        client: (d.client || '').trim().replace(/\//g, '').slice(0, 50),
+        content: (d.content || '').trim().slice(0, platform.maxChars),
+        title: '',
+        platform: d.platform,
+        status: STATUS.DRAFT,
+        approvalStatus: APPROVAL_STATUS.PENDING,
+        feedback: '',
+        imageUrl: '',
+        tags: [],
+        scheduledDate: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    });
+    await batch.commit();
+    return valid.length;
+  }, [isReadOnly, user]);
+
   // Client/archive/search filters (status chips applied separately so chip
   // counts always reflect the current context).
   const baseFilteredPosts = useMemo(() => {
@@ -482,6 +512,7 @@ const App = () => {
             uniqueClients={uniqueClients}
             showToast={showToast}
             onSave={handleSavePost}
+            onCreateDrafts={handleCreateDrafts}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>

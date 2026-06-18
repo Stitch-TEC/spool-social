@@ -133,3 +133,10 @@ export const PLATFORM_IMAGE_ASPECT = {
   instagram: 'square 1:1',
   blog: 'landscape 16:9'
 };
+
+// Stitch Suite apps for the cross-app tool-switcher header.
+export const STITCH_SUITE = [
+  { id: 'pom', name: 'POM', tagline: 'Dashboard', url: 'https://pom.stitchtec.dev', comingSoon: true },
+  { id: 'sender', name: 'Sender', tagline: 'Email', url: 'https://send.stitchtec.dev' },
+  { id: 'spool', name: 'Spool', tagline: 'Content', url: 'https://spool.stitchtec.dev', current: true }
+];

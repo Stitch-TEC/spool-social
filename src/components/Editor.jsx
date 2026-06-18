@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   X, Save, Wand2, Smartphone, Image as ImageIcon, Eye,
   Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
@@ -6,6 +6,8 @@ import {
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
 import MarkdownPreview from './MarkdownPreview';
+import MarkdownToolbar from './MarkdownToolbar';
+import RepurposeBlog from './RepurposeBlog';
 import SparkDeck from './SparkDeck';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
@@ -28,7 +30,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   blog: 'border-emerald-500 bg-emerald-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, isReadOnly }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, isReadOnly, onCreateDrafts }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -48,6 +50,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   const [isSparkOpen, setIsSparkOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const textareaRef = useRef(null);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -214,7 +217,27 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                 />
               </div>
             )}
+            {isBlog && !isReadOnly && (
+              <div className="mb-2">
+                <RepurposeBlog
+                  title={formData.title}
+                  content={formData.content}
+                  client={formData.client}
+                  clientSettings={clientMap?.[formData.client]}
+                  onCreateDrafts={onCreateDrafts}
+                  showToast={showToast}
+                />
+              </div>
+            )}
+            {isBlog && (
+              <MarkdownToolbar
+                textareaRef={textareaRef}
+                value={formData.content}
+                onChange={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
+              />
+            )}
             <textarea
+               ref={textareaRef}
                className={`w-full ${isBlog ? 'h-96' : 'h-64'} p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
                placeholder={currentPlatform.placeholder}
                value={formData.content}
