@@ -10,6 +10,8 @@
 name = "spool"
 main = "worker/index.js"
 compatibility_date = "2026-06-01"
+# Account is pinned so CI (API-token auth) deploys deterministically.
+account_id = "41a9ffb853cf50a278b6a29e90731c60"
 
 # Serve the Vite build output as static assets from the same Worker.
 [assets]

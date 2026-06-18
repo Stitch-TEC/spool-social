@@ -1,9 +1,15 @@
-name: Deploy to GitHub Pages
+name: Deploy to Cloudflare
 
-# Builds in CI and publishes to GitHub Pages on every push to main.
-# Requires the repo's Pages "Source" to be set to "GitHub Actions"
-# (actions/configure-pages handles this on the first run; if it doesn't,
-#  run: gh api -X PUT repos/OWNER/REPO/pages -f build_type=workflow).
+# Builds the SPA and deploys the Worker (app + generation API) on every push to
+# main. Replaces the legacy GitHub Pages deploy.
+#
+# Requires:
+#   - Repo secret  CLOUDFLARE_API_TOKEN  (Workers Scripts:Edit, Workers R2
+#     Storage:Edit, Account Settings:Read — the "Edit Cloudflare Workers" template)
+#   - Repo Actions variables VITE_FIREBASE_* (public web config, baked into the build)
+#
+# The Worker's runtime secrets (GEMINI_API_KEY, INTERNAL_API_KEY) are stored in
+# Cloudflare and persist across deploys — they are NOT set here.
 on:
   push:
     branches: [main]
@@ -11,21 +17,18 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deployment at a time; never cancel an in-progress publish.
 concurrency:
-  group: pages
+  group: deploy-cloudflare
   cancel-in-progress: false
 
 jobs:
-  build_site:
-    name: build_site
+  deploy:
+    name: deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -40,17 +43,8 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID }}
-      - uses: actions/upload-pages-artifact@v3
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
         with:
-          path: ./dist
-
-  deploy:
-    name: deploy
-    needs: build_site
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy
