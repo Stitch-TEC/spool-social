@@ -18,6 +18,14 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # Unit tests import src/config/firebase.js, which calls getAuth() at module
+    # load — that throws auth/invalid-api-key without an API key. CI has no .env
+    # (it's gitignored), so provide harmless dummy Firebase config for the run.
+    env:
+      VITE_FIREBASE_API_KEY: ci-dummy-api-key
+      VITE_FIREBASE_AUTH_DOMAIN: localhost
+      VITE_FIREBASE_PROJECT_ID: ci-dummy
+      VITE_FIREBASE_APP_ID: ci-dummy-app-id
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
