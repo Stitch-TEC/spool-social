@@ -99,16 +99,19 @@ export default {
       }
     }
 
-    // --- Serve a stored image ---
+    // --- Serve a stored image (GET for the bytes, HEAD for metadata only) ---
     if (url.pathname.startsWith('/media/')) {
-      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return json({ error: 'Method not allowed' }, 405, cors);
+      }
       const key = decodeURIComponent(url.pathname.slice('/media/'.length));
-      const obj = await env.MEDIA.get(key);
-      if (!obj) return new Response('Not found', { status: 404, headers: cors });
+      const isHead = request.method === 'HEAD';
+      const obj = isHead ? await env.MEDIA.head(key) : await env.MEDIA.get(key);
+      if (!obj) return new Response(null, { status: 404, headers: cors });
       const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-      return new Response(obj.body, { headers });
+      return new Response(isHead ? null : obj.body, { headers });
     }
 
     // --- Everything else: the SPA / static assets ---
