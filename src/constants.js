@@ -78,3 +78,27 @@ export const SPARK_PROMPTS = [
 // ⚡ OPTIMIZATION: A stable empty object to prevent unnecessary re-renders
 // when a component doesn't have associated client settings.
 export const DEFAULT_CLIENT_SETTINGS = Object.freeze({});
+
+// --- AI generation presets ------------------------------------------------
+
+// Platform-specific guidance fed into the model's system instruction so drafts
+// match each channel's norms and limits.
+export const PLATFORM_AI_GUIDANCE = {
+  gmb: 'a Google Business Profile update — local and action-oriented with a clear call to action; avoid hashtags.',
+  linkedin: 'a LinkedIn post — professional and insightful, 1–3 short paragraphs; up to ~3 relevant hashtags.',
+  twitter: 'an X/Twitter post — punchy and concise; it MUST stay under 280 characters; at most 1–2 hashtags.',
+  instagram: 'an Instagram caption — engaging and friendly; a few relevant hashtags grouped at the end.'
+};
+
+export const TONE_PRESETS = [
+  { id: 'professional', label: 'Professional', instruction: 'professional, precise, and credible — no hype or overclaiming' },
+  { id: 'friendly', label: 'Friendly', instruction: 'warm, approachable, and conversational' },
+  { id: 'bold', label: 'Bold', instruction: 'bold, confident, and punchy' },
+  { id: 'educational', label: 'Educational', instruction: 'clear, informative, and explanatory' }
+];
+
+export const LENGTH_PRESETS = [
+  { id: 'short', label: 'Short', maxTokens: 160, instruction: 'Keep it brief: 1–2 sentences.' },
+  { id: 'medium', label: 'Medium', maxTokens: 400, instruction: 'A medium-length post of a few sentences.' },
+  { id: 'long', label: 'Long', maxTokens: 900, instruction: 'A longer, more detailed post with a few short paragraphs.' }
+];

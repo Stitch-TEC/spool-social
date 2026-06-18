@@ -171,17 +171,21 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
           <div className="relative group">
             <div className="flex justify-between items-center mb-2 gap-3">
                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0">Content</label>
-               <div className="flex items-center gap-4 min-w-0">
-                  {!isReadOnly && (
-                    <AIGenerate
-                      kind="text"
-                      showToast={showToast}
-                      onResult={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
-                    />
-                  )}
-                  <button onClick={() => setIsSparkOpen(true)} className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline shrink-0"><Wand2 size={12}/> <span>Spark Deck</span></button>
-               </div>
+               <button onClick={() => setIsSparkOpen(true)} className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline shrink-0"><Wand2 size={12}/> <span>Spark Deck</span></button>
             </div>
+            {!isReadOnly && (
+              <div className="mb-2">
+                <AIGenerate
+                  kind="text"
+                  platform={formData.platform}
+                  clientName={formData.client}
+                  clientSettings={clientMap?.[formData.client]}
+                  currentText={formData.content}
+                  showToast={showToast}
+                  onResult={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
+                />
+              </div>
+            )}
             <textarea 
                className={`w-full h-64 p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
                placeholder={currentPlatform.placeholder}

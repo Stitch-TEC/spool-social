@@ -22,11 +22,24 @@ async function callGemini(env, model, body) {
   return data;
 }
 
-export async function generateText(env, prompt) {
+export async function generateText(env, prompt, opts = {}) {
   const model = env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
-  const data = await callGemini(env, model, {
-    contents: [{ parts: [{ text: prompt }] }]
-  });
+
+  const body = { contents: [{ parts: [{ text: prompt }] }] };
+
+  // Optional system instruction sets voice/format/constraints (see aiPrompt.js).
+  if (opts.system) {
+    body.systemInstruction = { parts: [{ text: opts.system }] };
+  }
+
+  // Cap output length (cost control) + optional temperature.
+  const generationConfig = {};
+  const maxTokens = opts.maxTokens || parseInt(env.MAX_OUTPUT_TOKENS || '1024', 10);
+  if (maxTokens > 0) generationConfig.maxOutputTokens = maxTokens;
+  if (typeof opts.temperature === 'number') generationConfig.temperature = opts.temperature;
+  body.generationConfig = generationConfig;
+
+  const data = await callGemini(env, model, body);
   const parts = data?.candidates?.[0]?.content?.parts || [];
   const text = parts.map(p => p.text).filter(Boolean).join('\n').trim();
   if (!text) throw new Error('No text returned');

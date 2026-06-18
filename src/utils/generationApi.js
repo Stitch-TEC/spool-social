@@ -34,8 +34,12 @@ export async function generateImage(prompt) {
   return url;
 }
 
-/** Generate text/copy from a prompt. Resolves to the generated string. */
-export async function generateText(prompt) {
-  const { text } = await postJSON('/api/text', { prompt });
+/**
+ * Generate text/copy from a prompt. Resolves to the generated string.
+ * `opts` may include { system, temperature, maxTokens } to steer voice,
+ * creativity, and length (see src/utils/aiPrompt.js).
+ */
+export async function generateText(prompt, opts = {}) {
+  const { text } = await postJSON('/api/text', { prompt, ...opts });
   return text;
 }

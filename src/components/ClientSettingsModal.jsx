@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { X, Upload, Trash2, CheckCircle, Palette, Save } from 'lucide-react';
+import { X, Upload, Trash2, Palette, Save, Sparkles } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
+import { TONE_PRESETS } from '../constants';
 import useEscapeKey from '../hooks/useEscapeKey';
+
+const AI_FIELD_MAX = 600;
 
 const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly }) => {
   useEscapeKey(onClose);
@@ -11,29 +14,34 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
   const [newClientName, setNewClientName] = useState('');
 
   // ⚡ OPTIMIZATION: Initialize state from props to avoid unnecessary effect/re-render
-  const [logoUrl, setLogoUrl] = useState(() => {
+  const initialSettings = (() => {
     const initial = uniqueClients[0];
-    return (initial && clientMap[initial]) ? (clientMap[initial].logoUrl || '') : '';
-  });
-  const [brandColor, setBrandColor] = useState(() => {
-    const initial = uniqueClients[0];
-    return (initial && clientMap[initial]) ? (clientMap[initial].brandColor || '#4f46e5') : '#4f46e5';
-  });
+    return (initial && clientMap[initial]) ? clientMap[initial] : {};
+  })();
+
+  const [logoUrl, setLogoUrl] = useState(initialSettings.logoUrl || '');
+  const [brandColor, setBrandColor] = useState(initialSettings.brandColor || '#4f46e5');
+
+  // AI content defaults — woven into every generation for this client.
+  const [aiBrandVoice, setAiBrandVoice] = useState(initialSettings.aiBrandVoice || '');
+  const [aiAudience, setAiAudience] = useState(initialSettings.aiAudience || '');
+  const [aiTone, setAiTone] = useState(initialSettings.aiTone || 'professional');
+  const [aiKeywords, setAiKeywords] = useState(initialSettings.aiKeywords || '');
+  const [aiAvoid, setAiAvoid] = useState(initialSettings.aiAvoid || '');
 
   const [isSaving, setIsSaving] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // ⚡ OPTIMIZATION: Handle state updates in the change handler instead of a sync effect
-  // to prevent cascading renders and improve performance.
   const handleClientChange = (val) => {
     setSelectedClient(val);
-    if (val && val !== 'NEW' && clientMap[val]) {
-      setLogoUrl(clientMap[val].logoUrl || '');
-      setBrandColor(clientMap[val].brandColor || '#4f46e5');
-    } else {
-      setLogoUrl('');
-      setBrandColor('#4f46e5');
-    }
+    const s = (val && val !== 'NEW' && clientMap[val]) ? clientMap[val] : {};
+    setLogoUrl(s.logoUrl || '');
+    setBrandColor(s.brandColor || '#4f46e5');
+    setAiBrandVoice(s.aiBrandVoice || '');
+    setAiAudience(s.aiAudience || '');
+    setAiTone(s.aiTone || 'professional');
+    setAiKeywords(s.aiKeywords || '');
+    setAiAvoid(s.aiAvoid || '');
   };
 
   const handleFileUpload = async (e) => {
@@ -76,6 +84,10 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
       return alert('Invalid brand color format');
     }
 
+    // Validate tone against known presets; trim/cap free-text AI fields.
+    const safeTone = TONE_PRESETS.some(t => t.id === aiTone) ? aiTone : 'professional';
+    const cap = (v) => (v || '').trim().slice(0, AI_FIELD_MAX);
+
     setIsSaving(true);
     try {
       // 🔒 Per-user doc id keeps each workspace's branding isolated.
@@ -84,7 +96,12 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
         uid,
         name: activeClient,
         logoUrl: (logoUrl || '').slice(0, 500000),
-        brandColor
+        brandColor,
+        aiBrandVoice: cap(aiBrandVoice),
+        aiAudience: cap(aiAudience),
+        aiTone: safeTone,
+        aiKeywords: cap(aiKeywords),
+        aiAvoid: cap(aiAvoid)
       }, { merge: true });
       setIsSaving(false);
       onClose();
@@ -95,6 +112,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
     }
   };
 
+  const fieldClass = 'w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all';
+
   return (
     <div role="dialog" aria-modal="true" aria-label="Client Brand Settings" className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
@@ -103,8 +122,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
             <Palette size={20} className="text-indigo-500" />
             Client Brand Settings
           </h2>
-          <button 
-            onClick={onClose} 
+          <button
+            onClick={onClose}
             className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors"
           >
             <X size={20} />
@@ -148,7 +167,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
           {/* Logo Upload */}
           <div className="mb-6">
             <label className="block text-sm font-bold text-slate-700 mb-2">Brand Logo</label>
-            <div 
+            <div
               className={`w-full h-32 rounded-xl border-2 border-dashed flex items-center justify-center relative overflow-hidden transition-all ${
                 isDragging ? 'border-indigo-500 bg-indigo-50 scale-[1.02]' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'
               }`}
@@ -169,8 +188,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
               ) : (
                 <div className="relative w-full h-full p-2 bg-slate-100 flex items-center justify-center">
                   <img src={logoUrl} className="max-w-full max-h-full object-contain" alt="Client Logo" />
-                  <button 
-                    onClick={() => setLogoUrl('')} 
+                  <button
+                    onClick={() => setLogoUrl('')}
                     title="Remove Logo"
                     className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-full hover:bg-rose-600 transition-colors backdrop-blur-sm"
                   >
@@ -185,8 +204,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
           <div className="mb-6">
             <label className="block text-sm font-bold text-slate-700 mb-2">Primary Brand Color</label>
             <div className="flex gap-4 items-center">
-              <input 
-                type="color" 
+              <input
+                type="color"
                 value={brandColor}
                 onChange={(e) => setBrandColor(e.target.value)}
                 className="w-12 h-12 rounded cursor-pointer border-0 p-0"
@@ -198,16 +217,77 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
             <p className="text-xs text-slate-400 mt-2">Used for accents in previews (buttons, borders, etc.)</p>
           </div>
 
+          {/* AI Content Defaults */}
+          <div className="pt-2 border-t border-slate-100">
+            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2 mb-1 mt-4">
+              <Sparkles size={16} className="text-indigo-500" /> AI Content Defaults
+            </h3>
+            <p className="text-xs text-slate-400 mb-4">Pre-filled into every AI draft for this client.</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Brand Voice</label>
+                <textarea
+                  rows={2}
+                  maxLength={AI_FIELD_MAX}
+                  placeholder="e.g. Confident and technical, never salesy. Plain language over buzzwords."
+                  value={aiBrandVoice}
+                  onChange={(e) => setAiBrandVoice(e.target.value)}
+                  className={`${fieldClass} resize-none`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Target Audience</label>
+                <input
+                  type="text"
+                  maxLength={AI_FIELD_MAX}
+                  placeholder="e.g. Aerospace QA engineers and procurement leads"
+                  value={aiAudience}
+                  onChange={(e) => setAiAudience(e.target.value)}
+                  className={fieldClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Default Tone</label>
+                <select value={aiTone} onChange={(e) => setAiTone(e.target.value)} className={fieldClass}>
+                  {TONE_PRESETS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Keywords / themes to include</label>
+                <input
+                  type="text"
+                  maxLength={AI_FIELD_MAX}
+                  placeholder="e.g. contactless inspection, CFRP, turnaround time"
+                  value={aiKeywords}
+                  onChange={(e) => setAiKeywords(e.target.value)}
+                  className={fieldClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Words / topics to avoid</label>
+                <input
+                  type="text"
+                  maxLength={AI_FIELD_MAX}
+                  placeholder="e.g. emojis, exclamation points, competitor names"
+                  value={aiAvoid}
+                  onChange={(e) => setAiAvoid(e.target.value)}
+                  className={fieldClass}
+                />
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3 rounded-b-2xl">
-          <button 
+          <button
             onClick={onClose}
             className="px-4 py-2 font-bold text-slate-500 hover:text-slate-700 text-sm transition-colors"
           >
             Cancel
           </button>
-          <button 
+          <button
             onClick={handleSave}
             disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim()) || isReadOnly}
             className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"

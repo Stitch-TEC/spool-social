@@ -35,6 +35,12 @@ function json(obj, status, extra) {
   });
 }
 
+function clampMaxTokens(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(n, 4096);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -79,7 +85,14 @@ export default {
 
       try {
         if (url.pathname === '/api/text') {
-          const text = await generateText(env, prompt);
+          const text = await generateText(env, prompt, {
+            system: body?.system ? String(body.system).slice(0, 4000) : undefined,
+            temperature:
+              typeof body?.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2
+                ? body.temperature
+                : undefined,
+            maxTokens: clampMaxTokens(body?.maxTokens)
+          });
           return json({ text }, 200, cors);
         }
 
