@@ -51,10 +51,20 @@ Returns `201 → {"id","status":"draft","reviewUrl"}`.
    ```
 5. **Report** each draft's `reviewUrl` back to the user.
 
+## Manage existing drafts (not just create)
+- `GET /api/drafts` (filters `?client=` `?platform=` `?status=`) — list drafts with all fields incl. schedule.
+- `GET /api/drafts/{id}` — fetch one.
+- `PATCH /api/drafts/{id}` — change `content`/`title`/`metaDescription`/`altText`/`tags`/`scheduledDate`/`status`, or set an image (`image:{prompt|url|base64}` or `imageUrl`). Only the fields you send change.
+- `DELETE /api/drafts/{id}` — delete.
+- `GET /api/media` — list reusable images; reuse one via `PATCH imageUrl` instead of regenerating (saves cost).
+
+So *"find the right image and put it on the Acme blog draft"* = `GET /api/drafts?client=Acme&platform=blog` → `PATCH /api/drafts/{id}` with the image.
+
 ## Errors
 - `401` — missing/blank key. `403` — wrong key type (must be the internal key).
 - `400` — missing `client`/`content` or unknown `platform`.
 - `429` — rate limited; slow down and retry.
+- `403` + "error 1010" — Cloudflare blocked the User-Agent. curl is fine; with raw HTTP libraries set a normal `User-Agent` (e.g. `spool-client/1.0`).
 
 ## Voice
 Keep copy professional, specific, and credible; avoid hype and overclaiming.

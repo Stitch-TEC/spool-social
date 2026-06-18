@@ -48,3 +48,31 @@ it's just the intake endpoint; the calling Claude does the gathering.
 
 Image bytes pulled from Drive can be sent as `image.base64`; or pass `image.prompt`
 to have Spool generate one, or `image.url` to reference a hosted image.
+
+## Manage existing drafts (full CRUD)
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/drafts` | List drafts. Filters: `?client=` `?platform=` `?status=`. Returns `{drafts:[…],count}` with all fields incl. `scheduledDate`. |
+| `GET /api/drafts/{id}` | Fetch one draft. |
+| `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Only the fields you send change. |
+| `DELETE /api/drafts/{id}` | Delete a draft. |
+| `GET /api/media` | List reusable stored images (`{media:[{key,url,size,uploaded}],count}`) — pick one and set it via `PATCH imageUrl` instead of regenerating. |
+
+```bash
+# List blog drafts for a client
+curl -sS "https://spool.stitchtec.dev/api/drafts?client=Acme&platform=blog" \
+  -H "Authorization: Bearer $SPOOL_API_KEY"
+
+# Attach an existing/known image to a draft
+curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
+  -H "Authorization: Bearer $SPOOL_API_KEY" -H "Content-Type: application/json" \
+  -d '{"image":{"url":"https://…/hero.png"}}'
+```
+
+## ⚠️ User-Agent
+Cloudflare bot protection on this zone returns **403 / "error 1010"** for default library
+User-Agents (e.g. `python-urllib`). **curl is fine.** With raw HTTP libraries, set a normal
+UA, e.g. `User-Agent: spool-client/1.0`.
+
+*(Orphaned images from deleted drafts are swept automatically each night after a 7-day grace window — no manual cleanup needed.)*

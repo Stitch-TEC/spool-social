@@ -10,6 +10,10 @@
 name = "spool"
 main = "worker/index.js"
 compatibility_date = "2026-06-01"
+
+# Nightly (04:00 UTC) sweep of orphaned R2 images — see runGC in worker/index.js.
+[triggers]
+crons = ["0 4 * * *"]
 # Account is pinned so CI (API-token auth) deploys deterministically.
 account_id = "41a9ffb853cf50a278b6a29e90731c60"
 

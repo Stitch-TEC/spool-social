@@ -9,7 +9,7 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, updatePost, deletePost } from './firestore.js';
+import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls } from './firestore.js';
 
 const MAX_PROMPT = 2000;
 const PLATFORM_MAX = { gmb: 1500, linkedin: 3000, twitter: 280, instagram: 2200, blog: 100000, job: 100000 };
@@ -101,6 +101,40 @@ async function resolveDraftImage(env, origin, img) {
   }
   if (typeof img.url === 'string') return img.url.slice(0, 2000);
   return null;
+}
+
+// Nightly garbage collection: delete R2 images that no post references AND that
+// are older than a grace window. Mark-and-sweep is safe — it never deletes an
+// in-use or freshly created image, and it catches orphans from both app- and
+// API-side deletes.
+async function runGC(env) {
+  if (!env.MEDIA || !env.FIREBASE_SERVICE_ACCOUNT) return;
+  const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - GRACE_MS;
+
+  const referenced = new Set();
+  try {
+    for (const u of await listAllImageUrls(env)) {
+      const i = u.indexOf('/media/');
+      if (i !== -1) referenced.add(u.slice(i + '/media/'.length).split('?')[0]);
+    }
+  } catch (err) {
+    console.error('GC: reference query failed:', err?.message || err);
+    return;
+  }
+
+  let deleted = 0, kept = 0, cursor;
+  do {
+    const listed = await env.MEDIA.list({ prefix: 'generated/', cursor });
+    for (const o of listed.objects) {
+      const inUse = referenced.has(o.key);
+      const old = o.uploaded ? new Date(o.uploaded).getTime() < cutoff : false;
+      if (!inUse && old) { await env.MEDIA.delete(o.key); deleted++; }
+      else kept++;
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  console.log(`GC: deleted ${deleted} orphaned image(s), kept ${kept}.`);
 }
 
 export default {
@@ -340,5 +374,10 @@ export default {
 
     // --- Everything else: the SPA / static assets ---
     return env.ASSETS.fetch(request);
+  },
+
+  // Cron trigger (see wrangler.toml [triggers]) — nightly orphan-image sweep.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runGC(env));
   }
 };
