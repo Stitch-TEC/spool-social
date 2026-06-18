@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 
@@ -6,25 +6,21 @@ import { db } from '../config/firebase';
  * Real-time posts + client-branding subscriptions for a workspace.
  *
  * Security model (mirrors firestore.rules):
- * - Owner (or owner viewing their own ?uid= link): all their posts.
- * - Guest (anonymous session on someone else's link): MUST be scoped to a
- *   single client via ?client= — otherwise nothing is fetched.
+ * - Owner: all their posts + every client's branding.
+ * - Share guest: scoped to a single (owner, client). Queries MUST filter on
+ *   uid + client (posts) and uid + name (branding) so the claim-based read
+ *   rules resolve against the result set.
  */
-export default function usePosts(user, sharedUid) {
+export default function usePosts(user, sharedUid, shareClient) {
   const [posts, setPosts] = useState([]);
   const [clientMap, setClientMap] = useState({});
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState(null);
 
-  const clientParam = useMemo(
-    () => new URLSearchParams(window.location.search).get('client'),
-    []
-  );
-
   const targetUid = sharedUid || user?.uid;
   const isGuest = !!sharedUid && sharedUid !== user?.uid;
   // 🔒 SECURITY: Real guests (anyone but the owner) MUST scope to a client.
-  const guestBlocked = isGuest && !clientParam;
+  const guestBlocked = isGuest && !shareClient;
   const shouldSubscribe = !!targetUid && !guestBlocked;
 
   useEffect(() => {
@@ -33,9 +29,11 @@ export default function usePosts(user, sharedUid) {
       return;
     }
 
+    // Guests are scoped to one client; owners read everything.
+    const scopeClient = isGuest ? shareClient : null;
     const constraints = [where('uid', '==', targetUid)];
-    if (clientParam) {
-      constraints.push(where('client', '==', clientParam));
+    if (scopeClient) {
+      constraints.push(where('client', '==', scopeClient));
     }
 
     const q = query(collection(db, 'posts'), ...constraints);
@@ -106,8 +104,11 @@ export default function usePosts(user, sharedUid) {
 
     // 🔒 Client branding scoped to the workspace owner (multi-tenant isolation).
     // Keyed by client *name* so lookups by post.client resolve, even though the
-    // doc id is `${uid}__${name}` (see ClientSettingsModal).
-    const clientQuery = query(collection(db, 'clients'), where('uid', '==', targetUid));
+    // doc id is `${uid}__${name}` (see ClientSettingsModal). Guests may read only
+    // their own client's branding, so scope the query by name too.
+    const clientConstraints = [where('uid', '==', targetUid)];
+    if (scopeClient) clientConstraints.push(where('name', '==', scopeClient));
+    const clientQuery = query(collection(db, 'clients'), ...clientConstraints);
     const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
       setClientMap(prev => {
         let hasChanges = false;
@@ -128,7 +129,7 @@ export default function usePosts(user, sharedUid) {
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
-  }, [shouldSubscribe, guestBlocked, targetUid, clientParam]);
+  }, [shouldSubscribe, guestBlocked, targetUid, isGuest, shareClient]);
 
   // Loading = an active subscription that hasn't delivered its first snapshot.
   const isLoading = shouldSubscribe && !hasLoaded;

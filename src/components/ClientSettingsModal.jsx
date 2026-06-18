@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Upload, Trash2, Palette, Save, Sparkles } from 'lucide-react';
+import { X, Upload, Trash2, Palette, Save, Sparkles, Users, ArrowRight } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
@@ -8,10 +8,12 @@ import useEscapeKey from '../hooks/useEscapeKey';
 
 const AI_FIELD_MAX = 600;
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly, onMergeClient }) => {
   useEscapeKey(onClose);
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
+  const [mergeTarget, setMergeTarget] = useState('');
+  const [confirmMerge, setConfirmMerge] = useState(false);
 
   // ⚡ OPTIMIZATION: Initialize state from props to avoid unnecessary effect/re-render
   const initialSettings = (() => {
@@ -34,6 +36,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
 
   const handleClientChange = (val) => {
     setSelectedClient(val);
+    setMergeTarget('');
+    setConfirmMerge(false);
     const s = (val && val !== 'NEW' && clientMap[val]) ? clientMap[val] : {};
     setLogoUrl(s.logoUrl || '');
     setBrandColor(s.brandColor || '#4f46e5');
@@ -277,6 +281,65 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
               </div>
             </div>
           </div>
+
+          {/* Rename / merge — reassigns every thread from this client to another name. */}
+          {onMergeClient && selectedClient && selectedClient !== 'NEW' && (
+            <div className="pt-4 mt-6 border-t border-slate-100">
+              <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2 mb-1">
+                <Users size={16} className="text-indigo-500" /> Rename or merge
+              </h3>
+              <p className="text-xs text-slate-400 mb-3">
+                Move every thread from <b className="text-slate-600">{selectedClient}</b> to another name — fix a typo, or merge two clients into one.
+              </p>
+              <input
+                list="merge-target-list"
+                type="text"
+                maxLength={50}
+                value={mergeTarget}
+                onChange={(e) => { setMergeTarget(e.target.value); setConfirmMerge(false); }}
+                placeholder="Target client name…"
+                className={fieldClass}
+              />
+              <datalist id="merge-target-list">
+                {uniqueClients.filter(c => c !== selectedClient).map(c => <option key={c} value={c} />)}
+              </datalist>
+              {(() => {
+                const target = mergeTarget.trim();
+                const valid = target && target !== selectedClient;
+                const targetExists = uniqueClients.includes(target) || !!clientMap[target];
+                if (!confirmMerge) {
+                  return (
+                    <button
+                      disabled={!valid || isReadOnly}
+                      onClick={() => setConfirmMerge(true)}
+                      className="mt-2 flex items-center gap-1 text-sm font-bold text-indigo-600 hover:underline disabled:opacity-40 disabled:no-underline"
+                    >
+                      {targetExists ? `Merge into "${target}"` : `Rename to "${target}"`} <ArrowRight size={14} />
+                    </button>
+                  );
+                }
+                return (
+                  <div className="mt-3 p-3 rounded-xl bg-amber-50 border border-amber-100">
+                    <p className="text-xs text-amber-900 mb-2">
+                      {targetExists
+                        ? <>Merge <b>{selectedClient}</b> into <b>{target}</b>? Threads keep {target}'s brand settings.</>
+                        : <>Rename <b>{selectedClient}</b> to <b>{target}</b>?</>}
+                      <span className="block text-amber-700/80 mt-1">Curated media-library items stay under the old name.</span>
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => { onMergeClient(selectedClient, target); onClose(); }}
+                        className="px-3 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700"
+                      >
+                        Confirm
+                      </button>
+                      <button onClick={() => setConfirmMerge(false)} className="text-xs font-medium text-slate-500 hover:text-slate-700">Cancel</button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
         </div>
 

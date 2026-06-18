@@ -14,7 +14,10 @@ const PostGrid = ({
   onStatusChange,
   onArchive,
   onRestore,
-  onCreate
+  onCreate,
+  selectable = false,
+  selectedIds,
+  onToggleSelect
 }) => {
   if (posts.length === 0) {
     return (
@@ -41,6 +44,9 @@ const PostGrid = ({
           onStatusChange={onStatusChange}
           onArchive={onArchive}
           onRestore={onRestore}
+          selectable={selectable}
+          selected={selectable && selectedIds?.has(p.id)}
+          onToggleSelect={onToggleSelect}
         />
       ))}
     </div>

@@ -60,6 +60,58 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   const [metaLoading, setMetaLoading] = useState(false);
   const textareaRef = useRef(null);
 
+  // --- Resizable preview panel (desktop) ---
+  const PREVIEW_MIN = 320;
+  const PREVIEW_MAX = 860;
+  const [previewWidth, setPreviewWidth] = useState(() => {
+    try {
+      const saved = parseInt(window.localStorage?.getItem('spool:previewWidth'), 10);
+      return Number.isFinite(saved) ? Math.min(PREVIEW_MAX, Math.max(PREVIEW_MIN, saved)) : 420;
+    } catch { return 420; }
+  });
+  const resizingRef = useRef(false);
+
+  // Leave the edit pane at least ~360px; clamp to the configured bounds.
+  const clampWidth = (w) =>
+    Math.min(Math.min(PREVIEW_MAX, window.innerWidth - 360), Math.max(PREVIEW_MIN, w));
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!resizingRef.current) return;
+      setPreviewWidth(clampWidth(window.innerWidth - e.clientX)); // panel is on the right
+    };
+    const onUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    try { window.localStorage?.setItem('spool:previewWidth', String(previewWidth)); } catch { /* private mode */ }
+  }, [previewWidth]);
+
+  const startResize = (e) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
+
+  const onHandleKey = (e) => {
+    if (e.key === 'ArrowLeft') setPreviewWidth(w => clampWidth(w + 24));
+    else if (e.key === 'ArrowRight') setPreviewWidth(w => clampWidth(w - 24));
+    else return;
+    e.preventDefault();
+  };
+
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -181,7 +233,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   return (
     <div className="h-full flex flex-col md:flex-row bg-white overflow-hidden animate-in slide-in-from-right duration-300">
       {/* Left Panel: Edit */}
-      <div className={`flex-1 flex flex-col h-full border-r border-slate-200 transition-all ${previewMode ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`flex-1 min-w-0 flex flex-col h-full border-r border-slate-200 ${previewMode ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex items-center gap-3">
              <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
@@ -442,8 +494,25 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
         </div>
       </div>
 
+      {/* Drag handle to resize the preview (desktop only) */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize preview panel"
+        tabIndex={0}
+        onPointerDown={startResize}
+        onKeyDown={onHandleKey}
+        title="Drag to resize preview"
+        className="hidden md:flex w-1.5 shrink-0 cursor-col-resize bg-slate-200 hover:bg-indigo-400 focus:bg-indigo-500 focus:outline-none transition-colors items-center justify-center group"
+      >
+        <div className="w-0.5 h-8 bg-slate-400 group-hover:bg-white rounded-full transition-colors" />
+      </div>
+
       {/* Right Panel: Preview */}
-      <div className={`w-full md:w-[400px] bg-slate-100 border-l border-slate-200 flex flex-col ${previewMode ? 'flex fixed inset-0 z-20' : 'hidden md:flex'}`}>
+      <div
+        style={!previewMode ? { width: `${previewWidth}px` } : undefined}
+        className={`bg-slate-100 border-l border-slate-200 flex-col ${previewMode ? 'flex fixed inset-0 z-20 w-full' : 'hidden md:flex shrink-0'}`}
+      >
          <div className="p-4 border-b border-slate-200 bg-slate-100 flex justify-between items-center">
             <h3 className="font-bold text-slate-500 text-sm uppercase tracking-wider">Live Preview</h3>
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
@@ -462,8 +531,12 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
          </div>
       </div>
       
-      {/* Mobile Toggle */}
-      <button onClick={() => setPreviewMode(true)} title="Open Preview" aria-label="Open Preview" className="md:hidden fixed bottom-6 right-6 z-50 bg-slate-900 text-white p-4 rounded-full shadow-xl"><Smartphone size={24}/></button>
+      {/* Mobile preview FAB — hidden while the preview overlay is open (it has its own close). */}
+      {!previewMode && (
+        <button onClick={() => setPreviewMode(true)} title="Open Preview" aria-label="Open Preview" className="md:hidden fixed bottom-6 right-6 z-50 bg-slate-900 text-white p-4 rounded-full shadow-xl">
+          {isLongForm ? <Eye size={24} /> : <Smartphone size={24} />}
+        </button>
+      )}
 
       {/* Spark Deck lives here (not in App) so picking a prompt only updates
           `content` and never resets unsaved client/platform/tags/image state. */}

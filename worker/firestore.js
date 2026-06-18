@@ -182,6 +182,103 @@ export async function deletePost(env, id) {
   return true;
 }
 
+// --- Share links (per-client review tokens) ---------------------------------
+//
+// Mint a Firebase **custom token** for an anonymous review session, signed with
+// the service-account private key (the same key used for Firestore access).
+// Firebase verifies it against the SA's public cert, so no extra IAM role is
+// needed for local signing. `claims` become developer claims on the guest's ID
+// token (readable as request.auth.token.<claim> in security rules).
+export async function mintCustomToken(env, uid, claims) {
+  const { clientEmail, privateKey } = loadServiceAccount(env);
+  if (!clientEmail || !privateKey) throw new Error('Service account missing client_email/private_key');
+
+  const now = Math.floor(Date.now() / 1000);
+  const enc = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)));
+  const unsigned =
+    `${enc({ alg: 'RS256', typ: 'JWT' })}.` +
+    enc({
+      iss: clientEmail,
+      sub: clientEmail,
+      aud: 'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit',
+      iat: now,
+      exp: now + 3600,
+      uid,
+      claims
+    });
+
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    pkcs8ToArrayBuffer(privateKey),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned));
+  return `${unsigned}.${b64url(new Uint8Array(sig))}`;
+}
+
+// A share doc lives at shares/<token>; the token IS the doc id (an unguessable
+// 128-bit+ secret). Client code can never read/write this collection (rules
+// deny it) — only the Worker, via the service account, touches it.
+export async function createShareDoc(env, token, data) {
+  const accessToken = await getAccessToken(env);
+  const url = `${FS_BASE(env)}/shares?documentId=${encodeURIComponent(token)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: toFields(data) })
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out?.error?.message || `Share create failed (${res.status})`);
+  return token;
+}
+
+export async function getShareDoc(env, token) {
+  const accessToken = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}/shares/${encodeURIComponent(token)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (res.status === 404) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `Share get failed (${res.status})`);
+  return { id: token, ...fromFields(data.fields) };
+}
+
+export async function listShareDocs(env, ownerUid, limit = 200) {
+  const token = await getAccessToken(env);
+  const body = {
+    structuredQuery: {
+      from: [{ collectionId: 'shares' }],
+      where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: { stringValue: ownerUid } } },
+      limit
+    }
+  };
+  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ([]));
+  if (!res.ok) throw new Error(data?.error?.message || `Share list failed (${res.status})`);
+  return (Array.isArray(data) ? data : [])
+    .filter(r => r.document)
+    .map(r => ({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) }));
+}
+
+export async function deleteShareDoc(env, token) {
+  const accessToken = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}/shares/${encodeURIComponent(token)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!res.ok && res.status !== 404) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Share delete failed (${res.status})`);
+  }
+  return true;
+}
+
 // All image URLs referenced by any post (for the orphan-image sweep).
 export async function listAllImageUrls(env, limit = 2000) {
   const token = await getAccessToken(env);

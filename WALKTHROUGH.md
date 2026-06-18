@@ -93,6 +93,39 @@ A **per-client** asset library: **upload** images (auto-optimized to ~2048px —
 
 ---
 
+## 9. Client review & sharing (tokenized links)
+**Where:** header → **Share**.
+
+- **Create a review link per client** in the Share Manager — copy it, send it,
+  **revoke** it anytime. Each link scopes a reviewer to exactly one client; they
+  can’t see other clients or edit anything.
+- **Reviewers** open the link (no account), see a **progress bar** ("5 of 8
+  approved"), and **Approve** or **Request changes** right from each card.
+- **Threaded feedback** — feedback is kept as a history across review rounds
+  instead of overwriting a single note.
+
+Full details + the deploy/migration steps are in [SHARE_LINKS.md](SHARE_LINKS.md).
+> Security: a leaked workspace id no longer grants access — only a valid `?s=` token does.
+
+---
+
+## 10. Bulk editing & data
+**Where:** grid → **Select**; Sidebar → **Import / Export**.
+
+- **Mass edit** — turn on **Select**, pick threads, then from the bottom bar:
+  reassign **client**, add/remove **tags**, set **status**, **archive**, **delete**,
+  or **export** just the selection.
+- **Rename / merge a client** — Client Settings → *Rename or merge*: moves every
+  thread from one client name to another (fix a typo, or merge two into one).
+- **Import** — CSV **or** JSON, with a **preview** (counts + breakdown) and a
+  **skip-duplicates** option before anything is written.
+- **Export** — lossless **CSV** (now includes title, tags, alt text, meta, slug)
+  or a full-fidelity **JSON backup**.
+- **Resizable preview** — drag the divider in the editor to widen the live
+  preview (great for long-form blog/job posts); the width is remembered.
+
+---
+
 ## Quick reference — what writes a draft?
 | You're in… | Use |
 |---|---|

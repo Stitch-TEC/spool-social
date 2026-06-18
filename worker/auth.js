@@ -97,6 +97,9 @@ export function timingSafeEqual(a, b) {
  */
 function isAuthorizedUser(payload, env) {
   if (payload.firebase?.sign_in_provider === 'anonymous') return false;
+  // Share-link review sessions (custom tokens carrying a `share` claim) may only
+  // read/approve content — never call generation/media/drafts APIs.
+  if (payload.share === true) return false;
 
   const allow = (env.ALLOWED_EMAILS || '')
     .split(',')

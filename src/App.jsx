@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
-import { Loader2, ShieldCheck, X } from 'lucide-react';
+import { Loader2, ShieldCheck, X, CheckSquare } from 'lucide-react';
 import {
   collection,
   addDoc,
   updateDoc,
   deleteDoc,
+  setDoc,
   doc,
   writeBatch
 } from 'firebase/firestore';
 
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
-import { convertToCSV, parseCSV, downloadCSV } from './utils/csv';
+import { convertToCSV, parseImportFile, postsToJSON, downloadFile } from './utils/csv';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -27,14 +28,17 @@ import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
+import ImportModal from './components/ImportModal';
+import BulkActionBar from './components/BulkActionBar';
+import ShareManager from './components/ShareManager';
 
 const Editor = lazy(() => import('./components/Editor'));
 
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
-  const { user, authLoading, sharedUid, isReadOnly, signIn, signOutAndExit } = useAuth(showToast);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid);
+  const { user, authLoading, sharedUid, shareClient, isReadOnly, shareError, signIn, signOutAndExit } = useAuth(showToast);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, shareClient);
   const isLoading = authLoading || postsLoading;
 
   const clientParam = useMemo(
@@ -56,8 +60,11 @@ const App = () => {
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
   const postsRef = useRef([]);
@@ -65,38 +72,26 @@ const App = () => {
     postsRef.current = posts;
   }, [posts]);
 
+  // Selection only makes sense in the grid — drop it when switching views.
+  useEffect(() => {
+    if (view !== 'grid') { setSelectionMode(false); setSelectedIds(new Set()); }
+  }, [view]);
+
   // --- Dynamic Title ---
   useEffect(() => {
     if (isReadOnly) {
-      document.title = clientParam ? `${clientParam} | Spool Review` : 'Spool Client View';
+      document.title = shareClient ? `${shareClient} | Spool Review` : 'Spool Client View';
     } else {
       document.title = 'Spool | Creator Dashboard';
     }
-  }, [isReadOnly, clientParam]);
+  }, [isReadOnly, shareClient]);
 
   // --- Link sharing ---
-  const handleCopyLink = useCallback(async () => {
-    if (!user) return;
-
-    const baseUrl = window.location.origin + window.location.pathname;
-
-    let link = `${baseUrl}?uid=${user.uid}`;
-    let message = "Master Link (All Clients) Copied! 📋";
-
-    if (filterClient) {
-      link += `&client=${encodeURIComponent(filterClient)}`;
-      message = `Review Link for "${filterClient}" Copied! 📋`;
-    }
-
-    try {
-      await navigator.clipboard.writeText(link);
-      showToast(message);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-    } catch {
-      showToast("Couldn't copy — your browser blocked clipboard access", "error");
-    }
-  }, [filterClient, user, showToast]);
+  // Opens the Share Manager (create/copy/revoke per-client review links).
+  const handleOpenShare = useCallback(() => {
+    if (!user || isReadOnly) return;
+    setIsShareOpen(true);
+  }, [user, isReadOnly]);
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData) => {
@@ -247,65 +242,76 @@ const App = () => {
     try {
       await updateDoc(doc(db, 'posts', postId), {
         status: newStatus,
+        updatedAt: new Date().toISOString(),
         ...(isApproving ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
       });
-      showToast(`Status updated to ${newStatus}`);
+      showToast(isApproving ? "Approved ✓" : `Status updated to ${newStatus}`);
     } catch {
       showToast("Update failed", "error");
     }
   }, [isReadOnly, showToast]);
 
-  const handleImport = useCallback(async (e) => {
+  // Parse a CSV/JSON file and open the preview modal — nothing is written until
+  // the user confirms (see handleConfirmImport). parseImportFile normalizes &
+  // sanitizes every row (single source of truth for field mapping).
+  const handleImportFile = useCallback((e) => {
     if (isReadOnly) return;
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
+    reader.onload = (event) => {
       try {
-        const csvText = event.target.result;
-        const importedData = parseCSV(csvText);
-
-        if (importedData.length === 0) return showToast("No valid data found in CSV", "error");
-
-        const batch = writeBatch(db);
-        importedData.forEach(item => {
-          const newDocRef = doc(collection(db, 'posts'));
-
-          // 🔒 SECURITY: Explicit field mapping & sanitization to prevent mass assignment
-          const platformId = item.platform || 'gmb';
-          const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
-          const status = Object.values(STATUS).includes(item.status) ? item.status : STATUS.DRAFT;
-          const approvalStatus = Object.values(APPROVAL_STATUS).includes(item.approvalStatus) ? item.approvalStatus : APPROVAL_STATUS.PENDING;
-
-          batch.set(newDocRef, {
-            uid: user.uid,
-            client: (item.client || "").trim().replace(/\//g, '').slice(0, 50),
-            content: (item.content || "").trim().slice(0, platform.maxChars),
-            platform: platformId,
-            status,
-            approvalStatus,
-            feedback: (item.feedback || "").trim().slice(0, 500),
-            imageUrl: (item.imageUrl || '').slice(0, 500000),
-            tags: (Array.isArray(item.tags) ? item.tags : (item.tags ? String(item.tags).split(',').map(t => t.trim()) : []))
-              .slice(0, 10)
-              .map(tag => String(tag).trim().slice(0, 20))
-              .filter(Boolean),
-            scheduledDate: item.scheduledDate || null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          });
-        });
-
-        await batch.commit();
-        showToast(`Imported ${importedData.length} threads! 🚀`);
+        const parsed = parseImportFile(event.target.result, file.name);
+        setImportData({ posts: parsed, fileName: file.name });
       } catch (err) {
-        console.error("Import error:", err);
-        showToast("Import failed. Check CSV format.", "error");
+        console.error("Import parse error:", err);
+        showToast("Couldn't read that file — use a Spool CSV or JSON export", "error");
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; // Reset input so re-selecting the same file fires again
+  }, [isReadOnly, showToast]);
+
+  // Commit the previewed rows. Rows are already sanitized by parseImportFile;
+  // here we only attach ownership/timestamps and chunk to the 500-op batch cap.
+  const handleConfirmImport = useCallback(async (rows) => {
+    if (isReadOnly || !user || !rows?.length) { setImportData(null); return; }
+    try {
+      const now = new Date().toISOString();
+      const CHUNK = 450; // Firestore writeBatch hard limit is 500 ops
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        rows.slice(i, i + CHUNK).forEach(item => {
+          batch.set(doc(collection(db, 'posts')), {
+            uid: user.uid,
+            client: item.client,
+            content: item.content,
+            title: item.title || '',
+            altText: item.altText || '',
+            metaDescription: item.metaDescription || '',
+            slug: item.slug || '',
+            platform: item.platform,
+            status: item.status,
+            approvalStatus: item.approvalStatus,
+            feedback: item.feedback || '',
+            imageUrl: item.imageUrl || '',
+            tags: item.tags || [],
+            scheduledDate: item.scheduledDate || null,
+            createdAt: now,
+            updatedAt: now,
+            source: 'import'
+          });
+        });
+        await batch.commit();
+      }
+      showToast(`Imported ${rows.length} thread${rows.length === 1 ? '' : 's'}! 🚀`);
+    } catch (err) {
+      console.error("Import error:", err);
+      showToast("Import failed. Please try again.", "error");
+    } finally {
+      setImportData(null);
+    }
   }, [isReadOnly, user, showToast]);
 
   const handleRequestChanges = useCallback(async (postId, feedback) => {
@@ -320,9 +326,18 @@ const App = () => {
     }
 
     try {
+      // Append to a feedback thread (history across review rounds) rather than
+      // overwriting. `feedback` keeps the latest note for back-compat / card display.
+      const post = postsRef.current.find(p => p.id === postId);
+      const prevThread = Array.isArray(post?.feedbackThread) ? post.feedbackThread : [];
+      const entry = { text: sanitizedFeedback, by: isReadOnly ? 'client' : 'you', at: new Date().toISOString() };
+      const feedbackThread = [...prevThread, entry].slice(-20);
+
       await updateDoc(doc(db, 'posts', postId), {
         feedback: sanitizedFeedback,
-        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED
+        feedbackThread,
+        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED,
+        updatedAt: new Date().toISOString()
       });
       showToast("Feedback sent!");
       setReviewingPost(null);
@@ -483,20 +498,200 @@ const App = () => {
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts, view]);
 
-  const handleExport = useCallback((mode) => {
+  // Guest review progress ("5 of 8 approved").
+  const approvalProgress = useMemo(() => {
+    if (!isReadOnly) return null;
+    const total = filteredPosts.length;
+    const approved = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.APPROVED).length;
+    const changes = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED).length;
+    return { total, approved, changes, pending: Math.max(0, total - approved - changes) };
+  }, [isReadOnly, filteredPosts]);
+
+  const handleExport = useCallback((mode, format = 'csv') => {
     let exportPosts = [];
     if (mode === 'current') exportPosts = filteredPosts;
     else if (mode === 'archived') exportPosts = posts.filter(p => p.status === STATUS.ARCHIVED);
+    else if (mode === 'selected') exportPosts = posts.filter(p => selectedIds.has(p.id));
     else exportPosts = posts;
 
     if (exportPosts.length === 0) return showToast("Nothing to export", "error");
 
-    const csvData = convertToCSV(exportPosts);
-    downloadCSV(csvData, `spool-export-${mode}-${new Date().toISOString().split('T')[0]}.csv`);
-    showToast("Export complete! 📥");
-  }, [posts, filteredPosts, showToast]);
+    const date = new Date().toISOString().split('T')[0];
+    if (format === 'json') {
+      downloadFile(postsToJSON(exportPosts), `spool-backup-${mode}-${date}.json`, 'application/json');
+    } else {
+      downloadFile(convertToCSV(exportPosts), `spool-export-${mode}-${date}.csv`, 'text/csv;charset=utf-8;');
+    }
+    showToast(`Exported ${exportPosts.length} thread${exportPosts.length === 1 ? '' : 's'} 📥`);
+  }, [posts, filteredPosts, selectedIds, showToast]);
+
+  // --- Selection & bulk actions (owner only) ---
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  // Apply a per-post patch to the whole selection (skips unchanged posts).
+  // `mutate(post)` returns a patch object or null to skip that post.
+  const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false } = {}) => {
+    if (isReadOnly || !user) return;
+    const byId = new Map(postsRef.current.map(p => [p.id, p]));
+    const now = new Date().toISOString();
+    const updates = [];
+    selectedIds.forEach(id => {
+      const post = byId.get(id);
+      if (!post) return;
+      const patch = mutate(post);
+      if (patch) updates.push([id, { ...patch, updatedAt: now }]);
+    });
+    if (updates.length === 0) return showToast("No changes to apply");
+    try {
+      const CHUNK = 450;
+      for (let i = 0; i < updates.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        updates.slice(i, i + CHUNK).forEach(([id, patch]) => batch.update(doc(db, 'posts', id), patch));
+        await batch.commit();
+      }
+      showToast(successMsg(updates.length));
+      if (clearAfter) clearSelection();
+    } catch (err) {
+      console.error("Bulk update error:", err);
+      showToast("Bulk update failed", "error");
+    }
+  }, [isReadOnly, user, selectedIds, showToast, clearSelection]);
+
+  const handleBulkReassignClient = useCallback((client) => {
+    const c = String(client).trim().replace(/\//g, '').slice(0, 50);
+    if (!c) return;
+    // Posts may leave the current client filter — clear selection after.
+    commitBulk(() => ({ client: c }), n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}"`, { clearAfter: true });
+  }, [commitBulk]);
+
+  const handleBulkAddTags = useCallback((tags) => {
+    commitBulk(post => {
+      const cur = Array.isArray(post.tags) ? post.tags : [];
+      const merged = [...new Set([...cur, ...tags])].slice(0, 10);
+      return merged.length === cur.length && merged.every((t, i) => t === cur[i]) ? null : { tags: merged };
+    }, n => `Tagged ${n} thread${n === 1 ? '' : 's'}`);
+  }, [commitBulk]);
+
+  const handleBulkRemoveTags = useCallback((tags) => {
+    const rm = new Set(tags);
+    commitBulk(post => {
+      const cur = Array.isArray(post.tags) ? post.tags : [];
+      const next = cur.filter(t => !rm.has(t));
+      return next.length === cur.length ? null : { tags: next };
+    }, n => `Updated tags on ${n} thread${n === 1 ? '' : 's'}`);
+  }, [commitBulk]);
+
+  const handleBulkStatus = useCallback((status) => {
+    if (!Object.values(STATUS).includes(status)) return;
+    commitBulk(() => ({ status }), n => `Set ${n} thread${n === 1 ? '' : 's'} to ${status}`, { clearAfter: status === STATUS.ARCHIVED });
+  }, [commitBulk]);
+
+  const handleBulkArchive = useCallback(() => {
+    commitBulk(() => ({ status: STATUS.ARCHIVED }), n => `Archived ${n} thread${n === 1 ? '' : 's'}`, { clearAfter: true });
+  }, [commitBulk]);
+
+  const handleBulkDelete = useCallback(() => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setConfirmModal({
+      title: `Delete ${ids.length} thread${ids.length === 1 ? '' : 's'}?`,
+      message: "This permanently removes the selected threads. This can't be undone.",
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          const CHUNK = 450;
+          for (let i = 0; i < ids.length; i += CHUNK) {
+            const batch = writeBatch(db);
+            ids.slice(i, i + CHUNK).forEach(id => batch.delete(doc(db, 'posts', id)));
+            await batch.commit();
+          }
+          showToast(`Deleted ${ids.length} thread${ids.length === 1 ? '' : 's'}`);
+          clearSelection();
+        } catch (err) {
+          console.error("Bulk delete error:", err);
+          showToast("Bulk delete failed", "error");
+        } finally {
+          setConfirmModal(null);
+        }
+      }
+    });
+  }, [selectedIds, showToast, clearSelection]);
+
+  // Rename or merge a client: reassign every post from `source` to `target`,
+  // and migrate the brand-settings doc if the target has none.
+  const handleMergeClient = useCallback(async (source, target) => {
+    if (isReadOnly || !user) return;
+    const from = String(source || '').trim();
+    const to = String(target || '').trim().replace(/\//g, '').slice(0, 50);
+    if (!from || !to || from === to) return showToast("Pick a different target name", "error");
+
+    const affected = postsRef.current.filter(p => p.client === from);
+    try {
+      const now = new Date().toISOString();
+      const CHUNK = 450;
+      for (let i = 0; i < affected.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id), { client: to, updatedAt: now }));
+        await batch.commit();
+      }
+
+      // Brand settings: copy source → target if target has none, then drop source.
+      const srcSettings = clientMap[from];
+      if (srcSettings) {
+        if (!clientMap[to]) {
+          await setDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(to)}`), {
+            ...srcSettings, uid: user.uid, name: to
+          }, { merge: true });
+        }
+        await deleteDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(from)}`)).catch(() => {});
+      }
+
+      const wasMerge = !!clientMap[to];
+      if (filterClient === from) setFilterClient(to);
+      showToast(`${wasMerge ? 'Merged' : 'Renamed'} "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`);
+    } catch (err) {
+      console.error("Merge client error:", err);
+      showToast("Couldn't rename/merge client", "error");
+    }
+  }, [isReadOnly, user, clientMap, filterClient, showToast]);
 
   // --- Render ---
+
+  // Expired / revoked / invalid share link.
+  if (shareError && !user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mb-4">
+          <ShieldCheck className="text-rose-400" size={32} />
+        </div>
+        <h1 className="text-xl font-bold text-slate-900">Review link unavailable</h1>
+        <p className="text-slate-500 mt-2 max-w-sm">{shareError} Please ask your team for an updated review link.</p>
+      </div>
+    );
+  }
+
+  // Resolving a share token / initial auth — avoid a flash of the login screen.
+  if (authLoading && !user) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-white">
+        <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+        <p className="text-slate-400 font-medium animate-pulse">Loading…</p>
+      </div>
+    );
+  }
 
   if (!user && !sharedUid) {
     return <LoginScreen onSignIn={signIn} />;
@@ -542,7 +737,7 @@ const App = () => {
             uniqueClients={uniqueClients}
             onOpenClientSettings={() => setIsClientSettingsOpen(true)}
             onOpenMedia={() => setIsMediaOpen(true)}
-            onImport={handleImport}
+            onImport={handleImportFile}
             onExport={handleExport}
           />
         )}
@@ -556,8 +751,7 @@ const App = () => {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onToggleSidebar={() => setSidebarOpen(o => !o)}
-            linkCopied={linkCopied}
-            onCopyLink={handleCopyLink}
+            onShare={handleOpenShare}
             filterClient={filterClient}
             onNew={() => setView('editor')}
             onSignOut={signOutAndExit}
@@ -569,14 +763,22 @@ const App = () => {
             </div>
           )}
 
-          <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                {view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}
+          <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
+            <div className="flex items-center justify-between mb-6 gap-3">
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
+                <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
                 {filterClient && !isReadOnly && (
-                  <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500"><X size={20}/></button>
+                  <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500 shrink-0"><X size={20}/></button>
                 )}
               </h2>
+              {!isReadOnly && view === 'grid' && filteredPosts.length > 0 && (
+                <button
+                  onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+                  className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold border transition-colors ${selectionMode ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                >
+                  <CheckSquare size={16} /> {selectionMode ? 'Done' : 'Select'}
+                </button>
+              )}
             </div>
 
             {isLoading ? (
@@ -586,13 +788,13 @@ const App = () => {
               </div>
             ) : (
               <>
-                {isReadOnly && !clientParam ? (
+                {isReadOnly && !shareClient ? (
                   <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
                     <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
                       <ShieldCheck className="text-rose-400" size={32} />
                     </div>
                     <h3 className="text-slate-900 font-bold text-lg">Access Restricted</h3>
-                    <p className="text-slate-500 mt-2">You must use a specific client link to view content.</p>
+                    <p className="text-slate-500 mt-2">Please open the specific review link your team shared with you.</p>
                   </div>
                 ) : view === 'calendar' ? (
                   <CalendarView
@@ -603,6 +805,24 @@ const App = () => {
                   />
                 ) : (
                   <>
+                  {isReadOnly && approvalProgress && approvalProgress.total > 0 && (
+                    <div className="mb-6 bg-white border border-slate-200 rounded-2xl p-4 sm:p-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-bold text-slate-800 text-sm">
+                          {approvalProgress.approved} of {approvalProgress.total} approved
+                        </h3>
+                        <span className="text-xs font-medium text-slate-400">
+                          {approvalProgress.pending > 0 ? `${approvalProgress.pending} awaiting your review` : approvalProgress.changes > 0 ? `${approvalProgress.changes} with requested changes` : 'All set 🎉'}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                          style={{ width: `${approvalProgress.total ? Math.round((approvalProgress.approved / approvalProgress.total) * 100) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {!showArchived && (
                     <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
                   )}
@@ -618,6 +838,9 @@ const App = () => {
                     onArchive={handleArchivePost}
                     onRestore={handleRestorePost}
                     onCreate={() => setView('editor')}
+                    selectable={!isReadOnly && selectionMode}
+                    selectedIds={selectedIds}
+                    onToggleSelect={toggleSelect}
                   />
                   </>
                 )}
@@ -650,8 +873,32 @@ const App = () => {
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
+      {!isReadOnly && selectionMode && selectedIds.size > 0 && (
+        <BulkActionBar
+          count={selectedIds.size}
+          totalFiltered={filteredPosts.length}
+          uniqueClients={uniqueClients}
+          onReassignClient={handleBulkReassignClient}
+          onAddTags={handleBulkAddTags}
+          onRemoveTags={handleBulkRemoveTags}
+          onSetStatus={handleBulkStatus}
+          onArchive={handleBulkArchive}
+          onDelete={handleBulkDelete}
+          onExport={() => handleExport('selected', 'csv')}
+          onSelectAll={() => setSelectedIds(new Set(filteredPosts.map(p => p.id)))}
+          onClear={clearSelection}
+        />
+      )}
       {isClientSettingsOpen && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} />
+      )}
+      {isShareOpen && !isReadOnly && (
+        <ShareManager
+          onClose={() => setIsShareOpen(false)}
+          uniqueClients={uniqueClients}
+          initialClient={filterClient || ''}
+          showToast={showToast}
+        />
       )}
       {isMediaOpen && (
         <MediaLibrary
@@ -659,6 +906,15 @@ const App = () => {
           uniqueClients={uniqueClients}
           initialClient={filterClient || ''}
           showToast={showToast}
+        />
+      )}
+      {importData && (
+        <ImportModal
+          posts={importData.posts}
+          existingPosts={posts}
+          fileName={importData.fileName}
+          onConfirm={handleConfirmImport}
+          onCancel={() => setImportData(null)}
         />
       )}
     </ErrorBoundary>

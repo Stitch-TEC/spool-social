@@ -10,6 +10,7 @@ import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
 import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls } from './firestore.js';
+import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 
 const MAX_PROMPT = 2000;
 const PLATFORM_MAX = { gmb: 1500, linkedin: 3000, twitter: 280, instagram: 2200, blog: 100000, job: 100000 };
@@ -479,6 +480,98 @@ export default {
         } catch (err) {
           console.error('Draft create failed:', err?.message || err);
           return json({ error: 'Draft create failed' }, 502, cors);
+        }
+      }
+
+      return json({ error: 'Method not allowed' }, 405, cors);
+    }
+
+    // --- Share links (per-client, token-scoped client review) ---
+    //   POST   /api/share/session   { token }            -> mint guest custom token  (PUBLIC)
+    //   POST   /api/share           { client, label }    -> create a link            (owner)
+    //   GET    /api/share[?client=]                       -> list owner's links       (owner)
+    //   DELETE /api/share/:token                          -> revoke a link            (owner)
+    if (url.pathname === '/api/share' || url.pathname.startsWith('/api/share/')) {
+      // Public token → guest session exchange. Rate-limited per client IP.
+      if (url.pathname === '/api/share/session') {
+        if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+        const ip = request.headers.get('CF-Connecting-IP') || 'anon';
+        const rl = await checkRateLimit(env, `share:${ip}`, 'firebase', Date.now());
+        if (!rl.ok) return json({ error: 'Too many attempts — try again shortly.' }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        const token = String(body?.token || '').trim().slice(0, 128);
+        if (!token) return json({ error: 'token is required' }, 400, cors);
+
+        let share;
+        try { share = await getShareDoc(env, token); }
+        catch (err) { console.error('Share lookup failed:', err?.message || err); return json({ error: 'Lookup failed' }, 502, cors); }
+        if (!share || share.revoked === true) return json({ error: 'This review link is no longer valid.' }, 404, cors);
+
+        try {
+          const guestUid = `g_${token.slice(0, 40)}`;
+          const customToken = await mintCustomToken(env, guestUid, {
+            share: true, shareOwner: share.ownerUid, shareClient: share.client
+          });
+          return json({ customToken, ownerUid: share.ownerUid, client: share.client, label: share.label || '' }, 200, cors);
+        } catch (err) {
+          console.error('Custom token mint failed:', err?.message || err);
+          return json({ error: 'Could not start review session' }, 502, cors);
+        }
+      }
+
+      // Everything else is owner-only.
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      if (auth.mode !== 'firebase') return json({ error: 'Sign in to manage share links' }, 403, cors);
+      const owner = auth.principal;
+
+      const rl = await checkRateLimit(env, owner, auth.mode, Date.now());
+      if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+
+      // DELETE /api/share/:token — revoke (owner-scoped).
+      if (url.pathname.startsWith('/api/share/')) {
+        if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
+        const token = decodeURIComponent(url.pathname.slice('/api/share/'.length));
+        if (!token) return json({ error: 'Missing token' }, 400, cors);
+        const share = await getShareDoc(env, token);
+        if (!share || share.ownerUid !== owner) return json({ error: 'Not found' }, 404, cors);
+        await deleteShareDoc(env, token);
+        return json({ deleted: token }, 200, cors);
+      }
+
+      // GET /api/share[?client=] — list this owner's links.
+      if (request.method === 'GET') {
+        try {
+          let shares = await listShareDocs(env, owner);
+          const fc = url.searchParams.get('client');
+          if (fc) shares = shares.filter(s => s.client === fc);
+          shares = shares
+            .filter(s => s.revoked !== true)
+            .map(s => ({ token: s.id, client: s.client, label: s.label || '', createdAt: s.createdAt || '', url: `${url.origin}/?s=${s.id}` }))
+            .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+          return json({ shares, count: shares.length }, 200, cors);
+        } catch (err) {
+          console.error('Share list failed:', err?.message || err);
+          return json({ error: 'List failed' }, 502, cors);
+        }
+      }
+
+      // POST /api/share — create a link for a client.
+      if (request.method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
+        if (!client) return json({ error: 'client is required' }, 400, cors);
+        const label = String(body?.label || '').trim().slice(0, 80);
+        const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
+        try {
+          await createShareDoc(env, token, { ownerUid: owner, client, label, revoked: false, createdAt: new Date().toISOString() });
+          return json({ token, client, label, url: `${url.origin}/?s=${token}` }, 201, cors);
+        } catch (err) {
+          console.error('Share create failed:', err?.message || err);
+          return json({ error: 'Could not create link' }, 502, cors);
         }
       }
 
