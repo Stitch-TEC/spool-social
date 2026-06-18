@@ -40,6 +40,34 @@ describe('Editor', () => {
     expect(screen.getByText('Edit Thread')).toBeInTheDocument();
   });
 
+  it('toggles the mobile preview overlay open and closed', () => {
+    // The preview panels are always in the DOM (shown/hidden by responsive CSS),
+    // so the conditionally-rendered FAB + the header toggle label are the
+    // reliable signals that previewMode flipped.
+    render(<Editor {...baseProps} post={{ id: 'b1', platform: 'blog', title: 'T', content: '# Hello\n\nWorld', client: 'Acme' }} />);
+
+    // Overlay closed: FAB present, header toggle says "Preview".
+    expect(screen.getByLabelText('Open Preview')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+
+    // Open via the header toggle.
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.queryByLabelText('Open Preview')).not.toBeInTheDocument(); // FAB hidden
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument(); // toggle flipped
+
+    // Close via the in-panel close button.
+    fireEvent.click(screen.getByLabelText('Close Preview'));
+    expect(screen.getByLabelText('Open Preview')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+  });
+
+  it('exposes a keyboard-resizable preview separator', () => {
+    render(<Editor {...baseProps} post={{ id: 'b2', platform: 'blog', content: 'body', client: 'Acme' }} />);
+    const handle = screen.getByRole('separator', { name: 'Resize preview panel' });
+    expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+    expect(handle).toHaveAttribute('tabindex', '0');
+  });
+
   it('keeps unsaved form fields when picking a Spark Deck prompt', () => {
     render(<Editor {...baseProps} />);
 
