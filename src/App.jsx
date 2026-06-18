@@ -134,6 +134,7 @@ const App = () => {
       const postData = {
         client,
         content,
+        title: (formData.title || "").trim().slice(0, 200),
         platform: platformId,
         status,
         approvalStatus,
@@ -178,6 +179,7 @@ const App = () => {
               uid: user.uid,
               client: post.client || '',
               content: post.content || '',
+              title: (post.title || '').slice(0, 200),
               platform: post.platform || 'gmb',
               status: Object.values(STATUS).includes(post.status) ? post.status : STATUS.DRAFT,
               approvalStatus: Object.values(APPROVAL_STATUS).includes(post.approvalStatus) ? post.approvalStatus : APPROVAL_STATUS.PENDING,
@@ -355,6 +357,7 @@ const App = () => {
               uid: user.uid,
               client: String(clientName).replace(/\//g, '').slice(0, 50),
               content: post.content || "",
+              title: (post.title || '').slice(0, 200),
               platform: post.platform || 'gmb',
               status: STATUS.DRAFT,
               approvalStatus: APPROVAL_STATUS.PENDING,

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
+import MarkdownPreview from './MarkdownPreview';
 import SparkDeck from './SparkDeck';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
@@ -24,6 +25,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   linkedin: 'border-sky-500 bg-sky-50',
   twitter: 'border-slate-800 bg-slate-50',
   instagram: 'border-pink-500 bg-pink-50',
+  blog: 'border-emerald-500 bg-emerald-50',
 };
 
 const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, isReadOnly }) => {
@@ -35,6 +37,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   const [formData, setFormData] = useState({
     platform: 'gmb',
     content: '',
+    title: '',
     client: '',
     imageUrl: '',
     scheduledDate: toLocalISOString(new Date()),
@@ -89,6 +92,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
       const defaultState = {
         platform: 'gmb',
         content: '',
+        title: '',
         client: '',
         imageUrl: '',
         scheduledDate: safeDateString,
@@ -116,6 +120,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
   };
 
   const currentPlatform = PLATFORMS[formData.platform] || PLATFORMS.gmb;
+  const isBlog = currentPlatform.longForm === true;
   const wordCount = formData.content.length;
   const isOverLimit = wordCount > currentPlatform.maxChars;
 
@@ -167,6 +172,20 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
             </div>
           </div>
 
+          {isBlog && (
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Title</label>
+              <input
+                type="text"
+                maxLength={200}
+                placeholder="Post title…"
+                value={formData.title || ''}
+                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base font-bold focus:border-indigo-500 focus:ring-0 transition-all"
+              />
+            </div>
+          )}
+
           {/* Editor Area */}
           <div className="relative group">
             <div className="flex justify-between items-center mb-2 gap-3">
@@ -186,8 +205,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                 />
               </div>
             )}
-            <textarea 
-               className={`w-full h-64 p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
+            <textarea
+               className={`w-full ${isBlog ? 'h-96' : 'h-64'} p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
                placeholder={currentPlatform.placeholder}
                value={formData.content}
                onChange={(e) => setFormData({ ...formData, content: e.target.value })}
@@ -198,10 +217,12 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                  }
                }}
             />
-            {/* ✅ RESTORED: Char Counter */}
-            <div className="absolute bottom-16 right-4">
-               <CharCountCircle current={wordCount} max={currentPlatform.maxChars} />
-            </div>
+            {/* ✅ RESTORED: Char Counter (hidden for long-form blog) */}
+            {!isBlog && (
+              <div className="absolute bottom-16 right-4">
+                 <CharCountCircle current={wordCount} max={currentPlatform.maxChars} />
+              </div>
+            )}
           </div>
 
           {/* Metadata Grid */}
@@ -304,11 +325,17 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
             <h3 className="font-bold text-slate-500 text-sm uppercase tracking-wider">Live Preview</h3>
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
-         <div className="flex-1 flex items-center justify-center p-8 bg-slate-100/50 backdrop-blur-3xl">
-            <MobilePreview
-              post={formData}
-              clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
-            />
+         <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 backdrop-blur-3xl overflow-hidden">
+            {isBlog ? (
+              <div className="w-full h-full overflow-y-auto bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                <MarkdownPreview content={formData.content} title={formData.title} />
+              </div>
+            ) : (
+              <MobilePreview
+                post={formData}
+                clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
+              />
+            )}
          </div>
       </div>
       

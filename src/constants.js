@@ -1,4 +1,4 @@
-import { MapPin, Linkedin, Twitter, Instagram } from 'lucide-react';
+import { MapPin, Linkedin, Twitter, Instagram, FileText } from 'lucide-react';
 
 export const PLATFORMS = {
   gmb: { 
@@ -44,6 +44,18 @@ export const PLATFORMS = {
     url: 'https://www.instagram.com',
     placeholder: 'Write a caption...',
     maxChars: 2200
+  },
+  blog: {
+    id: 'blog',
+    name: 'Blog',
+    color: 'bg-emerald-600',
+    text: 'text-emerald-600',
+    border: 'border-emerald-600',
+    icon: FileText,
+    url: '',
+    placeholder: 'Write your post in Markdown — use # headings, **bold**, lists, and links…',
+    maxChars: 100000,
+    longForm: true
   }
 };
 
@@ -87,7 +99,8 @@ export const PLATFORM_AI_GUIDANCE = {
   gmb: 'a Google Business Profile update — local and action-oriented with a clear call to action; avoid hashtags.',
   linkedin: 'a LinkedIn post — professional and insightful, 1–3 short paragraphs; up to ~3 relevant hashtags.',
   twitter: 'an X/Twitter post — punchy and concise; it MUST stay under 280 characters; at most 1–2 hashtags.',
-  instagram: 'an Instagram caption — engaging and friendly; a few relevant hashtags grouped at the end.'
+  instagram: 'an Instagram caption — engaging and friendly; a few relevant hashtags grouped at the end.',
+  blog: 'a long-form blog post in Markdown — start with an H1 title, use ## section headings, short scannable paragraphs, and a strong intro and conclusion. Format with Markdown (headings, bold, lists, links).'
 };
 
 export const TONE_PRESETS = [
@@ -117,5 +130,6 @@ export const PLATFORM_IMAGE_ASPECT = {
   gmb: 'landscape 4:3',
   linkedin: 'landscape 1.91:1',
   twitter: 'landscape 16:9',
-  instagram: 'square 1:1'
+  instagram: 'square 1:1',
+  blog: 'landscape 16:9'
 };

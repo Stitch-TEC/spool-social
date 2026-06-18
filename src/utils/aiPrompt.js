@@ -11,11 +11,21 @@ import {
   PLATFORM_IMAGE_ASPECT
 } from '../constants';
 
-const BASE_VOICE =
+const BASE_VOICE_SOCIAL =
   'You are an expert social media copywriter. Return only the final, ready-to-post copy — ' +
   'no preamble, no multiple options, no explanations, and no surrounding quotes.';
 
+const BASE_VOICE_LONGFORM =
+  'You are an expert long-form content writer. Write the post body in Markdown. Return only the ' +
+  'finished article — no preamble, no meta commentary, and no surrounding code fences.';
+
 const DEFAULT_MAX_TOKENS = 600;
+const LONGFORM_MAX_TOKENS = { short: 800, medium: 2000, long: 4000 };
+const LONGFORM_LENGTH_HINT = {
+  short: 'Aim for roughly 300–400 words.',
+  medium: 'Aim for roughly 700–900 words.',
+  long: 'Aim for 1200+ words across multiple sections.'
+};
 
 // Collapse whitespace/newlines so owner-supplied free text can't inject extra
 // lines into the (newline-delimited) system instruction.
@@ -28,24 +38,30 @@ export function buildTextContext({ platform, tone, length, clientName, clientSet
   const toneDef = TONE_PRESETS.find(t => t.id === tone);
   const lengthDef = LENGTH_PRESETS.find(l => l.id === length);
   const c = clientSettings || {};
+  const longForm = !!p.longForm;
 
   const lines = [
-    BASE_VOICE,
-    `Write ${guidance}`,
-    `Hard limit: keep the post under ${p.maxChars} characters.`
+    longForm ? BASE_VOICE_LONGFORM : BASE_VOICE_SOCIAL,
+    `Write ${guidance}`
   ];
+  if (!longForm) lines.push(`Hard limit: keep the post under ${p.maxChars} characters.`);
   if (toneDef) lines.push(`Tone: ${toneDef.instruction}.`);
-  if (lengthDef) lines.push(lengthDef.instruction);
+  if (longForm) {
+    lines.push(LONGFORM_LENGTH_HINT[length] || LONGFORM_LENGTH_HINT.medium);
+  } else if (lengthDef) {
+    lines.push(lengthDef.instruction);
+  }
   if (clientName) lines.push(`This is for the brand "${clean(clientName)}".`);
   if (c.aiBrandVoice) lines.push(`Brand voice: ${clean(c.aiBrandVoice)}`);
   if (c.aiAudience) lines.push(`Target audience: ${clean(c.aiAudience)}`);
   if (c.aiKeywords) lines.push(`Where natural, work in these themes/keywords: ${clean(c.aiKeywords)}`);
   if (c.aiAvoid) lines.push(`Avoid the following: ${clean(c.aiAvoid)}`);
 
-  return {
-    system: lines.join('\n'),
-    maxTokens: lengthDef?.maxTokens || DEFAULT_MAX_TOKENS
-  };
+  const maxTokens = longForm
+    ? (LONGFORM_MAX_TOKENS[length] || LONGFORM_MAX_TOKENS.medium)
+    : (lengthDef?.maxTokens || DEFAULT_MAX_TOKENS);
+
+  return { system: lines.join('\n'), maxTokens };
 }
 
 // A single composed prompt string for an image generation.

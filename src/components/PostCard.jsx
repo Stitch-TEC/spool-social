@@ -77,6 +77,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         {post.tags && post.tags.length > 0 && <div className="flex flex-wrap gap-1 mb-3">{post.tags.map((tag, i) => <span key={i} className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-500 border border-slate-200">{tag}</span>)}</div>}
         {/* ⚡ OPTIMIZATION: Use native browser-level lazy loading for post images to reduce initial network and memory usage for off-screen items. */}
         <div className="mb-4 flex-1 cursor-pointer" onClick={() => onEdit(post)}>
+          {post.title && <h5 className="font-bold text-slate-800 text-sm mb-1 line-clamp-1">{post.title}</h5>}
           <p className="text-slate-600 text-sm line-clamp-3 leading-relaxed font-medium">{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
           {post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt="Asset" className="w-full h-full object-cover" loading="lazy" /></div>}
         </div>

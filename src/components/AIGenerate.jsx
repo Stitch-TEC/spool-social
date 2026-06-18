@@ -212,16 +212,18 @@ const AIGenerate = ({
           >
             <Wand2 size={12} /> Improve
           </button>
-          <button
-            type="button"
-            onClick={() => runText('hashtags')}
-            disabled={loading || !hasDraft}
-            title="Append relevant hashtags"
-            aria-label="Add hashtags"
-            className="flex items-center gap-1 bg-white text-indigo-700 border border-indigo-200 p-1.5 rounded-lg text-xs font-bold hover:bg-indigo-50 disabled:opacity-40"
-          >
-            <Hash size={14} />
-          </button>
+          {platform !== 'blog' && (
+            <button
+              type="button"
+              onClick={() => runText('hashtags')}
+              disabled={loading || !hasDraft}
+              title="Append relevant hashtags"
+              aria-label="Add hashtags"
+              className="flex items-center gap-1 bg-white text-indigo-700 border border-indigo-200 p-1.5 rounded-lg text-xs font-bold hover:bg-indigo-50 disabled:opacity-40"
+            >
+              <Hash size={14} />
+            </button>
+          )}
         </div>
       </div>
     </div>
