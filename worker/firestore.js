@@ -104,3 +104,105 @@ export async function createPost(env, docData) {
   if (!res.ok) throw new Error(data?.error?.message || `Firestore write failed (${res.status})`);
   return (data.name || '').split('/').pop();
 }
+
+const FS_BASE = (env) =>
+  `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+
+// Parse Firestore REST typed fields back into a plain JS object.
+function fromFields(fields = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if ('stringValue' in v) out[k] = v.stringValue;
+    else if ('integerValue' in v) out[k] = parseInt(v.integerValue, 10);
+    else if ('doubleValue' in v) out[k] = v.doubleValue;
+    else if ('booleanValue' in v) out[k] = v.booleanValue;
+    else if ('nullValue' in v) out[k] = null;
+    else if ('timestampValue' in v) out[k] = v.timestampValue;
+    else if ('arrayValue' in v) out[k] = (v.arrayValue.values || []).map(x => x.stringValue ?? x.integerValue ?? null);
+    else out[k] = null;
+  }
+  return out;
+}
+
+// List posts for a uid (filtered/sorted by the caller). Single-field equality
+// query — no composite index required.
+export async function listPosts(env, uid, limit = 300) {
+  const token = await getAccessToken(env);
+  const body = {
+    structuredQuery: {
+      from: [{ collectionId: 'posts' }],
+      where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
+      limit
+    }
+  };
+  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ([]));
+  if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
+  return (Array.isArray(data) ? data : [])
+    .filter(r => r.document)
+    .map(r => ({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) }));
+}
+
+export async function getPost(env, id) {
+  const token = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}/posts/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 404) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `Get failed (${res.status})`);
+  return { id, ...fromFields(data.fields) };
+}
+
+export async function updatePost(env, id, patch) {
+  const token = await getAccessToken(env);
+  const mask = Object.keys(patch).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+  const res = await fetch(`${FS_BASE(env)}/posts/${id}?${mask}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: toFields(patch) })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `Update failed (${res.status})`);
+  return { id, ...fromFields(data.fields) };
+}
+
+export async function deletePost(env, id) {
+  const token = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}/posts/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok && res.status !== 404) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Delete failed (${res.status})`);
+  }
+  return true;
+}
+
+// All image URLs referenced by any post (for the orphan-image sweep).
+export async function listAllImageUrls(env, limit = 2000) {
+  const token = await getAccessToken(env);
+  const body = {
+    structuredQuery: {
+      from: [{ collectionId: 'posts' }],
+      select: { fields: [{ fieldPath: 'imageUrl' }] },
+      limit
+    }
+  };
+  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ([]));
+  if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
+  const urls = new Set();
+  for (const r of (Array.isArray(data) ? data : [])) {
+    const u = r.document?.fields?.imageUrl?.stringValue;
+    if (u) urls.add(u);
+  }
+  return urls;
+}

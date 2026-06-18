@@ -9,9 +9,10 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost } from './firestore.js';
+import { createPost, getPost, listPosts, updatePost, deletePost } from './firestore.js';
 
 const MAX_PROMPT = 2000;
+const PLATFORM_MAX = { gmb: 1500, linkedin: 3000, twitter: 280, instagram: 2200, blog: 100000, job: 100000 };
 
 function corsHeaders(env, request) {
   const origin = request.headers.get('Origin') || '';
@@ -84,6 +85,24 @@ async function storeImage(env, origin, bytes, mime, owner) {
   return { url: `${origin}/media/${key}`, key };
 }
 
+// Resolve a draft image input to a /media URL: { prompt } generates, { base64 }
+// uploads to R2, { url } references. Returns the URL, or null when no image.
+async function resolveDraftImage(env, origin, img) {
+  if (!img) return null;
+  if (img.prompt) {
+    const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_PROMPT));
+    return (await storeImage(env, origin, b64ToBytes(b64), mime, 'internal')).url;
+  }
+  if (img.base64) {
+    const m = String(img.base64).match(/^data:([^;]+);base64,(.+)$/);
+    const mime = m ? m[1] : (img.mime || 'image/png');
+    const data = m ? m[2] : String(img.base64);
+    return (await storeImage(env, origin, b64ToBytes(data), mime, 'internal')).url;
+  }
+  if (typeof img.url === 'string') return img.url.slice(0, 2000);
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -154,13 +173,17 @@ export default {
       }
     }
 
-    // --- Create a draft (server-to-server: Claude Code/Cowork, scripts) ---
-    if (url.pathname === '/api/drafts') {
-      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
-
+    // --- Drafts management API (server-to-server: internal key) ---
+    //   POST   /api/drafts       create
+    //   GET    /api/drafts       list (filters: ?client= &platform= &status=)
+    //   GET    /api/drafts/:id    fetch one
+    //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags)
+    //   DELETE /api/drafts/:id    delete
+    //   GET    /api/media         list reusable stored images
+    if (url.pathname === '/api/drafts' || url.pathname.startsWith('/api/drafts/') || url.pathname === '/api/media') {
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
-      if (auth.mode !== 'apikey') return json({ error: 'Drafts API requires the internal API key' }, 403, cors);
+      if (auth.mode !== 'apikey') return json({ error: 'This API requires the internal API key' }, 403, cors);
 
       const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
       if (!rl.ok) {
@@ -168,72 +191,136 @@ export default {
       }
       if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
 
-      let body;
-      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+      // GET /api/media — list reusable images from R2.
+      if (url.pathname === '/api/media') {
+        if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+        const listed = await env.MEDIA.list({ prefix: 'generated/', limit: 1000 });
+        const media = listed.objects.map(o => ({
+          key: o.key, url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded
+        }));
+        return json({ media, count: media.length }, 200, cors);
+      }
 
-      const PLATFORM_MAX = { gmb: 1500, linkedin: 3000, twitter: 280, instagram: 2200, blog: 100000, job: 100000 };
-      const platform = String(body?.platform || 'gmb');
-      if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
+      // /api/drafts/:id — fetch one / patch / delete.
+      if (url.pathname.startsWith('/api/drafts/')) {
+        const id = decodeURIComponent(url.pathname.slice('/api/drafts/'.length));
+        if (!id) return json({ error: 'Missing draft id' }, 400, cors);
 
-      const content = (body?.content || '').toString().trim().slice(0, PLATFORM_MAX[platform]);
-      if (!content) return json({ error: 'content is required' }, 400, cors);
-      const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
-      if (!client) return json({ error: 'client is required' }, 400, cors);
+        const existing = await getPost(env, id);
+        if (!existing || existing.uid !== env.OWNER_UID) return json({ error: 'Draft not found' }, 404, cors);
 
-      const title = (body?.title || '').toString().trim().slice(0, 200);
-      const altText = (body?.altText || '').toString().trim().slice(0, 300);
-      const metaDescription = (body?.metaDescription || '').toString().trim().slice(0, 200);
-      const tags = Array.isArray(body?.tags)
-        ? body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean)
-        : [];
-      const scheduledDate = body?.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+        if (request.method === 'GET') return json({ draft: existing }, 200, cors);
 
-      // Image: { prompt } generates one, { base64 } stores bytes, { url } references.
-      let imageUrl = '';
-      try {
-        const img = body?.image;
-        if (img?.prompt) {
-          const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_PROMPT));
-          imageUrl = (await storeImage(env, url.origin, b64ToBytes(b64), mime, 'internal')).url;
-        } else if (img?.base64) {
-          const m = String(img.base64).match(/^data:([^;]+);base64,(.+)$/);
-          const mime = m ? m[1] : (img.mime || 'image/png');
-          const data = m ? m[2] : String(img.base64);
-          imageUrl = (await storeImage(env, url.origin, b64ToBytes(data), mime, 'internal')).url;
-        } else if (img?.url) {
-          imageUrl = String(img.url).slice(0, 2000);
+        if (request.method === 'DELETE') {
+          await deletePost(env, id);
+          return json({ deleted: id }, 200, cors);
         }
-      } catch (err) {
-        console.error('Draft image failed:', err?.message || err);
-        return json({ error: 'Image processing failed' }, 502, cors);
+
+        if (request.method === 'PATCH') {
+          let body;
+          try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+          const max = PLATFORM_MAX[existing.platform] || 100000;
+          const patch = {};
+          if (typeof body.content === 'string') patch.content = body.content.trim().slice(0, max);
+          if (typeof body.title === 'string') patch.title = body.title.trim().slice(0, 200);
+          if (typeof body.altText === 'string') patch.altText = body.altText.trim().slice(0, 300);
+          if (typeof body.metaDescription === 'string') patch.metaDescription = body.metaDescription.trim().slice(0, 200);
+          if (Array.isArray(body.tags)) patch.tags = body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean);
+          if (body.scheduledDate === null || typeof body.scheduledDate === 'string') {
+            patch.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
+          }
+          if (['draft', 'scheduled', 'posted', 'archived'].includes(body.status)) patch.status = body.status;
+          if (body.image) {
+            try {
+              const u = await resolveDraftImage(env, url.origin, body.image);
+              if (u) patch.imageUrl = u;
+            } catch (err) {
+              console.error('Patch image failed:', err?.message || err);
+              return json({ error: 'Image processing failed' }, 502, cors);
+            }
+          } else if (typeof body.imageUrl === 'string') {
+            patch.imageUrl = body.imageUrl.slice(0, 2000);
+          }
+          if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
+          patch.updatedAt = new Date().toISOString();
+          try {
+            const draft = await updatePost(env, id, patch);
+            return json({ draft }, 200, cors);
+          } catch (err) {
+            console.error('Draft update failed:', err?.message || err);
+            return json({ error: 'Update failed' }, 502, cors);
+          }
+        }
+
+        return json({ error: 'Method not allowed' }, 405, cors);
       }
 
-      const nowIso = new Date().toISOString();
-      try {
-        const id = await createPost(env, {
-          uid: env.OWNER_UID,
-          client, content, title, altText, metaDescription, slug,
-          platform,
-          status: 'draft',
-          approvalStatus: 'pending',
-          feedback: '',
-          imageUrl,
-          tags,
-          scheduledDate,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-          source: 'api'
-        });
-        return json({
-          id,
-          status: 'draft',
-          reviewUrl: `${url.origin}/?uid=${env.OWNER_UID}&client=${encodeURIComponent(client)}`
-        }, 201, cors);
-      } catch (err) {
-        console.error('Draft create failed:', err?.message || err);
-        return json({ error: 'Draft create failed' }, 502, cors);
+      // /api/drafts — list (GET) or create (POST).
+      if (request.method === 'GET') {
+        try {
+          let drafts = await listPosts(env, env.OWNER_UID);
+          const q = url.searchParams;
+          const fc = q.get('client'), fp = q.get('platform'), fst = q.get('status');
+          if (fc) drafts = drafts.filter(d => d.client === fc);
+          if (fp) drafts = drafts.filter(d => d.platform === fp);
+          if (fst) drafts = drafts.filter(d => d.status === fst);
+          drafts.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+          return json({ drafts, count: drafts.length }, 200, cors);
+        } catch (err) {
+          console.error('Draft list failed:', err?.message || err);
+          return json({ error: 'List failed' }, 502, cors);
+        }
       }
+
+      if (request.method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+
+        const platform = String(body?.platform || 'gmb');
+        if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
+
+        const content = (body?.content || '').toString().trim().slice(0, PLATFORM_MAX[platform]);
+        if (!content) return json({ error: 'content is required' }, 400, cors);
+        const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
+        if (!client) return json({ error: 'client is required' }, 400, cors);
+
+        const title = (body?.title || '').toString().trim().slice(0, 200);
+        const altText = (body?.altText || '').toString().trim().slice(0, 300);
+        const metaDescription = (body?.metaDescription || '').toString().trim().slice(0, 200);
+        const tags = Array.isArray(body?.tags)
+          ? body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean)
+          : [];
+        const scheduledDate = body?.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+
+        let imageUrl = '';
+        try {
+          imageUrl = (await resolveDraftImage(env, url.origin, body?.image)) || '';
+        } catch (err) {
+          console.error('Draft image failed:', err?.message || err);
+          return json({ error: 'Image processing failed' }, 502, cors);
+        }
+
+        const nowIso = new Date().toISOString();
+        try {
+          const id = await createPost(env, {
+            uid: env.OWNER_UID,
+            client, content, title, altText, metaDescription, slug,
+            platform, status: 'draft', approvalStatus: 'pending', feedback: '',
+            imageUrl, tags, scheduledDate,
+            createdAt: nowIso, updatedAt: nowIso, source: 'api'
+          });
+          return json({
+            id, status: 'draft',
+            reviewUrl: `${url.origin}/?uid=${env.OWNER_UID}&client=${encodeURIComponent(client)}`
+          }, 201, cors);
+        } catch (err) {
+          console.error('Draft create failed:', err?.message || err);
+          return json({ error: 'Draft create failed' }, 502, cors);
+        }
+      }
+
+      return json({ error: 'Method not allowed' }, 405, cors);
     }
 
     // --- Serve a stored image (GET for the bytes, HEAD for metadata only) ---
