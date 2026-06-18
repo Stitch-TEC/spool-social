@@ -7,8 +7,11 @@ export const DATE_FORMATTERS = {
   time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' })
 };
 
-// Image Compression Logic
-export const processImageFile = (file) => {
+// Image Compression Logic. Accepts a high-res file and returns an optimized
+// JPEG data URL (only the optimized version is ever kept/uploaded).
+// Defaults match the legacy in-editor dropzone; the media library passes larger
+// values (e.g. maxWidth 2048) for crisper hero images.
+export const processImageFile = (file, { maxWidth = 800, quality = 0.6 } = {}) => {
   return new Promise((resolve, reject) => {
     if (!file) reject("No file provided");
     const reader = new FileReader();
@@ -18,11 +21,10 @@ export const processImageFile = (file) => {
       img.src = event.target.result;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 800; 
-        const scaleSize = MAX_WIDTH / img.width;
-        
+        const scaleSize = maxWidth / img.width;
+
         if (scaleSize < 1) {
-          canvas.width = MAX_WIDTH;
+          canvas.width = maxWidth;
           canvas.height = img.height * scaleSize;
         } else {
           canvas.width = img.width;
@@ -30,15 +32,14 @@ export const processImageFile = (file) => {
         }
 
         const ctx = canvas.getContext('2d');
-        
+
         // Fill white background to preserve transparent PNGs
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
+
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        
-        // Compress to JPEG at 60% quality
-        resolve(canvas.toDataURL('image/jpeg', 0.6)); 
+
+        resolve(canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = (err) => reject(err);
     };

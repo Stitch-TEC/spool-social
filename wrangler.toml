@@ -66,6 +66,10 @@ RL_INTERNAL_PER_DAY = "10000"
 # Firebase uid that API-created drafts (POST /api/drafts) are owned by — your
 # account's uid (Firebase console → Authentication). Empty disables drafts.
 OWNER_UID = "sLcLtGsm9SOKkR82a6cDoLCOOVO2"
+# Curated media library: max items per client, and the orphan-GC grace window
+# (days, applied only to the generated/ AI cache — never to the media/ library).
+MEDIA_PER_CLIENT = "50"
+GC_GRACE_DAYS = "365"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
 #   GEMINI_API_KEY            — your Google AI Studio / Gemini API key

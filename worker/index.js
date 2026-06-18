@@ -103,14 +103,51 @@ async function resolveDraftImage(env, origin, img) {
   return null;
 }
 
+// Accept only YouTube / Vimeo / direct video-file URLs as references.
+function validateVideoUrl(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const h = u.hostname.replace(/^www\./, '');
+  if (h === 'youtube.com' || h === 'youtu.be' || h === 'm.youtube.com') return { url: u.href, provider: 'youtube' };
+  if (h === 'vimeo.com' || h === 'player.vimeo.com') return { url: u.href, provider: 'vimeo' };
+  if (/\.(mp4|webm|mov|m4v)$/i.test(u.pathname)) return { url: u.href, provider: 'file' };
+  return null;
+}
+
+// List a curated library prefix (images + video-reference pointers via customMetadata).
+async function listMediaPrefix(env, origin, prefix) {
+  const items = [];
+  let cursor;
+  do {
+    const listed = await env.MEDIA.list({ prefix, cursor, include: ['customMetadata'], limit: 1000 });
+    for (const o of listed.objects) {
+      const cm = o.customMetadata || {};
+      if (cm.type === 'video') items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded });
+      else items.push({ key: o.key, type: 'image', url: `${origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  items.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
+  return items;
+}
+
+// Owner-scoped delete authorization for an R2 key.
+function canManageKey(auth, env, key) {
+  if (auth.mode === 'apikey') return key.startsWith('media/') || key.startsWith('generated/');
+  if (key.startsWith(`media/${auth.principal}/`) || key.startsWith(`generated/${auth.principal}/`)) return true;
+  if (auth.principal === env.OWNER_UID && key.startsWith('generated/internal/')) return true;
+  return false;
+}
+
 // Nightly garbage collection: delete R2 images that no post references AND that
 // are older than a grace window. Mark-and-sweep is safe — it never deletes an
 // in-use or freshly created image, and it catches orphans from both app- and
 // API-side deletes.
 async function runGC(env) {
   if (!env.MEDIA || !env.FIREBASE_SERVICE_ACCOUNT) return;
-  const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
-  const cutoff = Date.now() - GRACE_MS;
+  const graceDays = parseInt(env.GC_GRACE_DAYS || '365', 10);
+  const cutoff = Date.now() - (Number.isFinite(graceDays) ? graceDays : 365) * 24 * 60 * 60 * 1000;
 
   const referenced = new Set();
   try {
@@ -207,36 +244,99 @@ export default {
       }
     }
 
-    // --- Reusable image pool (browser: Firebase token; tools: internal key) ---
-    if (url.pathname === '/api/media') {
-      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+    // --- Media library (browser: Firebase token; tools: internal key) ---
+    //   GET    /api/media              generated AI-cache pool (in-editor reuse)
+    //   GET    /api/media?client=X     curated per-client library (images + videos)
+    //   POST   /api/media              add to a client's library { client, image:{base64} | videoUrl }
+    //   DELETE /api/media/:key         remove one item (owner-scoped)
+    if (url.pathname === '/api/media' || url.pathname.startsWith('/api/media/')) {
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
       const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
       if (!rl.ok) {
         return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
       }
-      // A server tool (api key) sees the whole pool; the configured owner also
-      // sees the shared API-created pool; any other signed-in user sees only
-      // their own images (tenancy enforced in code, not just by ALLOWED_EMAILS).
-      let prefixes;
-      if (auth.mode === 'apikey') prefixes = ['generated/'];
-      else if (auth.principal === env.OWNER_UID) prefixes = [`generated/${auth.principal}/`, 'generated/internal/'];
-      else prefixes = [`generated/${auth.principal}/`];
-      const paginate = auth.mode === 'apikey'; // the in-editor picker only needs one page
-      const media = [];
-      for (const prefix of prefixes) {
-        let cursor;
-        do {
-          const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
-          for (const o of listed.objects) {
-            media.push({ key: o.key, url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
-          }
-          cursor = paginate && listed.truncated ? listed.cursor : undefined;
-        } while (cursor);
+
+      // DELETE /api/media/:key
+      if (url.pathname.startsWith('/api/media/')) {
+        if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
+        const key = decodeURIComponent(url.pathname.slice('/api/media/'.length));
+        if (!key) return json({ error: 'Missing key' }, 400, cors);
+        if (!canManageKey(auth, env, key)) return json({ error: 'Not found' }, 404, cors);
+        await env.MEDIA.delete(key);
+        return json({ deleted: key }, 200, cors);
       }
-      media.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
-      return json({ media, count: media.length }, 200, cors);
+
+      // POST /api/media — add an image or video to a client's curated library.
+      if (request.method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
+        if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
+        const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
+        if (!client) return json({ error: 'client is required' }, 400, cors);
+
+        const base = `media/${owner}/${encodeURIComponent(client)}/`;
+        const cap = parseInt(env.MEDIA_PER_CLIENT || '50', 10);
+        const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
+        if (existing.objects.length >= cap) {
+          return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
+        }
+
+        if (body?.videoUrl) {
+          const v = validateVideoUrl(body.videoUrl);
+          if (!v) return json({ error: 'Unsupported video URL (use YouTube, Vimeo, or a direct .mp4/.webm/.mov link)' }, 400, cors);
+          const key = `${base}v-${crypto.randomUUID()}`;
+          await env.MEDIA.put(key, 'video', { customMetadata: { type: 'video', url: v.url, provider: v.provider, addedAt: new Date().toISOString() } });
+          return json({ key, type: 'video', url: v.url, provider: v.provider }, 201, cors);
+        }
+
+        const b64 = body?.image?.base64;
+        if (b64) {
+          const m = String(b64).match(/^data:([^;]+);base64,(.+)$/);
+          const mime = m ? m[1] : (body.image.mime || 'image/jpeg');
+          const bytes = b64ToBytes(m ? m[2] : String(b64));
+          if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
+          const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+          const key = `${base}${crypto.randomUUID()}.${ext}`;
+          await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
+          return json({ key, type: 'image', url: `${url.origin}/media/${key}` }, 201, cors);
+        }
+        return json({ error: 'image.base64 or videoUrl is required' }, 400, cors);
+      }
+
+      // GET /api/media — curated library (?client=) or the generated AI-cache pool.
+      if (request.method === 'GET') {
+        const clientParam = url.searchParams.get('client');
+        if (clientParam) {
+          const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
+          if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
+          const client = clientParam.trim().replace(/\//g, '').slice(0, 50);
+          const media = await listMediaPrefix(env, url.origin, `media/${owner}/${encodeURIComponent(client)}/`);
+          return json({ media, count: media.length }, 200, cors);
+        }
+        // No client → the generated AI-cache pool (in-editor "Choose from library").
+        let prefixes;
+        if (auth.mode === 'apikey') prefixes = ['generated/'];
+        else if (auth.principal === env.OWNER_UID) prefixes = [`generated/${auth.principal}/`, 'generated/internal/'];
+        else prefixes = [`generated/${auth.principal}/`];
+        const paginate = auth.mode === 'apikey';
+        const media = [];
+        for (const prefix of prefixes) {
+          let cursor;
+          do {
+            const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
+            for (const o of listed.objects) {
+              media.push({ key: o.key, type: 'image', url: `${url.origin}/media/${o.key}`, size: o.size, uploaded: o.uploaded });
+            }
+            cursor = paginate && listed.truncated ? listed.cursor : undefined;
+          } while (cursor);
+        }
+        media.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
+        return json({ media, count: media.length }, 200, cors);
+      }
+
+      return json({ error: 'Method not allowed' }, 405, cors);
     }
 
     // --- Drafts management API (server-to-server: internal key) ---
