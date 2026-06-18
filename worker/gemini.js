@@ -42,7 +42,8 @@ export async function generateText(env, prompt, opts = {}) {
   // maxOutputTokens — a low cap can be consumed entirely by thinking, yielding
   // truncated/empty copy. Disable thinking for copywriting (also faster/cheaper).
   // Override via GEMINI_THINKING_BUDGET if a future model needs it.
-  const thinkingBudget = parseInt(env.GEMINI_THINKING_BUDGET ?? '0', 10);
+  const rawThinking = (env.GEMINI_THINKING_BUDGET ?? '').trim();
+  const thinkingBudget = rawThinking === '' ? 0 : parseInt(rawThinking, 10);
   if (Number.isFinite(thinkingBudget)) {
     generationConfig.thinkingConfig = { thinkingBudget };
   }

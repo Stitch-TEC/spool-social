@@ -262,16 +262,19 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
 
           {/* Image Upload */}
           <div>
-            <div className="flex justify-between items-center mb-2 gap-3">
-              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0">Visual Asset</label>
-              {!isReadOnly && (
+            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Visual Asset</label>
+            {!isReadOnly && (
+              <div className="mb-3">
                 <AIGenerate
                   kind="image"
+                  platform={formData.platform}
+                  clientName={formData.client}
+                  clientSettings={clientMap?.[formData.client]}
                   showToast={showToast}
                   onResult={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
                 />
-              )}
-            </div>
+              </div>
+            )}
             {!formData.imageUrl ? (
               <label 
                 onDragOver={handleDragOver}

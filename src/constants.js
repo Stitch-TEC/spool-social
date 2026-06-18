@@ -102,3 +102,20 @@ export const LENGTH_PRESETS = [
   { id: 'medium', label: 'Medium', maxTokens: 400, instruction: 'A medium-length post of a few sentences.' },
   { id: 'long', label: 'Long', maxTokens: 900, instruction: 'A longer, more detailed post with a few short paragraphs.' }
 ];
+
+// Visual style presets for AI image generation.
+export const IMAGE_STYLE_PRESETS = [
+  { id: 'photo', label: 'Photo', instruction: 'a realistic, high-quality photograph' },
+  { id: 'studio', label: 'Studio product', instruction: 'a clean studio product photo on a seamless background with soft lighting' },
+  { id: 'illustration', label: 'Illustration', instruction: 'a modern flat vector illustration' },
+  { id: 'minimal', label: 'Minimal', instruction: 'a minimalist image with lots of negative space and a simple composition' },
+  { id: 'bold', label: 'Bold graphic', instruction: 'a bold, high-contrast graphic with strong shapes' }
+];
+
+// Platform-appropriate aspect-ratio guidance for generated images.
+export const PLATFORM_IMAGE_ASPECT = {
+  gmb: 'landscape 4:3',
+  linkedin: 'landscape 1.91:1',
+  twitter: 'landscape 16:9',
+  instagram: 'square 1:1'
+};

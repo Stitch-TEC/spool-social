@@ -1,20 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash } from 'lucide-react';
 import { generateImage, generateText } from '../utils/generationApi';
-import { buildTextContext } from '../utils/aiPrompt';
-import { TONE_PRESETS, LENGTH_PRESETS } from '../constants';
+import { buildTextContext, buildImagePrompt } from '../utils/aiPrompt';
+import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS } from '../constants';
 
 /**
  * Inline "generate with AI" control.
  *
- *   kind 'image' — prompt -> hosted image URL (onResult receives the URL).
+ *   kind 'image' — style + brand/platform-aware prompt -> hosted image URL.
  *   kind 'text'  — platform/tone/length + client-context aware. Three actions:
  *       Generate  — fresh draft from a prompt
  *       Improve   — rewrite the current draft (optionally with guidance)
  *       Hashtags  — append relevant hashtags to the current draft
- *     onResult receives the new content string.
+ *     onResult receives the new value (content string, or image URL).
  *
- * Text props: platform, clientName, clientSettings (clientMap[client]), currentText.
+ * Shared props: platform, clientName, clientSettings (clientMap[client]).
+ * Text adds: currentText (for Improve / Hashtags).
  */
 const AIGenerate = ({
   kind,
@@ -31,14 +32,20 @@ const AIGenerate = ({
   const [loading, setLoading] = useState(false);
   const [tone, setTone] = useState(clientSettings?.aiTone || 'professional');
   const [length, setLength] = useState('medium');
+  const [style, setStyle] = useState('photo');
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
-    if (clientSettings?.aiTone) setTone(clientSettings.aiTone);
+    setTone(clientSettings?.aiTone || 'professional');
   }, [clientSettings?.aiTone]);
 
   const label = isText ? 'AI draft' : 'Generate image';
   const hasDraft = currentText.trim().length > 0;
+
+  const selectClass =
+    'bg-white border border-indigo-200 rounded-lg text-xs font-medium px-2 py-1.5 focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60';
+
+  const close = () => { setOpen(false); setPrompt(''); };
 
   const runText = async (mode) => {
     if (loading) return;
@@ -71,8 +78,7 @@ const AIGenerate = ({
       }
 
       onResult(result);
-      setOpen(false);
-      setPrompt('');
+      close();
       showToast?.(mode === 'hashtags' ? 'Hashtags added' : mode === 'improve' ? 'Draft improved' : 'Draft generated');
     } catch (err) {
       showToast?.(err.message || 'Generation failed', 'error');
@@ -86,10 +92,10 @@ const AIGenerate = ({
     if (!p || loading) return;
     setLoading(true);
     try {
-      const url = await generateImage(p);
+      const fullPrompt = buildImagePrompt({ prompt: p, style, platform, clientName, clientSettings });
+      const url = await generateImage(fullPrompt);
       onResult(url);
-      setOpen(false);
-      setPrompt('');
+      close();
       showToast?.('Image generated');
     } catch (err) {
       showToast?.(err.message || 'Generation failed', 'error');
@@ -110,51 +116,51 @@ const AIGenerate = ({
     );
   }
 
-  // --- Image: single-row prompt ---
+  // --- Image: prompt + style ---
   if (!isText) {
     return (
-      <div className="flex items-center gap-2 w-full">
-        <div className="relative flex-1">
-          <Sparkles size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400" />
-          <input
-            autoFocus
-            type="text"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); runImage(); }
-              if (e.key === 'Escape') { setOpen(false); setPrompt(''); }
-            }}
-            placeholder="Describe the image you want…"
-            disabled={loading}
-            className="w-full pl-7 pr-3 py-1.5 bg-white border border-indigo-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60"
-          />
+      <div className="w-full bg-indigo-50/60 border border-indigo-100 rounded-xl p-2.5 space-y-2">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Sparkles size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400" />
+            <input
+              autoFocus
+              type="text"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); runImage(); }
+                if (e.key === 'Escape') { close(); }
+              }}
+              placeholder="Describe the image you want…"
+              maxLength={1200}
+              disabled={loading}
+              className="w-full pl-7 pr-3 py-1.5 bg-white border border-indigo-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60"
+            />
+          </div>
+          <button type="button" onClick={close} className="p-1 text-slate-400 hover:text-rose-500" aria-label="Cancel">
+            <X size={14} />
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={runImage}
-          disabled={loading || !prompt.trim()}
-          className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-          {loading ? 'Working…' : 'Go'}
-        </button>
-        <button
-          type="button"
-          onClick={() => { setOpen(false); setPrompt(''); }}
-          className="p-1 text-slate-400 hover:text-rose-500"
-          aria-label="Cancel"
-        >
-          <X size={14} />
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={style} onChange={(e) => setStyle(e.target.value)} disabled={loading} className={selectClass} aria-label="Image style">
+            {IMAGE_STYLE_PRESETS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={runImage}
+            disabled={loading || !prompt.trim()}
+            className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 disabled:opacity-50 ml-auto"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            {loading ? 'Working…' : 'Generate'}
+          </button>
+        </div>
       </div>
     );
   }
 
-  // --- Text: panel with tone/length + Generate / Improve / Hashtags ---
-  const selectClass =
-    'bg-white border border-indigo-200 rounded-lg text-xs font-medium px-2 py-1.5 focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60';
-
+  // --- Text: prompt + tone/length + Generate / Improve / Hashtags ---
   return (
     <div className="w-full bg-indigo-50/60 border border-indigo-100 rounded-xl p-2.5 space-y-2">
       <div className="flex items-center gap-2">
@@ -167,19 +173,14 @@ const AIGenerate = ({
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') { e.preventDefault(); runText('generate'); }
-              if (e.key === 'Escape') { setOpen(false); setPrompt(''); }
+              if (e.key === 'Escape') { close(); }
             }}
             placeholder={hasDraft ? 'Topic to generate, or guidance for Improve…' : 'What should this post be about?'}
             disabled={loading}
             className="w-full pl-7 pr-3 py-1.5 bg-white border border-indigo-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60"
           />
         </div>
-        <button
-          type="button"
-          onClick={() => { setOpen(false); setPrompt(''); }}
-          className="p-1 text-slate-400 hover:text-rose-500"
-          aria-label="Cancel"
-        >
+        <button type="button" onClick={close} className="p-1 text-slate-400 hover:text-rose-500" aria-label="Cancel">
           <X size={14} />
         </button>
       </div>
