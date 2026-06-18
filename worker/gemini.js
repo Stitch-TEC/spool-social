@@ -37,6 +37,16 @@ export async function generateText(env, prompt, opts = {}) {
   const maxTokens = opts.maxTokens || parseInt(env.MAX_OUTPUT_TOKENS || '1024', 10);
   if (maxTokens > 0) generationConfig.maxOutputTokens = maxTokens;
   if (typeof opts.temperature === 'number') generationConfig.temperature = opts.temperature;
+
+  // gemini-2.5 models "think" by default, and thinking tokens count against
+  // maxOutputTokens — a low cap can be consumed entirely by thinking, yielding
+  // truncated/empty copy. Disable thinking for copywriting (also faster/cheaper).
+  // Override via GEMINI_THINKING_BUDGET if a future model needs it.
+  const thinkingBudget = parseInt(env.GEMINI_THINKING_BUDGET ?? '0', 10);
+  if (Number.isFinite(thinkingBudget)) {
+    generationConfig.thinkingConfig = { thinkingBudget };
+  }
+
   body.generationConfig = generationConfig;
 
   const data = await callGemini(env, model, body);
