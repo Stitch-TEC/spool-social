@@ -45,7 +45,7 @@ const DashboardHeader = ({
             narrow screens to leave room for the view/new/link actions) */}
         <div className={`flex-col leading-none ${!isReadOnly ? 'hidden sm:flex lg:hidden' : 'flex'}`}>
           <h1 className="text-xl font-black text-slate-900">Spool</h1>
-          <a href="https://stitchtec.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
+          <a href="https://stitchtec.dev" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
         </div>
       </div>
 

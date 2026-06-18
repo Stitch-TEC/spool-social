@@ -1,7 +1,7 @@
 # 🧵 Spool
 > **Content approval workflows, simplified.**
 
-[![Live Demo](https://img.shields.io/badge/🚀_Launch-Live_Demo-indigo?style=for-the-badge)](https://stitch-tec.github.io/spool-social/)
+[![Live Demo](https://img.shields.io/badge/🚀_Launch-Live_Demo-indigo?style=for-the-badge)](https://spool.stitchtec.dev/)
 ![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
 ![Firebase](https://img.shields.io/badge/firebase-ffca28?style=for-the-badge&logo=firebase&logoColor=black)
@@ -25,7 +25,7 @@
 * **Frontend:** React (Vite), Tailwind CSS
 * **Backend:** Firebase (Firestore, Auth)
 * **Icons:** Lucide React
-* **Deployment:** GitHub Pages
+* **Deployment:** Cloudflare Workers (app + generation API)
 
 ---
 
@@ -68,7 +68,7 @@
 
 ## 📦 Deployment
 
-Every push to `main` is automatically built and deployed to **GitHub Pages** via GitHub Actions (`.github/workflows/deploy.yml`). The Firebase web config is injected from repository **Actions variables**.
+Every push to `main` is automatically built and deployed to **Cloudflare Workers** via GitHub Actions (`.github/workflows/deploy.yml`), authenticated with the `CLOUDFLARE_API_TOKEN` repo secret. The Firebase web config is injected from repository **Actions variables**.
 
 ### Manual Deploy (fallback)
 To build and deploy from your local machine:

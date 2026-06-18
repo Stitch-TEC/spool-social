@@ -84,7 +84,7 @@ npm run deploy      # builds the SPA, then `wrangler deploy`
 ```
 
 Wrangler prints a URL like `https://spool.<your-subdomain>.workers.dev`.
-Add a custom domain later in the Cloudflare dashboard (e.g. `app.stitchtec.com`).
+Add a custom domain later in the Cloudflare dashboard (e.g. `spool.stitchtec.dev`).
 
 > **Firebase:** add the new Worker domain to Firebase Auth → Settings →
 > Authorized domains, or Google sign-in will be blocked there.

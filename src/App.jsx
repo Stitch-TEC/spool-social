@@ -588,7 +588,7 @@ const App = () => {
 
           <footer className="py-6 text-center border-t border-slate-200 bg-white">
             <p className="text-slate-400 text-[10px] font-bold tracking-widest uppercase">
-              Powered by <a href="https://stitchtec.com" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 transition-colors">Spool</a>
+              Powered by <a href="https://stitchtec.dev" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 transition-colors">Spool</a>
             </p>
           </footer>
 

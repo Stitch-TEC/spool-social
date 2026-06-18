@@ -49,7 +49,7 @@ const Sidebar = ({
               <span className="font-black text-xl text-slate-900">Spool</span>
             </div>
             <a
-              href="https://stitchtec.com"
+              href="https://stitchtec.dev"
               target="_blank"
               rel="noopener noreferrer"
               className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600 mt-2 ml-1"
