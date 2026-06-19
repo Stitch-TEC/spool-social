@@ -37,7 +37,8 @@
       "Bash(echo \"[deploy: $?]\")",
       "Bash(firebase --version)",
       "Bash(firebase login:list)",
-      "Bash(firebase projects:list)"
+      "Bash(firebase projects:list)",
+      "Bash(npx wrangler *)"
     ]
   }
 }

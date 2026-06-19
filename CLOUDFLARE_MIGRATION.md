@@ -1,5 +1,12 @@
 # Spool → Cloudflare migration + generation API
 
+> **STATUS UPDATE (2026-06-18):** This migration is **SHIPPED & merged to `main`**.
+> Spool is live at **spool.stitchtec.dev** on a Cloudflare Worker + R2 (Firebase
+> still handles auth/data). `stitchtec.dev` is the canonical domain for everything
+> (the owner's `.com` forwards to `.dev`). The notes below describe the original
+> migration work; treat the "branch" framing as historical. The Roadmap items at
+> the bottom are still the open backlog.
+
 This branch (`feat/cloudflare-worker`) moves Spool off GitHub Pages and onto a
 single **Cloudflare Worker** that serves the app *and* exposes an image/text
 generation API powered by **Google Gemini**, with generated images stored in
@@ -142,9 +149,11 @@ to cap spend.
 
 ## Roadmap / next steps
 
-1. **Switch models** to current-gen (`gemini-3.1-flash-image` / `gemini-3-pro-image`)
-   once billing is on — just edit `wrangler.toml`, no code change. (The default
-   `gemini-2.5-flash-image` is slated to sunset Oct 2026.)
+1. **Switch models** to current-gen once billing is on — just edit `wrangler.toml`,
+   no code change. Pin the current GA model name in the wrangler config, and when
+   changing it verify the exact model name and its sunset date against Google's
+   model changelog (model names and deprecation dates move; don't trust a
+   hardcoded date here).
 2. **Rate limiting / budget guardrails** — per-key daily cap via Cloudflare KV.
    (Hook point is in `worker/index.js` after auth.)
 3. **Tighten CORS** — set `ALLOWED_ORIGINS` to your real domains instead of `*`.

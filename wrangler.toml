@@ -44,11 +44,16 @@ id = "52b2367d9e75470d92840c8fbcfbee05"
 [vars]
 # Firebase project whose ID tokens authenticate Spool app users.
 FIREBASE_PROJECT_ID = "spool-social"
-# Default Gemini models — override here without code changes.
-# On the free tier start with these Flash models; switch to gemini-3.1-flash-image
-# / gemini-3-pro-image once billing is enabled (see runbook).
-GEMINI_TEXT_MODEL = "gemini-2.5-flash"
-GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+# Default Gemini models — override here without code changes (redeploy to apply).
+# Upgraded 2026-06-18 from the 2.5 Flash models to the Gemini 3 GA line.
+#   text  : gemini-3.5-flash      (GA "most intelligent" Flash; was gemini-2.5-flash)
+#   image : gemini-3.1-flash-image ("Nano Banana 2", GA; was gemini-2.5-flash-image)
+# For top-tier hero quality, flip the image model to "gemini-3-pro-image"
+# ("Nano Banana Pro") — it REQUIRES billing on GEMINI_API_KEY; without billing it
+# errors and heroes fall back to the gradient, so confirm billing first.
+# Pin GA IDs only — the *-preview variants retire 2026-06-25.
+GEMINI_TEXT_MODEL = "gemini-3.5-flash"
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 # Comma-separated origins allowed to call /api cross-site (your other projects).
 # "*" is fine to start since auth is bearer-token, not cookies.
 ALLOWED_ORIGINS = "*"
