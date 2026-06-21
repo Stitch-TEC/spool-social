@@ -9,11 +9,51 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls } from './firestore.js';
+import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls, getUserRecord } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
+import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation } from './firestore.js';
+import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
+import { runDueAutomations, generateForAutomation } from './automation.js';
+import { PLATFORM_META, PLATFORM_CADENCE } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
-const PLATFORM_MAX = { gmb: 1500, linkedin: 3000, twitter: 280, instagram: 2200, blog: 100000, job: 100000 };
+// Per-platform character caps, derived from the shared PLATFORM_META so the
+// Worker and the app can never disagree on a limit.
+const PLATFORM_MAX = Object.fromEntries(
+  Object.values(PLATFORM_META).map(p => [p.id, p.maxChars])
+);
+
+// --- Automation config validation (shared by POST create + PATCH update) -----
+const AUTO_CONTENT_TYPES = ['text', 'image', 'text+image'];
+const AUTO_TONES = ['professional', 'friendly', 'bold', 'educational'];
+const AUTO_LENGTHS = ['short', 'medium', 'long'];
+const AUTO_IMAGE_STYLES = ['photo', 'studio', 'illustration', 'minimal', 'bold'];
+
+// Clamp a requested interval UP to the platform's minimum (and cap at 1 year) so
+// a schedule can't spam a channel or runaway the Gemini quota. Falls back to the
+// platform's sensible default when no/invalid value is given.
+function clampInterval(value, platform) {
+  const cad = PLATFORM_CADENCE[platform] || PLATFORM_CADENCE.gmb;
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return cad.defaultHours;
+  return Math.max(cad.minHours, Math.min(n, 24 * 365));
+}
+
+// Build a validated patch of the editable automation fields from a request body.
+function sanitizeAutomationPatch(body, platform) {
+  const patch = {};
+  if (AUTO_CONTENT_TYPES.includes(body?.contentType)) patch.contentType = body.contentType;
+  if (AUTO_TONES.includes(body?.tone)) patch.tone = body.tone;
+  if (AUTO_LENGTHS.includes(body?.length)) patch.length = body.length;
+  if (AUTO_IMAGE_STYLES.includes(body?.imageStyle)) patch.imageStyle = body.imageStyle;
+  if (typeof body?.promptSeed === 'string') {
+    const seed = body.promptSeed.trim().slice(0, MAX_PROMPT);
+    if (seed) patch.promptSeed = seed;
+  }
+  if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+  if (body?.intervalHours !== undefined) patch.intervalHours = clampInterval(body.intervalHours, platform);
+  return patch;
+}
 
 function corsHeaders(env, request) {
   const origin = request.headers.get('Origin') || '';
@@ -44,15 +84,6 @@ function clampMaxTokens(v) {
   return Math.min(n, 4096);
 }
 
-function bytesToB64(bytes) {
-  let bin = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
-
 // Resolve an image reference to inline base64 for a multimodal prompt.
 // Only accepts data: URLs (client-supplied bytes) or our own /media/<key> R2
 // objects (read straight from the bucket — no outbound fetch, no SSRF surface).
@@ -72,42 +103,6 @@ async function resolveImage(src, env) {
     if (bytes.length > 8_000_000) return null; // ~8MB cap
     return { mimeType: obj.httpMetadata?.contentType || 'image/png', data: bytesToB64(bytes) };
   }
-  return null;
-}
-
-function b64ToBytes(b64) {
-  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-}
-
-// Encode per path-segment so the URL round-trips through the /media route's
-// decodeURIComponent back to the exact (raw) R2 key — needed for keys that
-// contain spaces/special chars (e.g. a client name in the library prefix).
-function mediaUrl(origin, key) {
-  return `${origin}/media/${key.split('/').map(encodeURIComponent).join('/')}`;
-}
-
-async function storeImage(env, origin, bytes, mime, owner) {
-  const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'bin';
-  const key = `generated/${owner}/${crypto.randomUUID()}.${ext}`;
-  await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
-  return { url: mediaUrl(origin, key), key };
-}
-
-// Resolve a draft image input to a /media URL: { prompt } generates, { base64 }
-// uploads to R2, { url } references. Returns the URL, or null when no image.
-async function resolveDraftImage(env, origin, img) {
-  if (!img) return null;
-  if (img.prompt) {
-    const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_PROMPT));
-    return (await storeImage(env, origin, b64ToBytes(b64), mime, 'internal')).url;
-  }
-  if (img.base64) {
-    const m = String(img.base64).match(/^data:([^;]+);base64,(.+)$/);
-    const mime = m ? m[1] : (img.mime || 'image/png');
-    const data = m ? m[2] : String(img.base64);
-    return (await storeImage(env, origin, b64ToBytes(data), mime, 'internal')).url;
-  }
-  if (typeof img.url === 'string') return img.url.slice(0, 2000);
   return null;
 }
 
@@ -138,6 +133,24 @@ async function listMediaPrefix(env, origin, prefix) {
   } while (cursor);
   items.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
   return items;
+}
+
+// Resolve a firebase caller's share-management context from users/{email}.
+// Operator = super_admin role OR uid === OWNER_UID (the owner is never locked
+// out, even pre-bootstrap). A client/client_admin is pinned to their clientId.
+// Returns { isOperator, clientId } or null (not authorized to manage links).
+async function resolveShareCaller(auth, env) {
+  if (auth.principal === env.OWNER_UID) return { isOperator: true, clientId: null };
+  let rec;
+  try { rec = await getUserRecord(env, auth.email); }
+  catch (err) { console.error('User lookup failed:', err?.message || err); return null; }
+  if (!rec) return null;
+  const roles = Array.isArray(rec.roles) ? rec.roles : [];
+  if (roles.includes('super_admin')) return { isOperator: true, clientId: null };
+  if ((roles.includes('client_admin') || roles.includes('client')) && rec.clientId) {
+    return { isOperator: false, clientId: rec.clientId };
+  }
+  return null;
 }
 
 // Owner-scoped delete authorization for an R2 key.
@@ -511,45 +524,56 @@ export default {
 
         try {
           const guestUid = `g_${token.slice(0, 40)}`;
+          // shareClientId is the secure key the rules match guest reads on.
+          // Legacy share docs lack clientId → the minted claim is null and the
+          // rules deny (the link is dead; re-issue it). shareClient (name) is
+          // kept for display only.
           const customToken = await mintCustomToken(env, guestUid, {
-            share: true, shareOwner: share.ownerUid, shareClient: share.client
+            share: true, shareOwner: share.ownerUid, shareClient: share.client, shareClientId: share.clientId || null
           });
-          return json({ customToken, ownerUid: share.ownerUid, client: share.client, label: share.label || '' }, 200, cors);
+          return json({ customToken, ownerUid: share.ownerUid, client: share.client, clientId: share.clientId || null, label: share.label || '' }, 200, cors);
         } catch (err) {
           console.error('Custom token mint failed:', err?.message || err);
           return json({ error: 'Could not start review session' }, 502, cors);
         }
       }
 
-      // Everything else is owner-only.
+      // Everything else is owner / client-member only.
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
       if (auth.mode !== 'firebase') return json({ error: 'Sign in to manage share links' }, 403, cors);
-      const owner = auth.principal;
 
-      const rl = await checkRateLimit(env, owner, auth.mode, Date.now());
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
       if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
 
-      // DELETE /api/share/:token — revoke (owner-scoped).
+      // Resolve role + clientId. An operator manages any client's links; a client
+      // member manages ONLY their own clientId's links.
+      const caller = await resolveShareCaller(auth, env);
+      if (!caller) return json({ error: 'Not authorized to manage share links' }, 403, cors);
+
+      // DELETE /api/share/:token — revoke (operator any; member own clientId only).
       if (url.pathname.startsWith('/api/share/')) {
         if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
         const token = decodeURIComponent(url.pathname.slice('/api/share/'.length));
         if (!token) return json({ error: 'Missing token' }, 400, cors);
         const share = await getShareDoc(env, token);
-        if (!share || share.ownerUid !== owner) return json({ error: 'Not found' }, 404, cors);
+        if (!share) return json({ error: 'Not found' }, 404, cors);
+        if (!caller.isOperator && share.clientId !== caller.clientId) return json({ error: 'Not found' }, 404, cors);
         await deleteShareDoc(env, token);
         return json({ deleted: token }, 200, cors);
       }
 
-      // GET /api/share[?client=] — list this owner's links.
+      // GET /api/share[?client=] — list links (all carry ownerUid == OWNER_UID;
+      // a client member sees only their own clientId).
       if (request.method === 'GET') {
         try {
-          let shares = await listShareDocs(env, owner);
+          let shares = await listShareDocs(env, env.OWNER_UID);
+          if (!caller.isOperator) shares = shares.filter(s => s.clientId === caller.clientId);
           const fc = url.searchParams.get('client');
           if (fc) shares = shares.filter(s => s.client === fc);
           shares = shares
             .filter(s => s.revoked !== true)
-            .map(s => ({ token: s.id, client: s.client, label: s.label || '', createdAt: s.createdAt || '', url: `${url.origin}/?s=${s.id}` }))
+            .map(s => ({ token: s.id, client: s.client, clientId: s.clientId || '', label: s.label || '', createdAt: s.createdAt || '', url: `${url.origin}/?s=${s.id}` }))
             .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
           return json({ shares, count: shares.length }, 200, cors);
         } catch (err) {
@@ -558,20 +582,166 @@ export default {
         }
       }
 
-      // POST /api/share — create a link for a client.
+      // POST /api/share — create a link. ownerUid is ALWAYS the operator (so the
+      // one guest token resolves across multi-author client content); clientId is
+      // the member's own (forced) or, for an operator, the requested client's.
       if (request.method === 'POST') {
         let body;
         try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
         const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
+        const clientId = caller.isOperator
+          ? String(body?.clientId || '').trim().slice(0, 64)
+          : caller.clientId;
+        if (!clientId) return json({ error: 'clientId is required' }, 400, cors);
         const label = String(body?.label || '').trim().slice(0, 80);
         const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
         try {
-          await createShareDoc(env, token, { ownerUid: owner, client, label, revoked: false, createdAt: new Date().toISOString() });
-          return json({ token, client, label, url: `${url.origin}/?s=${token}` }, 201, cors);
+          await createShareDoc(env, token, { ownerUid: env.OWNER_UID, client, clientId, label, revoked: false, createdAt: new Date().toISOString() });
+          return json({ token, client, clientId, label, url: `${url.origin}/?s=${token}` }, 201, cors);
         } catch (err) {
           console.error('Share create failed:', err?.message || err);
           return json({ error: 'Could not create link' }, 502, cors);
+        }
+      }
+
+      return json({ error: 'Method not allowed' }, 405, cors);
+    }
+
+    // --- Content automations (super-admin only) ------------------------------
+    //   GET    /api/automations            list all
+    //   POST   /api/automations            create
+    //   GET    /api/automations/:id         fetch one
+    //   PATCH  /api/automations/:id         update (pause/resume, edit fields)
+    //   DELETE /api/automations/:id         delete
+    //   POST   /api/automations/:id/run     generate one draft now (preview)
+    if (url.pathname === '/api/automations' || url.pathname.startsWith('/api/automations/')) {
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      // Human super-admins only — the internal API key cannot manage automations.
+      if (auth.mode !== 'firebase') return json({ error: 'Sign in as an operator to manage automations' }, 403, cors);
+
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+
+      // Same operator lock as /api/share — denies every client / client_admin / guest.
+      const caller = await resolveShareCaller(auth, env);
+      if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+      if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
+
+      // /api/automations/:id (and /api/automations/:id/run)
+      if (url.pathname.startsWith('/api/automations/')) {
+        const rest = url.pathname.slice('/api/automations/'.length);
+        const isRun = rest.endsWith('/run');
+        const id = decodeURIComponent(isRun ? rest.slice(0, -'/run'.length) : rest);
+        if (!id) return json({ error: 'Missing automation id' }, 400, cors);
+
+        const existing = await getAutomation(env, id);
+        if (!existing || existing.ownerUid !== env.OWNER_UID) return json({ error: 'Automation not found' }, 404, cors);
+
+        // POST /api/automations/:id/run — generate one draft now (preview).
+        // Records the run but deliberately does NOT advance nextRunAt.
+        if (isRun) {
+          if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+          try {
+            const result = await generateForAutomation(env, url.origin, existing);
+            const nowIso = new Date().toISOString();
+            await updateAutomation(env, id, {
+              lastRunAt: nowIso, lastStatus: 'ok', lastError: '',
+              runCount: (parseInt(existing.runCount, 10) || 0) + 1, updatedAt: nowIso
+            }).catch(() => {});
+            return json({ ok: true, postId: result.postId }, 200, cors);
+          } catch (err) {
+            if (err?.budgetExhausted) return json({ error: err.message }, 429, cors);
+            console.error('Automation run failed:', err?.message || err);
+            return json({ error: 'Generation failed' }, 502, cors);
+          }
+        }
+
+        if (request.method === 'GET') return json({ automation: existing }, 200, cors);
+
+        if (request.method === 'DELETE') {
+          await deleteAutomation(env, id);
+          return json({ deleted: id }, 200, cors);
+        }
+
+        if (request.method === 'PATCH') {
+          let body;
+          try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+          const patch = sanitizeAutomationPatch(body, existing.platform);
+          if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
+          patch.updatedAt = new Date().toISOString();
+          try {
+            const automation = await updateAutomation(env, id, patch);
+            return json({ automation }, 200, cors);
+          } catch (err) {
+            console.error('Automation update failed:', err?.message || err);
+            return json({ error: 'Update failed' }, 502, cors);
+          }
+        }
+
+        return json({ error: 'Method not allowed' }, 405, cors);
+      }
+
+      // /api/automations — list (GET) or create (POST).
+      if (request.method === 'GET') {
+        try {
+          const automations = (await listAutomations(env, env.OWNER_UID))
+            .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+          return json({ automations, count: automations.length }, 200, cors);
+        } catch (err) {
+          console.error('Automation list failed:', err?.message || err);
+          return json({ error: 'List failed' }, 502, cors);
+        }
+      }
+
+      if (request.method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+
+        const platform = String(body?.platform || 'gmb');
+        if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
+        const clientId = String(body?.clientId || '').trim().slice(0, 64);
+        const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
+        if (!clientId || !client) return json({ error: 'client and clientId are required' }, 400, cors);
+        const promptSeed = String(body?.promptSeed || '').trim().slice(0, MAX_PROMPT);
+        if (!promptSeed) return json({ error: 'promptSeed is required' }, 400, cors);
+
+        // Caps protect the owner's Gemini quota and keep the dashboard sane.
+        let existing;
+        try { existing = await listAutomations(env, env.OWNER_UID); }
+        catch (err) { console.error('Automation list failed:', err?.message || err); return json({ error: 'Create failed' }, 502, cors); }
+        const maxTotal = parseInt(env.AUTO_MAX_TOTAL || '50', 10);
+        const maxPerClient = parseInt(env.AUTO_MAX_PER_CLIENT || '5', 10);
+        if (existing.length >= maxTotal) return json({ error: `Automation limit reached (${maxTotal} total).` }, 409, cors);
+        if (existing.filter(a => a.clientId === clientId).length >= maxPerClient) {
+          return json({ error: `This client already has the maximum ${maxPerClient} automations.` }, 409, cors);
+        }
+
+        const fields = sanitizeAutomationPatch(body, platform);
+        const intervalHours = fields.intervalHours || clampInterval(undefined, platform);
+        const nowIso = new Date().toISOString();
+        const doc = {
+          ownerUid: env.OWNER_UID,
+          clientId, client, platform,
+          contentType: fields.contentType || 'text',
+          tone: fields.tone || 'professional',
+          length: fields.length || 'medium',
+          imageStyle: fields.imageStyle || 'photo',
+          promptSeed,
+          intervalHours,
+          enabled: typeof fields.enabled === 'boolean' ? fields.enabled : true,
+          // First scheduled run is one interval out; "Run now" is for immediate.
+          nextRunAt: new Date(Date.now() + intervalHours * 3_600_000).toISOString(),
+          lastRunAt: '', lastStatus: '', lastError: '', runCount: 0,
+          createdAt: nowIso, updatedAt: nowIso
+        };
+        try {
+          const id = await createAutomation(env, doc);
+          return json({ id, automation: { id, ...doc } }, 201, cors);
+        } catch (err) {
+          console.error('Automation create failed:', err?.message || err);
+          return json({ error: 'Create failed' }, 502, cors);
         }
       }
 
@@ -597,8 +767,15 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // Cron trigger (see wrangler.toml [triggers]) — nightly orphan-image sweep.
+  // Cron triggers (see wrangler.toml [triggers]). Each cron expression fires its
+  // OWN scheduled event, so we branch on event.cron: the nightly "0 4 * * *"
+  // runs the orphan-image sweep; the frequent tick runs due content automations.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runGC(env));
+    if (event.cron === '0 4 * * *') {
+      ctx.waitUntil(runGC(env));
+    } else {
+      const origin = (env.PUBLIC_ORIGIN || 'https://spool.stitchtec.dev').replace(/\/$/, '');
+      ctx.waitUntil(runDueAutomations(env, origin));
+    }
   }
 };

@@ -112,9 +112,10 @@ function isAuthorizedUser(payload, env) {
 }
 
 /**
- * Returns { principal, mode } on success, or null on failure.
- *   mode 'apikey'   → principal 'internal'
- *   mode 'firebase' → principal is the user's uid
+ * Returns { principal, mode, email } on success, or null on failure.
+ *   mode 'apikey'   → principal 'internal', email null
+ *   mode 'firebase' → principal is the user's uid, email is the lowercased token
+ *                     email (used to resolve the users/{email} RBAC doc)
  */
 export async function authenticate(request, env) {
   const m = (request.headers.get('Authorization') || '').match(/^Bearer\s+(.+)$/i);
@@ -122,12 +123,12 @@ export async function authenticate(request, env) {
   const token = m[1];
 
   if (env.INTERNAL_API_KEY && timingSafeEqual(token, env.INTERNAL_API_KEY)) {
-    return { principal: 'internal', mode: 'apikey' };
+    return { principal: 'internal', mode: 'apikey', email: null };
   }
   if (env.FIREBASE_PROJECT_ID) {
     const payload = await verifyFirebaseToken(token, env.FIREBASE_PROJECT_ID);
     if (payload && isAuthorizedUser(payload, env)) {
-      return { principal: payload.sub, mode: 'firebase' };
+      return { principal: payload.sub, mode: 'firebase', email: (payload.email || '').toLowerCase() };
     }
   }
   return null;

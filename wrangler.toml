@@ -11,9 +11,13 @@ name = "spool"
 main = "worker/index.js"
 compatibility_date = "2026-06-01"
 
-# Nightly (04:00 UTC) sweep of orphaned R2 images — see runGC in worker/index.js.
+# Cron triggers — scheduled() branches on event.cron (worker/index.js):
+#   "0 4 * * *"     nightly (04:00 UTC) sweep of orphaned R2 images (runGC)
+#   "*/15 * * * *"  every 15 min: generate drafts for due content automations
+#                   (runDueAutomations). Min posting interval is hours, so a
+#                   15-min tick is plenty granular and each invocation is cheap.
 [triggers]
-crons = ["0 4 * * *"]
+crons = ["0 4 * * *", "*/15 * * * *"]
 # Account is pinned so CI (API-token auth) deploys deterministically.
 account_id = "41a9ffb853cf50a278b6a29e90731c60"
 
@@ -75,6 +79,22 @@ OWNER_UID = "sLcLtGsm9SOKkR82a6cDoLCOOVO2"
 # (days, applied only to the generated/ AI cache — never to the media/ library).
 MEDIA_PER_CLIENT = "50"
 GC_GRACE_DAYS = "365"
+
+# --- Content automation (super-admin-only scheduled generation) --------------
+# The cron runner generates drafts in-process, BYPASSING the per-request rate
+# gate, so its own dedicated 'automation' rate-limit tier is the hard ceiling on
+# how much of the owner's Gemini quota unattended generation can spend. Keep it
+# well below the true Gemini quota; "0" would DISABLE the tier — don't.
+RL_AUTOMATION_PER_MIN = "20"
+RL_AUTOMATION_PER_DAY = "100"
+# Max Gemini generations per 15-min tick (text+image = 2). Bounds a single tick.
+MAX_GEN_PER_TICK = "10"
+# Guard rails on how many automations can exist (per client / total).
+AUTO_MAX_PER_CLIENT = "5"
+AUTO_MAX_TOTAL = "50"
+# Absolute origin the cron runner uses to build /media image URLs (no request in
+# a cron context). Must be the public site origin, no trailing slash.
+PUBLIC_ORIGIN = "https://spool.stitchtec.dev"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
 #   GEMINI_API_KEY            — your Google AI Studio / Gemini API key

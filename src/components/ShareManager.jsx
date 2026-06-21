@@ -9,7 +9,7 @@ import { DATE_FORMATTERS } from '../utils/helpers';
  * Worker-minted token that scopes an anonymous reviewer to exactly one client
  * (see firestore.rules). Revoking a link invalidates it immediately.
  */
-const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', showToast }) => {
+const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', clientIdByName = {}, showToast }) => {
   useEscapeKey(onClose);
   const [client, setClient] = useState(initialClient || uniqueClients[0] || '');
   const [links, setLinks] = useState([]);
@@ -48,7 +48,10 @@ const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', showToa
     if (!client || creating) return;
     setCreating(true);
     try {
-      const created = await createShareLink(client);
+      // clientId is the secure tenant key the review token is bound to. The
+      // Worker forces it to the caller's own for a client member; for an
+      // operator we resolve it from the selected client's posts.
+      const created = await createShareLink(client, '', clientIdByName[client] || '');
       setLinks(prev => [{ ...created, createdAt: new Date().toISOString() }, ...prev]);
       await copy(created.url, created.token);
     } catch (err) {

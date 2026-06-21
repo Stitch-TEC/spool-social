@@ -13,6 +13,16 @@ function limitsFor(mode, env) {
       perDay: parseInt(env.RL_INTERNAL_PER_DAY || '10000', 10),
     };
   }
+  if (mode === 'automation') {
+    // Cron-driven content automation. Its OWN tier (separate principal) so it
+    // can't share the internal key's generous budget with ad-hoc tooling — this
+    // is the hard cap on how much of the owner's Gemini quota unattended
+    // generation can spend per day. Keep it well below the true Gemini quota.
+    return {
+      perMin: parseInt(env.RL_AUTOMATION_PER_MIN || '20', 10),
+      perDay: parseInt(env.RL_AUTOMATION_PER_DAY || '100', 10),
+    };
+  }
   // Firebase users (the public-facing path).
   return {
     perMin: parseInt(env.RL_PER_MIN || '10', 10),

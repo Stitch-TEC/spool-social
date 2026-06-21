@@ -26,9 +26,13 @@ export async function listShareLinks(client) {
   return shares || [];
 }
 
-/** Create a new review link for a client. Returns { token, url, client, label }. */
-export function createShareLink(client, label = '') {
-  return authedFetch('/api/share', { method: 'POST', body: JSON.stringify({ client, label }) });
+/**
+ * Create a new review link for a client. `clientId` is the stable tenant key
+ * (the Worker forces it to the caller's own for a client member; an operator
+ * supplies it for the chosen client). Returns { token, url, client, clientId, label }.
+ */
+export function createShareLink(client, label = '', clientId = '') {
+  return authedFetch('/api/share', { method: 'POST', body: JSON.stringify({ client, label, clientId }) });
 }
 
 /** Revoke a link by its token. */
@@ -38,7 +42,7 @@ export function revokeShareLink(token) {
 
 /**
  * Exchange a share token (from ?s= in the URL) for a Firebase custom token +
- * the (ownerUid, client) it scopes to. PUBLIC — no auth header.
+ * the (ownerUid, clientId) it scopes to. PUBLIC — no auth header.
  */
 export async function exchangeShareToken(token) {
   const res = await fetch(`${API_BASE}/api/share/session`, {
@@ -48,5 +52,5 @@ export async function exchangeShareToken(token) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'This review link is no longer valid.');
-  return data; // { customToken, ownerUid, client, label }
+  return data; // { customToken, ownerUid, client, clientId, label }
 }

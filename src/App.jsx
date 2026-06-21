@@ -31,14 +31,17 @@ import MediaLibrary from './components/MediaLibrary';
 import ImportModal from './components/ImportModal';
 import BulkActionBar from './components/BulkActionBar';
 import ShareManager from './components/ShareManager';
+import AdminPanel from './components/AdminPanel';
+import AutomationsPanel from './components/AutomationsPanel';
+import { OPERATOR_UID, slugifyClientId } from './config/roles';
 
 const Editor = lazy(() => import('./components/Editor'));
 
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
-  const { user, authLoading, sharedUid, shareClient, isReadOnly, shareError, signIn, signOutAndExit } = useAuth(showToast);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, shareClient);
+  const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId);
   const isLoading = authLoading || postsLoading;
 
   const clientParam = useMemo(
@@ -61,6 +64,8 @@ const App = () => {
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [isAutomationsOpen, setIsAutomationsOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
   const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
   const [selectionMode, setSelectionMode] = useState(false);
@@ -71,6 +76,29 @@ const App = () => {
   useEffect(() => {
     postsRef.current = posts;
   }, [posts]);
+
+  // --- Client identity (declared before the CRUD handlers that depend on it) ---
+  // Stable display-name → clientId map (clientId is the immutable tenant key,
+  // backfilled onto posts). Used to stamp clientId on writes and to bind a
+  // review link to the right client. Falls back to a slug for brand-new names.
+  const clientIdByName = useMemo(() => {
+    const m = {};
+    for (const p of posts) if (p.client && p.clientId && !(p.client in m)) m[p.client] = p.clientId;
+    return m;
+  }, [posts]);
+  const clientIdFor = useCallback(
+    (name) => clientIdByName[name] || slugifyClientId(name),
+    [clientIdByName]
+  );
+
+  // For a client member: their single client's display name (branding doc, else
+  // an existing post, else the clientId itself). Their writes are pinned to this.
+  const myClientName = useMemo(() => {
+    if (!isClientMember) return null;
+    const fromBranding = Object.values(clientMap).find(c => c?.clientId === myClientId)?.name;
+    const fromPosts = posts.find(p => p.clientId === myClientId)?.client;
+    return fromBranding || fromPosts || myClientId;
+  }, [isClientMember, myClientId, clientMap, posts]);
 
   // Selection only makes sense in the grid — drop it when switching views.
   useEffect(() => {
@@ -97,8 +125,9 @@ const App = () => {
   const handleSavePost = useCallback(async (formData) => {
     if (isReadOnly) return;
 
-    // 🔒 SECURITY: Input Validation & Sanitization
-    const client = (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
+    // 🔒 SECURITY: Input Validation & Sanitization. A client member can only
+    // write to their OWN client (pinned); the operator picks the client.
+    const client = isClientMember ? (myClientName || myClientId) : (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
     const content = (formData.content || "").trim();
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
@@ -141,7 +170,11 @@ const App = () => {
         feedback: (formData.feedback || "").trim().slice(0, 500),
         imageUrl: (formData.imageUrl || '').slice(0, 500000),
         tags,
-        uid: user.uid,
+        // All posts are attributed to the operator uid (so the operator's query
+        // + the single per-client review token resolve across multi-author
+        // content); clientId is the immutable tenant key.
+        uid: OPERATOR_UID,
+        clientId: isClientMember ? myClientId : clientIdFor(client),
         scheduledDate: getSafeDateString(formData.scheduledDate),
         updatedAt: new Date().toISOString()
       };
@@ -160,7 +193,7 @@ const App = () => {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");
     }
-  }, [isReadOnly, user, showToast]);
+  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor]);
 
   // Delete immediately with an Undo toast (less friction than a confirm modal,
   // but still recoverable). Undo re-creates the doc with explicit field mapping.
@@ -176,7 +209,8 @@ const App = () => {
         onClick: async () => {
           try {
             await addDoc(collection(db, 'posts'), {
-              uid: user.uid,
+              uid: OPERATOR_UID,
+              clientId: post.clientId || clientIdFor(post.client || ''),
               client: post.client || '',
               content: post.content || '',
               title: (post.title || '').slice(0, 200),
@@ -202,7 +236,7 @@ const App = () => {
       console.error("Delete Error:", error);
       showToast("Delete failed", "error");
     }
-  }, [isReadOnly, user, showToast]);
+  }, [isReadOnly, user, showToast, clientIdFor]);
 
   const handleArchivePost = useCallback(async (postId) => {
     if (isReadOnly) return;
@@ -285,6 +319,7 @@ const App = () => {
         rows.slice(i, i + CHUNK).forEach(item => {
           batch.set(doc(collection(db, 'posts')), {
             uid: user.uid,
+            clientId: clientIdFor(item.client),
             client: item.client,
             content: item.content,
             title: item.title || '',
@@ -312,7 +347,7 @@ const App = () => {
     } finally {
       setImportData(null);
     }
-  }, [isReadOnly, user, showToast]);
+  }, [isReadOnly, user, showToast, clientIdFor]);
 
   const handleRequestChanges = useCallback(async (postId, feedback) => {
     // 🔒 SECURITY: Input Validation & Sanitization
@@ -360,7 +395,7 @@ const App = () => {
   }, [clientsHash]);
 
   const handleCloneToAll = useCallback((post) => {
-    if (isReadOnly) return;
+    if (isReadOnly || !isOperator) return;
 
     const targetClients = uniqueClients.filter(c => c !== post.client);
     if (targetClients.length === 0) return showToast("No other clients found.");
@@ -376,6 +411,7 @@ const App = () => {
 
             batch.set(newDocRef, {
               uid: user.uid,
+              clientId: clientIdFor(clientName),
               client: String(clientName).replace(/\//g, '').slice(0, 50),
               content: post.content || "",
               title: (post.title || '').slice(0, 200),
@@ -400,7 +436,7 @@ const App = () => {
         }
       }
     });
-  }, [isReadOnly, uniqueClients, showToast, user]);
+  }, [isReadOnly, isOperator, uniqueClients, showToast, user, clientIdFor]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
@@ -433,9 +469,11 @@ const App = () => {
     valid.forEach(d => {
       const platform = PLATFORMS[d.platform] || PLATFORMS.gmb;
       const ref = doc(collection(db, 'posts'));
+      const cName = isClientMember ? (myClientName || myClientId) : (d.client || '').trim().replace(/\//g, '').slice(0, 50);
       batch.set(ref, {
-        uid: user.uid,
-        client: (d.client || '').trim().replace(/\//g, '').slice(0, 50),
+        uid: OPERATOR_UID,
+        clientId: isClientMember ? myClientId : clientIdFor(cName),
+        client: cName,
         content: (d.content || '').trim().slice(0, platform.maxChars),
         title: '',
         platform: d.platform,
@@ -451,7 +489,7 @@ const App = () => {
     });
     await batch.commit();
     return valid.length;
-  }, [isReadOnly, user]);
+  }, [isReadOnly, user, isClientMember, myClientName, myClientId, clientIdFor]);
 
   // Client/archive/search filters (status chips applied separately so chip
   // counts always reflect the current context).
@@ -574,8 +612,9 @@ const App = () => {
     const c = String(client).trim().replace(/\//g, '').slice(0, 50);
     if (!c) return;
     // Posts may leave the current client filter — clear selection after.
-    commitBulk(() => ({ client: c }), n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}"`, { clearAfter: true });
-  }, [commitBulk]);
+    // Move the immutable clientId alongside the display name.
+    commitBulk(() => ({ client: c, clientId: clientIdFor(c) }), n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}"`, { clearAfter: true });
+  }, [commitBulk, clientIdFor]);
 
   const handleBulkAddTags = useCallback((tags) => {
     commitBulk(post => {
@@ -633,7 +672,7 @@ const App = () => {
   // Rename or merge a client: reassign every post from `source` to `target`,
   // and migrate the brand-settings doc if the target has none.
   const handleMergeClient = useCallback(async (source, target) => {
-    if (isReadOnly || !user) return;
+    if (isReadOnly || !user || !isOperator) return;
     const from = String(source || '').trim();
     const to = String(target || '').trim().replace(/\//g, '').slice(0, 50);
     if (!from || !to || from === to) return showToast("Pick a different target name", "error");
@@ -644,7 +683,7 @@ const App = () => {
       const CHUNK = 450;
       for (let i = 0; i < affected.length; i += CHUNK) {
         const batch = writeBatch(db);
-        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id), { client: to, updatedAt: now }));
+        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id), { client: to, clientId: clientIdFor(to), updatedAt: now }));
         await batch.commit();
       }
 
@@ -653,7 +692,7 @@ const App = () => {
       if (srcSettings) {
         if (!clientMap[to]) {
           await setDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(to)}`), {
-            ...srcSettings, uid: user.uid, name: to
+            ...srcSettings, uid: user.uid, name: to, clientId: clientIdFor(to)
           }, { merge: true });
         }
         await deleteDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(from)}`)).catch(() => {});
@@ -666,7 +705,7 @@ const App = () => {
       console.error("Merge client error:", err);
       showToast("Couldn't rename/merge client", "error");
     }
-  }, [isReadOnly, user, clientMap, filterClient, showToast]);
+  }, [isReadOnly, user, isOperator, clientMap, filterClient, showToast, clientIdFor]);
 
   // --- Render ---
 
@@ -693,6 +732,20 @@ const App = () => {
     );
   }
 
+  // Signed in to Firebase but not authorized for Spool (no users/{email} grant).
+  if (authzError && !user && !sharedUid) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mb-4">
+          <ShieldCheck className="text-rose-400" size={32} />
+        </div>
+        <h1 className="text-xl font-bold text-slate-900">Access not enabled</h1>
+        <p className="text-slate-500 mt-2 max-w-sm">{authzError}</p>
+        <button onClick={signOutAndExit} className="mt-5 px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800">Sign out</button>
+      </div>
+    );
+  }
+
   if (!user && !sharedUid) {
     return <LoginScreen onSignIn={signIn} />;
   }
@@ -711,7 +764,7 @@ const App = () => {
             post={editingPost}
             isReadOnly={isReadOnly}
             clientMap={clientMap}
-            uniqueClients={uniqueClients}
+            uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
             showToast={showToast}
             onSave={handleSavePost}
             onCreateDrafts={handleCreateDrafts}
@@ -739,6 +792,9 @@ const App = () => {
             onOpenMedia={() => setIsMediaOpen(true)}
             onImport={handleImportFile}
             onExport={handleExport}
+            isOperator={isOperator}
+            onOpenAdmin={() => setIsAdminOpen(true)}
+            onOpenAutomations={() => setIsAutomationsOpen(true)}
           />
         )}
 
@@ -767,11 +823,11 @@ const App = () => {
             <div className="flex items-center justify-between mb-6 gap-3">
               <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
                 <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
-                {filterClient && !isReadOnly && (
+                {filterClient && isOperator && (
                   <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500 shrink-0"><X size={20}/></button>
                 )}
               </h2>
-              {!isReadOnly && view === 'grid' && filteredPosts.length > 0 && (
+              {isOperator && view === 'grid' && filteredPosts.length > 0 && (
                 <button
                   onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
                   className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold border transition-colors ${selectionMode ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
@@ -873,7 +929,7 @@ const App = () => {
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
-      {!isReadOnly && selectionMode && selectedIds.size > 0 && (
+      {isOperator && selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
           count={selectedIds.size}
           totalFiltered={filteredPosts.length}
@@ -889,22 +945,39 @@ const App = () => {
           onClear={clearSelection}
         />
       )}
-      {isClientSettingsOpen && (
+      {isClientSettingsOpen && isOperator && (
         <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} />
       )}
       {isShareOpen && !isReadOnly && (
         <ShareManager
           onClose={() => setIsShareOpen(false)}
+          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+          initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+          clientIdByName={isOperator ? clientIdByName : (myClientName ? { [myClientName]: myClientId } : {})}
+          showToast={showToast}
+        />
+      )}
+      {isMediaOpen && isOperator && (
+        <MediaLibrary
+          onClose={() => setIsMediaOpen(false)}
           uniqueClients={uniqueClients}
           initialClient={filterClient || ''}
           showToast={showToast}
         />
       )}
-      {isMediaOpen && (
-        <MediaLibrary
-          onClose={() => setIsMediaOpen(false)}
+      {isAdminOpen && isOperator && (
+        <AdminPanel
+          onClose={() => setIsAdminOpen(false)}
+          currentEmail={user?.email || ''}
+          showToast={showToast}
+        />
+      )}
+      {isAutomationsOpen && isOperator && (
+        <AutomationsPanel
+          onClose={() => setIsAutomationsOpen(false)}
           uniqueClients={uniqueClients}
           initialClient={filterClient || ''}
+          clientIdByName={clientIdByName}
           showToast={showToast}
         />
       )}

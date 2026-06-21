@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Layout, Grid, Archive, Settings, Upload, Download, ChevronDown, Image as ImageIcon, FileText, Database
+  Layout, Grid, Archive, Settings, Upload, Download, ChevronDown, Image as ImageIcon, FileText, Database, Users, Zap
 } from 'lucide-react';
 
 const navButtonClass = (active) =>
@@ -19,7 +19,10 @@ const Sidebar = ({
   onOpenClientSettings,
   onOpenMedia,
   onImport,
-  onExport
+  onExport,
+  isOperator = true,   // operator-only surfaces (media, client picker, branding, data, admin)
+  onOpenAdmin,
+  onOpenAutomations
 }) => {
   // Inline accordion — a left-full flyout gets clipped by the sidebar's
   // overflow-y-auto scroll container (the old bug where Export "did nothing").
@@ -72,60 +75,80 @@ const Sidebar = ({
                 <button onClick={() => { onShowArchived(true); onClose(); }} className={navButtonClass(showArchived)}>
                   <div className="flex items-center gap-2"><Archive size={16} /> <span>Archived</span></div>
                 </button>
-                <button onClick={() => { onOpenMedia(); onClose(); }} className={navButtonClass(false)}>
-                  <div className="flex items-center gap-2"><ImageIcon size={16} /> <span>Media Library</span></div>
-                </button>
-              </div>
-            </div>
-
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-3 w-full">
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Clients</h3>
-                <button onClick={onOpenClientSettings} className="p-1 rounded-md text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors" title="Brand Settings"><Settings size={14}/></button>
-              </div>
-              <div className="space-y-1">
-                <button onClick={() => { onFilterClient(null); onClose(); }} className={navButtonClass(!filterClient)}>
-                  All Clients
-                </button>
-                {uniqueClients.map(client => (
-                  <button key={client} onClick={() => { onFilterClient(client); onClose(); }} className={navButtonClass(filterClient === client)}>
-                    {client}
+                {isOperator && (
+                  <button onClick={() => { onOpenMedia(); onClose(); }} className={navButtonClass(false)}>
+                    <div className="flex items-center gap-2"><ImageIcon size={16} /> <span>Media Library</span></div>
                   </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="mb-6">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
-              <div className="space-y-1">
-                <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
-                  <Upload size={16} />
-                  <span>Import CSV / JSON</span>
-                  <input type="file" accept=".csv,.json,text/csv,application/json" onChange={onImport} className="hidden" />
-                </label>
-                <button
-                  onClick={() => setExportMenuOpen(o => !o)}
-                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                  aria-haspopup="true"
-                  aria-expanded={exportMenuOpen}
-                >
-                  <Download size={16} />
-                  <span>Export</span>
-                  <ChevronDown size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {/* Inline (in-flow) so it can never be clipped by the scroll container. */}
-                {exportMenuOpen && (
-                  <div className="ml-3 pl-3 border-l border-slate-100 py-1 space-y-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
-                    <p className="px-3 pt-1 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Spreadsheet (CSV)</p>
-                    <button onClick={() => runExport('current', 'csv')} className={exportRowClass}><FileText size={13} /> Current view</button>
-                    <button onClick={() => runExport('all', 'csv')} className={exportRowClass}><FileText size={13} /> All threads</button>
-                    <button onClick={() => runExport('archived', 'csv')} className={exportRowClass}><FileText size={13} /> Archived only</button>
-                    <p className="px-3 pt-2 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Backup</p>
-                    <button onClick={() => runExport('all', 'json')} className={exportRowClass}><Database size={13} /> Full backup (JSON)</button>
-                  </div>
                 )}
               </div>
             </div>
+
+            {isOperator && (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-3 w-full">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Clients</h3>
+                  <button onClick={onOpenClientSettings} className="p-1 rounded-md text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors" title="Brand Settings"><Settings size={14}/></button>
+                </div>
+                <div className="space-y-1">
+                  <button onClick={() => { onFilterClient(null); onClose(); }} className={navButtonClass(!filterClient)}>
+                    All Clients
+                  </button>
+                  {uniqueClients.map(client => (
+                    <button key={client} onClick={() => { onFilterClient(client); onClose(); }} className={navButtonClass(filterClient === client)}>
+                      {client}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {isOperator && (
+              <div className="mb-6">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Data</h3>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition-colors">
+                    <Upload size={16} />
+                    <span>Import CSV / JSON</span>
+                    <input type="file" accept=".csv,.json,text/csv,application/json" onChange={onImport} className="hidden" />
+                  </label>
+                  <button
+                    onClick={() => setExportMenuOpen(o => !o)}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                    aria-haspopup="true"
+                    aria-expanded={exportMenuOpen}
+                  >
+                    <Download size={16} />
+                    <span>Export</span>
+                    <ChevronDown size={14} className={`ml-auto opacity-40 transition-transform ${exportMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {/* Inline (in-flow) so it can never be clipped by the scroll container. */}
+                  {exportMenuOpen && (
+                    <div className="ml-3 pl-3 border-l border-slate-100 py-1 space-y-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <p className="px-3 pt-1 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Spreadsheet (CSV)</p>
+                      <button onClick={() => runExport('current', 'csv')} className={exportRowClass}><FileText size={13} /> Current view</button>
+                      <button onClick={() => runExport('all', 'csv')} className={exportRowClass}><FileText size={13} /> All threads</button>
+                      <button onClick={() => runExport('archived', 'csv')} className={exportRowClass}><FileText size={13} /> Archived only</button>
+                      <p className="px-3 pt-2 pb-0.5 text-[10px] font-bold text-slate-300 uppercase tracking-wider">Backup</p>
+                      <button onClick={() => runExport('all', 'json')} className={exportRowClass}><Database size={13} /> Full backup (JSON)</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {isOperator && onOpenAdmin && (
+              <div className="mb-6">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Admin</h3>
+                <button onClick={() => { onOpenAdmin(); onClose(); }} className={navButtonClass(false)}>
+                  <div className="flex items-center gap-2"><Users size={16} /> <span>Manage Users</span></div>
+                </button>
+                {onOpenAutomations && (
+                  <button onClick={() => { onOpenAutomations(); onClose(); }} className={navButtonClass(false)}>
+                    <div className="flex items-center gap-2"><Zap size={16} /> <span>Automations</span></div>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </aside>

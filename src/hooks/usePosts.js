@@ -6,12 +6,13 @@ import { db } from '../config/firebase';
  * Real-time posts + client-branding subscriptions for a workspace.
  *
  * Security model (mirrors firestore.rules):
- * - Owner: all their posts + every client's branding.
- * - Share guest: scoped to a single (owner, client). Queries MUST filter on
- *   uid + client (posts) and uid + name (branding) so the claim-based read
- *   rules resolve against the result set.
+ * - Operator: all posts + every client's branding (scoped by uid == OWNER_UID).
+ * - Client member: only their own clientId's posts + branding (where clientId ==).
+ * - Share guest: only their token's clientId (where clientId == shareClientId).
+ * Queries MUST filter so the rule resolves against the result set — the
+ * immutable clientId is the scope key (never the free-text client name).
  */
-export default function usePosts(user, sharedUid, shareClient) {
+export default function usePosts(user, sharedUid, clientId, shareClientId) {
   const [posts, setPosts] = useState([]);
   const [clientMap, setClientMap] = useState({});
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -19,22 +20,25 @@ export default function usePosts(user, sharedUid, shareClient) {
 
   const targetUid = sharedUid || user?.uid;
   const isGuest = !!sharedUid && sharedUid !== user?.uid;
-  // 🔒 SECURITY: Real guests (anyone but the owner) MUST scope to a client.
-  const guestBlocked = isGuest && !shareClient;
-  const shouldSubscribe = !!targetUid && !guestBlocked;
+  const isClientMember = !isGuest && !!clientId;
+  // Guests AND client members scope by the immutable clientId (matching the
+  // firestore.rules guest + isEntityMember reads); the operator reads by uid.
+  const scopeClientId = isClientMember ? clientId : (isGuest ? shareClientId : null);
+  // 🔒 SECURITY: a guest with no clientId scope (e.g. a legacy ?uid= link, or a
+  // link minted before the clientId re-key) reads nothing.
+  const guestBlocked = isGuest && !shareClientId;
+  const shouldSubscribe = !guestBlocked && (scopeClientId ? true : (!isGuest && !!targetUid));
 
   useEffect(() => {
     if (!shouldSubscribe) {
-      if (guestBlocked) console.warn("⛔ ACCESS DENIED: Missing client filter for guest.");
+      if (guestBlocked) console.warn("⛔ ACCESS DENIED: Missing clientId scope for guest.");
       return;
     }
 
-    // Guests are scoped to one client; owners read everything.
-    const scopeClient = isGuest ? shareClient : null;
-    const constraints = [where('uid', '==', targetUid)];
-    if (scopeClient) {
-      constraints.push(where('client', '==', scopeClient));
-    }
+    // Scope by clientId (guest + client member) or by uid (operator).
+    const constraints = scopeClientId
+      ? [where('clientId', '==', scopeClientId)]
+      : [where('uid', '==', targetUid)];
 
     const q = query(collection(db, 'posts'), ...constraints);
 
@@ -106,8 +110,9 @@ export default function usePosts(user, sharedUid, shareClient) {
     // Keyed by client *name* so lookups by post.client resolve, even though the
     // doc id is `${uid}__${name}` (see ClientSettingsModal). Guests may read only
     // their own client's branding, so scope the query by name too.
-    const clientConstraints = [where('uid', '==', targetUid)];
-    if (scopeClient) clientConstraints.push(where('name', '==', scopeClient));
+    const clientConstraints = scopeClientId
+      ? [where('clientId', '==', scopeClientId)]
+      : [where('uid', '==', targetUid)];
     const clientQuery = query(collection(db, 'clients'), ...clientConstraints);
     const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
       setClientMap(prev => {
@@ -129,7 +134,7 @@ export default function usePosts(user, sharedUid, shareClient) {
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
-  }, [shouldSubscribe, guestBlocked, targetUid, isGuest, shareClient]);
+  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId]);
 
   // Loading = an active subscription that hasn't delivered its first snapshot.
   const isLoading = shouldSubscribe && !hasLoaded;

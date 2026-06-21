@@ -3,20 +3,53 @@ rules_version = '2';
 // =============================================================================
 // Spool — Firestore Security Rules
 //
-// ⚠️  Deploy these together with the Worker that mints share tokens:
+// THREE-TIER RBAC (mirrors Site-Auditor's users/{email} model + Sender's role
+// semantics). Authorization comes from a users/{lowercased-email} doc:
+//   { roles: ['super_admin'] }                  → you (the operator); sees all
+//   { roles: ['client_admin'], clientId: '..' } → admin of ONE client/entity
+//   { roles: ['client'],       clientId: '..' } → member of ONE client/entity
+// The immutable `clientId` field — NEVER the free-text `client` display name —
+// is the tenant boundary. A client/client_admin may CRUD only their own
+// entity's content (posts whose clientId == their clientId).
+//
+// The legacy operator path (isOwner, keyed on the single OWNER_UID that all
+// posts/clients carry) is RETAINED on every operation so the operator keeps
+// working through migration and even if their users/{email} doc is missing.
+//
+// The `?s=` review-guest flow: a Worker-minted custom token with
+// { share, shareOwner, shareClientId } claims, read+approve+feedback only.
+// Guest reads match on the immutable clientId (not the display name), so links
+// minted before this change must be RE-ISSUED (their token lacks shareClientId).
+//
+// NULL-SAFETY: Firestore evaluates a function's ARGUMENTS eagerly, and reading
+// an ABSENT map field with dot notation (resource.data.clientId on an
+// un-backfilled doc) THROWS — which denies the whole rule before the OR-chain
+// can fall through to isShareGuest. So clientId is always read via
+// .get('clientId', null), and the guest branches are ordered BEFORE the
+// isEntityMember branch. This keeps the reviewer flow working in the window
+// after these rules deploy but before the clientId backfill runs.
+//
+// ⚠️  DEPLOY ORDER (see RBAC_DEPLOY_RUNBOOK.md): create your own super_admin doc
+//     out-of-band (scripts/admin.mjs bootstrap) BEFORE deploying these rules, or
+//     several isSuperAdmin() gates lock you out of provisioning. Sequence:
+//     bootstrap → deploy rules → backfill clientId → verify audit → provision.
 //       firebase deploy --only firestore:rules
-//     Test in the Rules Playground before deploying:
-//       - owner can create/read/update/delete their own posts
-//       - share guest (custom token w/ share claims) can read ONLY their
-//         (owner, client) and may only approve / request changes / add feedback
-//       - share guest CANNOT read another client, edit content, delete, or
-//         reassign uid/client
-//       - a plain anonymous token (no share claim) can read NOTHING
+//     get(users/$(email)) is called by several helpers per evaluation, but
+//     Firestore caches same-path reads within one evaluation — ONE read, not N.
 // =============================================================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // The single operator/owner uid that every post & clients doc is attributed
+    // to (Firebase console → Authentication). Not a secret; pinning to the
+    // literal lets the operator's legacy path work without a users doc while
+    // staying provably unreachable by client users (their uid != this).
+    function ownerUid() {
+      return 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
+    }
+
+    // --- Identity helpers ----------------------------------------------------
     function isSignedIn() {
       return request.auth != null;
     }
@@ -25,55 +58,173 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    function getUserEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Guard: review-guest custom tokens carry NO email claim. Checking
+    // `email is string` BEFORE calling .lower()/get() keeps the email-based
+    // helpers from ERRORING (an erroring branch denies) on a guest token — so
+    // the OR-chains below fall through cleanly to isShareGuest().
+    function hasEmail() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function isRegistered() {
+      return hasEmail()
+        && exists(/databases/$(database)/documents/users/$(getUserEmail()));
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(getUserEmail())).data;
+    }
+
+    // .get(...) defaults keep these from throwing on a malformed user doc.
+    function getUserRoles() {
+      return userData().get('roles', []);
+    }
+
+    function getUserClientId() {
+      return userData().get('clientId', null);
+    }
+
+    // --- Role predicates -----------------------------------------------------
+    function isSuperAdmin() {
+      return isRegistered() && ('super_admin' in getUserRoles());
+    }
+
+    // A client or client_admin scoped to exactly `cid`. The stable clientId is
+    // the security key; the free-text `client` name is never trusted here.
+    // Callers pass resource.data.get('clientId', null), so cid may be null
+    // (un-backfilled doc) — the `cid != null` guard then fails closed.
+    function isEntityMember(cid) {
+      return isRegistered()
+        && cid != null
+        && (('client' in getUserRoles()) || ('client_admin' in getUserRoles()))
+        && getUserClientId() == cid;
+    }
+
+    // --- Review-guest helpers ------------------------------------------------
     // A token-scoped review guest: signed in via a Worker-minted custom token
-    // carrying { share, shareOwner, shareClient } claims, bound to exactly one
-    // (owner, client) pair. Replaces the old "any signed-in user can read"
-    // model — a leaked workspace uid no longer grants read access.
-    function isShareGuest(uid, client) {
+    // carrying { share, shareOwner, shareClientId } claims, bound to exactly one
+    // (owner, clientId) pair. The match is on the IMMUTABLE clientId (not the
+    // free-text display name) so a client member cannot forge a post into
+    // another tenant's review queue. `cid != null` requires a real clientId on
+    // both sides — an un-backfilled doc or a legacy token (shareClientId absent
+    // → null) fails closed (re-issue the link). shareClient (name) is display-only.
+    function isShareGuest(uid, cid) {
       return isSignedIn()
         && request.auth.token.share == true
         && request.auth.token.shareOwner == uid
-        && request.auth.token.shareClient == client;
+        && cid != null
+        && request.auth.token.shareClientId == cid;
     }
 
     // A guest may ONLY approve / request changes / append feedback — never edit
-    // content, reassign ownership, or change the client.
+    // content, reassign ownership, or change the client/clientId.
     function isGuestReviewUpdate() {
-      return isShareGuest(resource.data.uid, resource.data.client)
+      return isShareGuest(resource.data.uid, resource.data.get('clientId', null))
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread', 'updatedAt'])
         && request.resource.data.uid == resource.data.uid
-        && request.resource.data.client == resource.data.client;
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null);
     }
 
     // --- Posts ---------------------------------------------------------------
+    // clientId is the tenant key. Every post carries uid == ownerUid() (so the
+    // operator's uid-scoped query and the single per-client share token both
+    // resolve across multi-author client content). App queries MUST filter so
+    // the read rule resolves: operator/super_admin read unscoped or by uid;
+    // a client member queries where('clientId','==', their clientId); a guest
+    // filters by uid + client. (Guest branches precede isEntityMember so an
+    // un-backfilled doc can't throw before the guest grant is evaluated.)
     match /posts/{postId} {
-      // Reads are scoped: the owner sees their own; a guest sees only the exact
-      // (owner, client) their token authorizes. App queries MUST filter on
-      // uid (+ client for guests) so the rule resolves against the result set.
       allow read: if isOwner(resource.data.uid)
-        || isShareGuest(resource.data.uid, resource.data.client);
+        || isSuperAdmin()
+        || isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+        || isEntityMember(resource.data.get('clientId', null));
 
-      allow create: if isOwner(request.resource.data.uid);
-      allow update: if isOwner(resource.data.uid) || isGuestReviewUpdate();
-      allow delete: if isOwner(resource.data.uid);
+      // Operator creates via super_admin OR the ownerUid() fallback (no users
+      // doc required). A client member creates ONLY within their OWN clientId
+      // (isEntityMember pins clientId == theirs) AND must attribute the post to
+      // ownerUid() — so the system-wide invariant (every post uid==ownerUid)
+      // holds in rules, not just in the app. We deliberately do NOT accept a
+      // generic isOwner(request…uid): every signed-in user "owns" their own uid.
+      //
+      // The free-text `client` display name is intentionally NOT a security key:
+      // guest review reads match on the immutable clientId (isShareGuest above),
+      // so a forged display name can never surface a post in another tenant's
+      // review queue (that tenant's clientId won't match).
+      allow create: if isSuperAdmin()
+        || isOwner(ownerUid())
+        || (isEntityMember(request.resource.data.get('clientId', null))
+            && request.resource.data.uid == ownerUid());
+
+      // A client member edits content only — uid, clientId, and the client
+      // display name are all immutable on their path (reassignment/rename are
+      // operator-only). Guests get the field allowlist (evaluated first).
+      allow update: if isSuperAdmin()
+        || isOwner(resource.data.uid)
+        || isGuestReviewUpdate()
+        || (isEntityMember(resource.data.get('clientId', null))
+            && request.resource.data.uid == resource.data.uid
+            && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+            && request.resource.data.client == resource.data.client);
+
+      allow delete: if isSuperAdmin()
+        || isOwner(resource.data.uid)
+        || isEntityMember(resource.data.get('clientId', null));
     }
 
     // --- Client branding -----------------------------------------------------
-    // Doc id is `${uid}__${encodeURIComponent(name)}` (see ClientSettingsModal).
-    // A guest may read only the branding doc for their own client.
-    match /clients/{clientId} {
+    // Doc id is currently `${uid}__${encodeURIComponent(name)}` (see
+    // ClientSettingsModal). `{clientDocId}` below is that DOC ID — NOT the tenant
+    // `clientId` field, which lives in resource.data.clientId (backfilled).
+    // A guest reads only their own client's branding, matched on the immutable
+    // clientId (same shareClientId claim as posts) — display name is not a key.
+    match /clients/{clientDocId} {
       allow read: if isOwner(resource.data.uid)
-        || isShareGuest(resource.data.uid, resource.data.name);
-      allow create, update: if isOwner(request.resource.data.uid)
-        && clientId.split('__')[0] == request.auth.uid;
-      allow delete: if isOwner(resource.data.uid);
+        || isSuperAdmin()
+        || isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+        || isEntityMember(resource.data.get('clientId', null));
+
+      // Phase 1: only the operator writes branding — via super_admin OR the
+      // ownerUid() fallback. No generic isOwner(request…uid) branch: a client
+      // "owns" their own uid and could otherwise create a clients doc under
+      // their own uid prefix. (Phase 2 may let a client_admin edit their OWN
+      // brand: add `|| isEntityMember(resource.data.get('clientId', null))`.)
+      allow create, update: if isSuperAdmin()
+        || isOwner(ownerUid());
+
+      allow delete: if isSuperAdmin() || isOwner(resource.data.uid);
+    }
+
+    // --- Users / RBAC grants -------------------------------------------------
+    // A user may READ their own doc (to resolve role + clientId at login) but
+    // may NEVER write it — that self-write lockout stops any client/client_admin
+    // from promoting themselves to super_admin or moving to another clientId.
+    // Phase 1: only super_admin writes user docs (and not their own). The very
+    // first super_admin doc is created out-of-band (service account bypasses
+    // rules) — see scripts/admin.mjs bootstrap.
+    match /users/{email} {
+      allow read: if hasEmail() && getUserEmail() == email;
+      allow write: if isSuperAdmin() && getUserEmail() != email;
     }
 
     // --- Share-link tokens ---------------------------------------------------
-    // Only the Worker (service account, which bypasses rules) ever reads or
-    // writes these. No client — owner or guest — touches this collection.
+    // Worker-only (service account bypasses rules). No client ever touches this.
     match /shares/{shareId} {
+      allow read, write: if false;
+    }
+
+    // --- Content automations -------------------------------------------------
+    // Super-admin-only scheduled content generator config. Like shares/{shareId},
+    // this is touched ONLY by the Worker (service account, which bypasses rules);
+    // the management API is gated to the operator. Clients must have ZERO access
+    // or visibility, so the client SDK is denied outright here — no member/guest
+    // branch. (The DRAFTS automations produce are normal `posts`, governed by the
+    // posts rules above; only this config collection is locked down.)
+    match /automations/{autoId} {
       allow read, write: if false;
     }
   }
