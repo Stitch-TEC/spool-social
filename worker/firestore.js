@@ -402,6 +402,24 @@ export async function getClientSettings(env, clientId) {
   return doc ? fromFields(doc.document.fields) : null;
 }
 
+// Resolve the canonical clientId an existing post already uses for a display
+// name, so an automation binds to the same tenant key its posts use rather than
+// trusting a client-supplied slug that could drift (e.g. after a backfill --map
+// override). Returns null for a brand-new client with no posts yet — the caller
+// then falls back to the supplied id. Mirrors the app's clientIdByName (which is
+// also derived from posts), so existing clients resolve identically.
+export async function resolveClientId(env, clientName) {
+  if (!clientName || !env.OWNER_UID) return null;
+  try {
+    const posts = await listPosts(env, env.OWNER_UID);
+    const hit = posts.find(p => p.client === clientName && p.clientId);
+    return hit ? hit.clientId : null;
+  } catch (err) {
+    console.error('resolveClientId failed:', err?.message || err);
+    return null;
+  }
+}
+
 // All image URLs referenced by any post (for the orphan-image sweep).
 export async function listAllImageUrls(env, limit = 2000) {
   const token = await getAccessToken(env);

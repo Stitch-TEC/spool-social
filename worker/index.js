@@ -11,7 +11,7 @@ import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
 import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls, getUserRecord } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
-import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation } from './firestore.js';
+import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
 import { PLATFORM_META, PLATFORM_CADENCE } from '../src/generation/prompts.js';
@@ -51,7 +51,11 @@ function sanitizeAutomationPatch(body, platform) {
     if (seed) patch.promptSeed = seed;
   }
   if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
-  if (body?.intervalHours !== undefined) patch.intervalHours = clampInterval(body.intervalHours, platform);
+  // Only a usable numeric value counts as a change — null/""/garbage must NOT
+  // silently reset the interval to the platform default on a partial PATCH.
+  if (body?.intervalHours !== undefined && Number.isFinite(parseInt(body.intervalHours, 10))) {
+    patch.intervalHours = clampInterval(body.intervalHours, platform);
+  }
   return patch;
 }
 
@@ -644,7 +648,8 @@ export default {
         if (isRun) {
           if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
           try {
-            const result = await generateForAutomation(env, url.origin, existing);
+            // Separate budget principal so manual previews can't drain the cron's daily budget.
+            const result = await generateForAutomation(env, url.origin, existing, 'automation:preview');
             const nowIso = new Date().toISOString();
             await updateAutomation(env, id, {
               lastRunAt: nowIso, lastStatus: 'ok', lastError: '',
@@ -670,6 +675,11 @@ export default {
           try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
           const patch = sanitizeAutomationPatch(body, existing.platform);
           if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
+          // A changed cadence must take effect now, not after the old (possibly
+          // far-future) nextRunAt elapses — re-anchor the next run to now.
+          if (patch.intervalHours !== undefined) {
+            patch.nextRunAt = new Date(Date.now() + patch.intervalHours * 3_600_000).toISOString();
+          }
           patch.updatedAt = new Date().toISOString();
           try {
             const automation = await updateAutomation(env, id, patch);
@@ -701,17 +711,24 @@ export default {
 
         const platform = String(body?.platform || 'gmb');
         if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
-        const clientId = String(body?.clientId || '').trim().slice(0, 64);
+        const bodyClientId = String(body?.clientId || '').trim().slice(0, 64);
         const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
-        if (!clientId || !client) return json({ error: 'client and clientId are required' }, 400, cors);
+        if (!bodyClientId || !client) return json({ error: 'client and clientId are required' }, 400, cors);
         const promptSeed = String(body?.promptSeed || '').trim().slice(0, MAX_PROMPT);
         if (!promptSeed) return json({ error: 'promptSeed is required' }, 400, cors);
+
+        // Bind to the tenant key existing posts already use for this client name
+        // (authoritative), not a possibly-stale client-supplied slug; fall back
+        // to the supplied id for a brand-new client with no posts yet.
+        const clientId = (await resolveClientId(env, client)) || bodyClientId;
 
         // Caps protect the owner's Gemini quota and keep the dashboard sane.
         let existing;
         try { existing = await listAutomations(env, env.OWNER_UID); }
         catch (err) { console.error('Automation list failed:', err?.message || err); return json({ error: 'Create failed' }, 502, cors); }
-        const maxTotal = parseInt(env.AUTO_MAX_TOTAL || '50', 10);
+        // listAutomations caps at 200 rows; clamp the total cap to it so a
+        // misconfigured AUTO_MAX_TOTAL > 200 can't silently disable the cap.
+        const maxTotal = Math.min(parseInt(env.AUTO_MAX_TOTAL || '50', 10), 200);
         const maxPerClient = parseInt(env.AUTO_MAX_PER_CLIENT || '5', 10);
         if (existing.length >= maxTotal) return json({ error: `Automation limit reached (${maxTotal} total).` }, 409, cors);
         if (existing.filter(a => a.clientId === clientId).length >= maxPerClient) {

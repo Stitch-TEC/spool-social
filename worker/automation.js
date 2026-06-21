@@ -27,10 +27,11 @@ class BudgetExhaustedError extends Error {
   constructor(message) { super(message); this.budgetExhausted = true; }
 }
 
-// One Gemini call's worth of budget. Uses a dedicated 'automation' principal so
-// it never shares the internal key's generous quota with ad-hoc tooling.
-async function spendBudget(env) {
-  const rl = await checkRateLimit(env, 'automation', 'automation', Date.now());
+// One Gemini call's worth of budget against a dedicated automation tier (so it
+// never shares the internal key's generous quota). `principal` separates the
+// counter so interactive "Run now" previews can't drain the cron's daily budget.
+async function spendBudget(env, principal = 'automation') {
+  const rl = await checkRateLimit(env, principal, 'automation', Date.now());
   if (!rl.ok) throw new BudgetExhaustedError(`Automation budget reached (max ${rl.limit}/${rl.scope}).`);
 }
 
@@ -40,13 +41,19 @@ async function spendBudget(env) {
  * { postId, content, imageUrl }. Throws on generation failure (the caller
  * records lastError); throws a BudgetExhaustedError when the budget is hit.
  */
-export async function generateForAutomation(env, origin, auto) {
+export async function generateForAutomation(env, origin, auto, principal = 'automation') {
   const platform = (auto.platform in PLATFORM_META) ? auto.platform : 'gmb';
   const max = PLATFORM_META[platform].maxChars;
   const contentType = auto.contentType || 'text';
   const wantText = contentType.includes('text');
   const wantImage = contentType.includes('image');
   const seed = String(auto.promptSeed || '').slice(0, MAX_SEED);
+
+  // Reserve the FULL budget this draft needs BEFORE any paid Gemini call, so a
+  // budget hit throws cleanly up front (the cron retries next tick, nothing
+  // wasted) instead of stranding completed text work mid-draft.
+  const unitsNeeded = (wantText ? 1 : 0) + (wantImage ? 1 : 0);
+  for (let i = 0; i < unitsNeeded; i++) await spendBudget(env, principal);
 
   // Client branding/AI settings make the output on-brand. Missing is non-fatal.
   let settings = null;
@@ -56,7 +63,6 @@ export async function generateForAutomation(env, origin, auto) {
 
   let content = '';
   if (wantText) {
-    await spendBudget(env);
     const { system, maxTokens } = buildTextContext({
       platform, tone: auto.tone, length: auto.length,
       clientName: auto.client, clientSettings
@@ -67,12 +73,19 @@ export async function generateForAutomation(env, origin, auto) {
 
   let imageUrl = '';
   if (wantImage) {
-    await spendBudget(env);
     const imgPrompt = buildImagePrompt({
       prompt: seed, style: auto.imageStyle, platform,
       clientName: auto.client, clientSettings
     });
-    imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt })) || '';
+    try {
+      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt })) || '';
+    } catch (err) {
+      // Best-effort image: for text+image, persist the already-generated text
+      // rather than discarding it. Image-only has nothing to salvage, so let
+      // the failure surface (recorded as lastStatus:'error', schedule advances).
+      if (!wantText) throw err;
+      console.error('Automation image failed; persisting text-only draft:', err?.message || err);
+    }
   }
 
   // An image-only automation still needs non-empty content (the post model / UI

@@ -126,8 +126,14 @@ const App = () => {
     if (isReadOnly) return;
 
     // 🔒 SECURITY: Input Validation & Sanitization. A client member can only
-    // write to their OWN client (pinned); the operator picks the client.
-    const client = isClientMember ? (myClientName || myClientId) : (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
+    // write to their OWN client (pinned); the operator picks the client. On a
+    // member EDIT, reuse the post's stored `client` so it can't drift from
+    // resource.data.client (the posts update rule requires that field unchanged,
+    // and the branding display name may differ from the stored value).
+    const existingPost = formData.id ? postsRef.current.find(p => p.id === formData.id) : null;
+    const client = isClientMember
+      ? (existingPost ? existingPost.client : (myClientName || myClientId))
+      : (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
     const content = (formData.content || "").trim();
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
@@ -318,7 +324,7 @@ const App = () => {
         const batch = writeBatch(db);
         rows.slice(i, i + CHUNK).forEach(item => {
           batch.set(doc(collection(db, 'posts')), {
-            uid: user.uid,
+            uid: OPERATOR_UID,
             clientId: clientIdFor(item.client),
             client: item.client,
             content: item.content,
@@ -410,7 +416,7 @@ const App = () => {
             const newDocRef = doc(collection(db, 'posts'));
 
             batch.set(newDocRef, {
-              uid: user.uid,
+              uid: OPERATOR_UID,
               clientId: clientIdFor(clientName),
               client: String(clientName).replace(/\//g, '').slice(0, 50),
               content: post.content || "",
@@ -436,7 +442,7 @@ const App = () => {
         }
       }
     });
-  }, [isReadOnly, isOperator, uniqueClients, showToast, user, clientIdFor]);
+  }, [isReadOnly, isOperator, uniqueClients, showToast, clientIdFor]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
