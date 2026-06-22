@@ -23,6 +23,7 @@ import DashboardHeader from './components/DashboardHeader';
 import PostGrid from './components/PostGrid';
 import StatusFilterChips from './components/StatusFilterChips';
 import Toast from './components/Toast';
+import FeedbackWidget from './components/FeedbackWidget';
 import ConfirmModal from './components/ConfirmModal';
 import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
@@ -40,7 +41,7 @@ const Editor = lazy(() => import('./components/Editor'));
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
-  const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
+  const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
   const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId);
   const isLoading = authLoading || postsLoading;
 
@@ -108,9 +109,9 @@ const App = () => {
   // --- Dynamic Title ---
   useEffect(() => {
     if (isReadOnly) {
-      document.title = shareClient ? `${shareClient} | Spool Review` : 'Spool Client View';
+      document.title = shareClient ? `${shareClient} Review | Spool | Stitch TEC` : 'Client Review | Spool | Stitch TEC';
     } else {
-      document.title = 'Spool | Creator Dashboard';
+      document.title = 'Creator Dashboard | Spool | Stitch TEC';
     }
   }, [isReadOnly, shareClient]);
 
@@ -777,6 +778,10 @@ const App = () => {
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>
+        {toast && <Toast message={toast.message} type={toast.type} action={toast.action} onClose={hideToast}/>}
+        {user && !isReadOnly && (
+          <FeedbackWidget user={user} role={role} clientId={myClientId} view={view} showToast={showToast} />
+        )}
       </ErrorBoundary>
     );
   }
@@ -926,6 +931,9 @@ const App = () => {
         />
       )}
       {toast && <Toast message={toast.message} type={toast.type} action={toast.action} onClose={hideToast}/>}
+      {user && !isReadOnly && (
+        <FeedbackWidget user={user} role={role} clientId={myClientId} view={view} showToast={showToast} />
+      )}
       {reviewingPost && (
         <ReviewModal
           post={reviewingPost}
