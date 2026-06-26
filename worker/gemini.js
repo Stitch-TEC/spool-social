@@ -96,6 +96,25 @@ export async function generateText(env, prompt, opts = {}) {
 }
 
 export async function generateImage(env, prompt) {
+  // Prefer the shared AI gateway (ai-worker /image); ANY failure falls through to
+  // the direct-Gemini path below (resident fallback during cutover).
+  if (env.AI && env.STITCH_AI_KEY) {
+    try {
+      const res = await env.AI.fetch('https://ai-worker.internal/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', authorization: `Bearer ${env.STITCH_AI_KEY}` },
+        body: JSON.stringify({ task: 'spool-image', prompt }),
+        signal: AbortSignal.timeout(60000) // image gen is slower than text
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.ok && data.b64) return { b64: data.b64, mime: data.mime || 'image/png' };
+      }
+    } catch {
+      // fall through to direct Gemini
+    }
+  }
+
   const model = env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
   // NOTE: responseModalities casing/values can vary by model generation. If a
   // model rejects this, check its current docs (some want ['TEXT','IMAGE']).
