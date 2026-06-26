@@ -59,10 +59,53 @@ Access is checked in the database itself, so a client can only ever reach their 
 
 * **Frontend:** React (Vite), Tailwind CSS, react-markdown
 * **Backend:** Firebase (Firestore, Auth)
-* **AI:** Google Gemini (text + image, multimodal)
+* **AI:** Shared Stitch AI gateway (`ai-worker`) for text + image, with direct Google Gemini as the multimodal path and resident fallback (see [AI via the shared gateway](#-ai-via-the-shared-gateway))
 * **Edge/API/Storage:** Cloudflare Workers + R2 (app, generation + drafts API, image pool)
 * **Icons:** Lucide React
 * **Deployment:** Cloudflare Workers — auto-deploys on push to `main`
+
+---
+
+## 🤖 AI via the shared gateway
+
+Both text (`generateText`) and image (`generateImage`) in [`worker/gemini.js`](worker/gemini.js) now route through the **shared Stitch AI gateway** (`ai-worker`) instead of calling Google directly. The gateway holds the provider keys; Spool only holds its own per-app key.
+
+**How it's wired**
+
+* **Service Binding:** the worker reaches the gateway over a Cloudflare Service Binding named **`AI`** (worker-to-worker RPC — no public network hop). It authenticates with the **`STITCH_AI_KEY`** secret, registered under appId **`spool`**.
+* **Text** → gateway `POST /generate`. Tier comes from the **`SPOOL_AI_TIER`** env var (default **`cheap`**; bump to **`standard`** for richer copy).
+* **Image** → gateway `POST /image` (the gateway's separate image axis).
+
+**Fallback (resident direct-Gemini path)**
+
+Spool keeps its direct Google Gemini path as a fallback. It is used automatically when:
+
+* the prompt is **multimodal** (`opts.image` is set — e.g. vision alt-text from an actual image), which still goes direct to Gemini; **or**
+* **any gateway call fails** (binding/key missing, error, or timeout) — the call falls through to direct Gemini so AI generation keeps working during cutover.
+
+The direct path uses `GEMINI_API_KEY` plus the existing `GEMINI_TEXT_MODEL` / `GEMINI_IMAGE_MODEL` settings.
+
+**Instant revert (no redeploy)**
+
+```bash
+# Stop routing through the gateway — Spool falls straight back to direct Gemini
+wrangler secret delete STITCH_AI_KEY
+```
+
+With `STITCH_AI_KEY` absent, `generateText` / `generateImage` skip the gateway entirely and use direct Gemini. Re-add the secret to switch back.
+
+**Rotating or revoking Spool's gateway key**
+
+Per-app keys are managed from the **`ai-worker`** repo, not here:
+
+```bash
+# In the ai-worker repo:
+node scripts/register-key.mjs add spool --remote      # mint a new key (printed once) — then re-set STITCH_AI_KEY here
+node scripts/register-key.mjs revoke spool --remote   # disable Spool's key centrally (effective within ~60s)
+node scripts/register-key.mjs list --remote           # list registered apps
+```
+
+After minting a new key, set it on Spool with `wrangler secret put STITCH_AI_KEY`.
 
 ---
 
