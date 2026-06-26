@@ -11,7 +11,7 @@
 > Part of the suite build. Master order + the big picture: ../SUITE-BUILD-GUIDE.md. Specs: ../SUITE-SHARED-COMPONENTS-PLAN.md, ../SUITE-INTEGRATION-ARCHITECTURE.md, ../STITCH-BRAND.md.
 
 ## What this repo contributes
-Spool already ships a cross-app switcher (`ToolSwitcher.jsx`) and the suite AI Worker. Its suite-build job is small and additive: reconcile the switcher to the shared registry (fixing the POM URL) + show it to logged-in clients, and add the floating feedback widget (distinct from the existing per-post client review flow). No tickets/email work lives here.
+Spool already ships a cross-app switcher (`ToolSwitcher.jsx`) and its OWN Gemini AI Worker (Spool-specific — NOT the planned shared suite AI service; `ai.stitchtec.dev` currently serves only Spool, and a Claude-first shared worker is still unbuilt). Its suite-build job is small and additive: reconcile the switcher to the shared registry (fixing the POM URL) + show it to logged-in clients, and add the floating feedback widget (distinct from the existing per-post client review flow). No tickets/email work lives here.
 
 > Branch note: there is an active RBAC refactor on `feat/content-automation`. These tasks are **additive UI** — do NOT touch RBAC logic in `useAuth.js`/`config/roles.js`. The widget only *reads* identity that `useAuth` already returns.
 

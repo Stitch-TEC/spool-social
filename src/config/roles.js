@@ -14,8 +14,10 @@ export const ROLES = {
   CLIENT: 'client',
 };
 
-// Derive a stable clientId slug from a display name. MUST match the algorithm in
-// scripts/admin.mjs (the backfill) so app-created clients line up with the
-// backfilled ones (e.g. "OMNI NDE" → "omni-nde", "The BDR" → "the-bdr").
+// Derive a stable clientId slug from a display name. MUST match POM's canonical slugify
+// (Site-Auditor/src/lib/clients.js — POM's `clients` collection owns the suite-wide join key)
+// AND scripts/admin.mjs, so app-created clients line up everywhere (e.g. "OMNI NDE" → "omni-nde",
+// "The BDR" → "the-bdr"). Cap is 64 to match POM — was 40, so a >40-char org name silently produced
+// a different slug here than in POM and broke cross-app attribution.
 export const slugifyClientId = (name) =>
-  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);

@@ -56,7 +56,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function die(msg) { console.error(`\n✗ ${msg}\n`); process.exit(1); }
 const slugify = (name) =>
-  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64); // 64 = POM canonical cap (see src/config/roles.js)
 
 // ----- service account / token ----------------------------------------------
 function loadSA() {

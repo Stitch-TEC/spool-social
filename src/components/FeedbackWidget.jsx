@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MessageSquare, X, Send, Loader2 } from 'lucide-react';
 import { CURRENT_APP_ID, STITCH_APPS } from '../stitch-apps';
 import CharCountCircle from './CharCountCircle';
+import { buildFeedbackPayload, submitFeedback } from '../lib/feedbackClient';
 
 // Suite Feedback Widget (SUITE-SHARED-COMPONENTS-PLAN.md §4). Floating
 // bottom-right button → modal that posts the canonical feedback payload to the
@@ -11,7 +12,6 @@ import CharCountCircle from './CharCountCircle';
 // per-post client review / change-request flow (handleRequestChanges in App).
 
 const MAX_MESSAGE = 1000;
-const FEEDBACK_URL = import.meta.env.VITE_FEEDBACK_URL || 'https://feedback.stitchtec.dev/feedback';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'spool@dev';
 const APP_NAME = STITCH_APPS.find(a => a.id === CURRENT_APP_ID)?.name || 'Spool';
 
@@ -43,31 +43,23 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
 
     // §4 canonical payload — identical shape across every suite app, plus
     // role/clientId/view for triage (route alone can't tell grid/calendar/editor).
-    const payload = {
+    const payload = buildFeedbackPayload({
       app: CURRENT_APP_ID,
-      appName: APP_NAME,
       category,
       message: text,
-      page: window.location.href,
-      route: window.location.pathname,
-      view: view || null,
       user: user?.email || 'anonymous',
-      role: role || null,
-      clientId: clientId || null,
       appVersion: APP_VERSION,
-      userAgent: navigator.userAgent,
-      viewport: `${window.innerWidth}x${window.innerHeight}`,
-      ts: new Date().toISOString()
-    };
+      extra: {
+        appName: APP_NAME,
+        view: view || null,
+        role: role || null,
+        clientId: clientId || null,
+      },
+    });
 
     setSending(true);
     try {
-      const res = await fetch(FEEDBACK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error(`Feedback endpoint returned ${res.status}`);
+      await submitFeedback(payload);
       // Success — reset and close. Keep the chosen category sticky for re-use.
       setMessage('');
       setOpen(false);
