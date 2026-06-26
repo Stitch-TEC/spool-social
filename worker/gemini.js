@@ -22,7 +22,40 @@ async function callGemini(env, model, body) {
   return data;
 }
 
+// Primary text path: the shared AI gateway (ai-worker) over the Service Binding.
+// Text-only prompts only — multimodal (opts.image) stays on direct Gemini until
+// the gateway supports image input. Throws on any failure so generateText can
+// fall through to the direct-Gemini path (resident fallback during cutover).
+async function generateTextViaGateway(env, prompt, opts = {}) {
+  const res = await env.AI.fetch('https://ai-worker.internal/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', authorization: `Bearer ${env.STITCH_AI_KEY}` },
+    body: JSON.stringify({
+      task: 'spool-copy',
+      tier: env.SPOOL_AI_TIER || 'cheap', // bump to "standard" for higher-quality copy
+      system: opts.system || undefined,
+      prompt,
+      maxTokens: opts.maxTokens || parseInt(env.MAX_OUTPUT_TOKENS || '1024', 10)
+    }),
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!res.ok) throw new Error(`ai gateway ${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok || !data.text) throw new Error('ai gateway returned no text');
+  return data.text;
+}
+
 export async function generateText(env, prompt, opts = {}) {
+  // Prefer the shared AI gateway for text-only prompts; multimodal stays on Gemini.
+  // ANY gateway failure falls through to the direct-Gemini path below.
+  if (env.AI && env.STITCH_AI_KEY && !opts.image) {
+    try {
+      return await generateTextViaGateway(env, prompt, opts);
+    } catch {
+      // fall through to direct Gemini (resident fallback during cutover)
+    }
+  }
+
   const model = env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
   const promptParts = [{ text: prompt }];

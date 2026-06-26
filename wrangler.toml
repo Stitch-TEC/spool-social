@@ -45,6 +45,12 @@ bucket_name = "spool-media"
 binding = "RATE_LIMIT"
 id = "52b2367d9e75470d92840c8fbcfbee05"
 
+# Shared AI gateway (ai-worker) — worker-to-worker RPC for text generation.
+# Spool presents its own per-app key (STITCH_AI_KEY secret) on each /generate call.
+[[services]]
+binding = "AI"
+service = "ai-worker"
+
 [vars]
 # Firebase project whose ID tokens authenticate Spool app users.
 FIREBASE_PROJECT_ID = "spool-social"
