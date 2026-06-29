@@ -18,6 +18,7 @@ import { resolveDraftImage } from './media.js';
 import { checkRateLimit } from './ratelimit.js';
 import { buildTextContext, buildImagePrompt, PLATFORM_META } from '../src/generation/prompts.js';
 import { createPost, getClientSettings, listAutomations, updateAutomation } from './firestore.js';
+import { fetchClientProfile } from './suiteContext.js';
 
 const MAX_SEED = 2000; // matches the generation API's MAX_PROMPT
 
@@ -61,11 +62,15 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   catch (err) { console.error('Automation client lookup failed:', err?.message || err); }
   const clientSettings = settings || {};
 
+  // POM per-client context + brand (the cross-app seam) — makes the copy client-aware + imagery on-brand.
+  // Non-fatal: null on any miss falls back to Spool's local clientSettings above.
+  const profile = await fetchClientProfile(env, auto.clientId);
+
   let content = '';
   if (wantText) {
     const { system, maxTokens } = buildTextContext({
       platform, tone: auto.tone, length: auto.length,
-      clientName: auto.client, clientSettings
+      clientName: auto.client, clientSettings, pomContext: profile?.aiContext
     });
     const out = await generateText(env, seed, { system, maxTokens });
     content = String(out || '').trim().slice(0, max);
@@ -75,7 +80,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   if (wantImage) {
     const imgPrompt = buildImagePrompt({
       prompt: seed, style: auto.imageStyle, platform,
-      clientName: auto.client, clientSettings
+      clientName: auto.client, clientSettings, pomBrand: profile?.brand
     });
     try {
       imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt })) || '';

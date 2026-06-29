@@ -96,7 +96,7 @@ const LONGFORM_LENGTH_HINT = {
 const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
 
 // System instruction + token budget for a text generation.
-export function buildTextContext({ platform, tone, length, clientName, clientSettings } = {}) {
+export function buildTextContext({ platform, tone, length, clientName, clientSettings, pomContext } = {}) {
   const p = PLATFORM_META[platform] || PLATFORM_META.gmb;
   const guidance = PLATFORM_AI_GUIDANCE[p.id] || PLATFORM_AI_GUIDANCE.gmb;
   const toneDef = TONE_PRESETS.find(t => t.id === tone);
@@ -120,6 +120,8 @@ export function buildTextContext({ platform, tone, length, clientName, clientSet
   if (c.aiAudience) lines.push(`Target audience: ${clean(c.aiAudience)}`);
   if (c.aiKeywords) lines.push(`Where natural, work in these themes/keywords: ${clean(c.aiKeywords)}`);
   if (c.aiAvoid) lines.push(`Avoid the following: ${clean(c.aiAvoid)}`);
+  // POM per-client context (people, projects, preferences, history) — makes the copy client-aware, not generic.
+  if (pomContext) lines.push(`\nClient context — write consistently with this, don't contradict it:\n${clean(pomContext)}`);
 
   const maxTokens = longForm
     ? (LONGFORM_MAX_TOKENS[length] || LONGFORM_MAX_TOKENS.medium)
@@ -129,7 +131,7 @@ export function buildTextContext({ platform, tone, length, clientName, clientSet
 }
 
 // A single composed prompt string for an image generation.
-export function buildImagePrompt({ prompt, style, platform, clientName, clientSettings } = {}) {
+export function buildImagePrompt({ prompt, style, platform, clientName, clientSettings, pomBrand } = {}) {
   const styleDef = IMAGE_STYLE_PRESETS.find(s => s.id === style);
   const aspect = PLATFORM_IMAGE_ASPECT[platform] || PLATFORM_IMAGE_ASPECT.gmb;
   const c = clientSettings || {};
@@ -140,6 +142,8 @@ export function buildImagePrompt({ prompt, style, platform, clientName, clientSe
   parts.push(`Composition: ${aspect}.`);
   if (clientName) parts.push(`For the brand "${clean(clientName)}".`);
   if (c.brandColor) parts.push(`Subtly incorporate the brand color ${c.brandColor} where appropriate.`);
+  // POM brand kit (colors/fonts) — keep generated imagery on-brand.
+  if (pomBrand) parts.push(`Brand palette to favor where appropriate: ${clean(pomBrand)}.`);
   if (c.aiKeywords) parts.push(`Visual mood/subject to evoke: ${clean(c.aiKeywords)}.`);
 
   return parts.filter(Boolean).join(' ');
