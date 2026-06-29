@@ -213,6 +213,13 @@ export default {
       return json({ ok: true }, 200, cors);
     }
 
+    // --- Seam presence (public, safe) — does Spool hold a CONTEXT_KEY? No slug, no data, no secret. ---
+    // Lets POM's control plane show whether the *consumer* side of the context seam is configured. The
+    // actual key VALUE and the round-trip match are never exposed here (use /api/context-check for that).
+    if (url.pathname === '/api/seam-status') {
+      return json({ ok: true, configured: !!env.CONTEXT_KEY }, 200, cors);
+    }
+
     // --- Seam diagnostic: is the POM context/brand seam live for a client? (operator/tool auth) ---
     // Exercises the live CONTEXT_KEY round-trip to feedback-worker and reports presence-safe status —
     // never the key or any secret. `reason: 'unauthorized'` means the two workers' keys differ.
