@@ -217,8 +217,15 @@ export default {
     // Exercises the live CONTEXT_KEY round-trip to feedback-worker and reports presence-safe status —
     // never the key or any secret. `reason: 'unauthorized'` means the two workers' keys differ.
     if (url.pathname === '/api/context-check') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      // Rate-limit like every other authed route — probeClientProfile makes an upstream round-trip,
+      // so an authed caller mustn't be able to loop it and hammer feedback-worker.
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
       const slug = (url.searchParams.get('slug') || '').trim().toLowerCase();
       if (!slug) return json({ error: 'slug is required' }, 400, cors);
       const probe = await probeClientProfile(env, slug);
