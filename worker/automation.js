@@ -65,6 +65,15 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   // POM per-client context + brand (the cross-app seam) — makes the copy client-aware + imagery on-brand.
   // Non-fatal: null on any miss falls back to Spool's local clientSettings above.
   const profile = await fetchClientProfile(env, auto.clientId);
+  // Presence-safe observability (no secret/content) so `wrangler tail` shows whether the seam is feeding
+  // this run — silent degradation was the one ops gap flagged in review.
+  if (env.CONTEXT_KEY) {
+    console.log(
+      profile
+        ? `[suite-context] ${auto.clientId}: profile loaded (ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'})`
+        : `[suite-context] ${auto.clientId}: no profile — falling back to local settings`,
+    );
+  }
 
   let content = '';
   if (wantText) {

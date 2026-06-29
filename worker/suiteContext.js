@@ -24,3 +24,32 @@ export async function fetchClientProfile(env, slug) {
     return null;
   }
 }
+
+// Diagnostic twin of fetchClientProfile: same authorized round-trip, but surfaces WHY it failed so an
+// operator can tell a key mismatch between the two workers (401) from an unknown client (404) from a
+// network/timeout miss. Presence-safe — never returns or logs the CONTEXT_KEY. Backs GET /api/context-check.
+export async function probeClientProfile(env, slug) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug) return { ok: false, reason: 'slug_required' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/client-profile?slug=${encodeURIComponent(slug)}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.status === 401) return { ok: false, status: 401, reason: 'unauthorized' }; // keys differ across workers
+    if (res.status === 404) return { ok: false, status: 404, reason: 'client_not_found' };
+    if (res.status === 429) return { ok: false, status: 429, reason: 'rate_limited' };
+    if (res.status === 503) return { ok: false, status: 503, reason: 'not_configured_upstream' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok) return { ok: false, status: res.status, reason: 'bad_payload' };
+    return {
+      ok: true,
+      status: 200,
+      profile: { name: d.name || '', aiContext: d.aiContext || '', brand: d.brand || '' },
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}

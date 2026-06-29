@@ -14,6 +14,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
+import { probeClientProfile } from './suiteContext.js';
 import { PLATFORM_META, PLATFORM_CADENCE } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
@@ -210,6 +211,33 @@ export default {
 
     if (url.pathname === '/api/health') {
       return json({ ok: true }, 200, cors);
+    }
+
+    // --- Seam diagnostic: is the POM context/brand seam live for a client? (operator/tool auth) ---
+    // Exercises the live CONTEXT_KEY round-trip to feedback-worker and reports presence-safe status —
+    // never the key or any secret. `reason: 'unauthorized'` means the two workers' keys differ.
+    if (url.pathname === '/api/context-check') {
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const slug = (url.searchParams.get('slug') || '').trim().toLowerCase();
+      if (!slug) return json({ error: 'slug is required' }, 400, cors);
+      const probe = await probeClientProfile(env, slug);
+      return json({
+        ok: true,
+        slug,
+        configured: !!env.CONTEXT_KEY,
+        feedbackUrl: env.SUITE_FEEDBACK_URL || 'https://feedback.stitchtec.dev',
+        reached: probe.ok,
+        reason: probe.reason || 'ok',
+        profile: probe.ok
+          ? {
+              name: probe.profile.name,
+              contextChars: (probe.profile.aiContext || '').length,
+              hasBrand: !!probe.profile.brand,
+              brand: probe.profile.brand,
+            }
+          : null,
+      }, 200, cors);
     }
 
     // --- Generation endpoints ---
