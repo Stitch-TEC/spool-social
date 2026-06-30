@@ -20,6 +20,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import LoginScreen from './components/LoginScreen';
 import Sidebar from './components/Sidebar';
 import DashboardHeader from './components/DashboardHeader';
+import BrandFooter from './components/BrandFooter';
 import PostGrid from './components/PostGrid';
 import StatusFilterChips from './components/StatusFilterChips';
 import Toast from './components/Toast';
@@ -915,11 +916,7 @@ const App = () => {
             )}
           </div>
 
-          <footer className="py-6 text-center border-t border-slate-200 bg-white">
-            <p className="text-slate-400 text-[10px] font-bold tracking-widest uppercase">
-              Powered by <a href="https://stitchtec.dev" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 transition-colors">Spool</a>
-            </p>
-          </footer>
+          <BrandFooter />
 
         </main>
       </div>

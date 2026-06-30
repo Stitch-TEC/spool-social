@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Layout, Grid, Archive, Settings, Upload, Download, ChevronDown, Image as ImageIcon, FileText, Database, Users, Zap
+  Grid, Archive, Settings, Upload, Download, ChevronDown, Image as ImageIcon, FileText, Database, Users, Zap
 } from 'lucide-react';
 
 const navButtonClass = (active) =>
@@ -50,9 +50,7 @@ const Sidebar = ({
           {/* Branding */}
           <div className="flex flex-col mb-8">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                <Layout className="text-white" size={18} />
-              </div>
+              <img src="/stitch-tec-logo.png" alt="Stitch TEC" width={32} height={32} className="shadow-sm" style={{ borderRadius: '50%', objectFit: 'cover' }} />
               <span className="font-black text-xl text-slate-900">Spool</span>
             </div>
             <a

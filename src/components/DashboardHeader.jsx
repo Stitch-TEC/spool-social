@@ -44,9 +44,12 @@ const DashboardHeader = ({
 
         {/* Mobile/Client Branding (owners get branding in the sidebar; hide on
             narrow screens to leave room for the view/new/link actions) */}
-        <div className={`flex-col leading-none ${!isReadOnly ? 'hidden sm:flex lg:hidden' : 'flex'}`}>
-          <h1 className="text-xl font-black text-slate-900">Spool</h1>
-          <a href="https://stitchtec.dev" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
+        <div className={`items-center gap-2 ${!isReadOnly ? 'hidden sm:flex lg:hidden' : 'flex'}`}>
+          <img src="/stitch-tec-logo.png" alt="Stitch TEC" width={28} height={28} style={{ borderRadius: '50%', objectFit: 'cover' }} />
+          <div className="flex flex-col leading-none">
+            <h1 className="text-xl font-black text-slate-900">Spool</h1>
+            <a href="https://stitchtec.dev" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-slate-400 tracking-widest uppercase hover:text-indigo-600">by Stitch TEC</a>
+          </div>
         </div>
       </div>
 
