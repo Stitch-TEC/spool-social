@@ -4,7 +4,7 @@ import { CURRENT_APP_ID, STITCH_APPS } from '../stitch-apps';
 import CharCountCircle from './CharCountCircle';
 import { buildFeedbackPayload, submitFeedback } from '../lib/feedbackClient';
 
-// Suite Feedback Widget (SUITE-SHARED-COMPONENTS-PLAN.md §4). Floating
+// Suite Feedback Widget (SUITE-ARCHITECTURE.md §4). Floating
 // bottom-right button → modal that posts the canonical feedback payload to the
 // shared feedback endpoint, so every app feeds one inbox in one shape.
 //

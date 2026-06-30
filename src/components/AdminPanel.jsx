@@ -157,11 +157,10 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
                   <option value={NEW_CLIENT}>➕ New / unlinked client…</option>
                 </select>
               ) : (
-                <input
-                  value={manualSlug} onChange={(e) => setManualSlug(e.target.value)}
-                  placeholder={clientsLoading ? 'Loading clients…' : 'client ID (e.g. cadden)'}
-                  className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
-                />
+                // Roster unavailable: the single slug input lives in the block below (one control, no duplicate).
+                <div className="px-3 py-2 text-xs text-amber-600 italic flex items-center">
+                  {clientsLoading ? 'Loading clients…' : 'Roster unavailable — set the slug below'}
+                </div>
               )
             ) : (
               <div className="px-3 py-2 text-xs text-slate-400 italic flex items-center">Full access — no client scope</div>
@@ -189,9 +188,11 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
                   <AlertTriangle size={13} className="shrink-0" /> No client linked to @{emailDomain}. Pick one above, or choose “New / unlinked client”.
                 </p>
               )}
-              {chosenNew && (
+              {usingNewClient && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 space-y-2">
-                  <label className="block text-xs font-semibold text-slate-600">New / unlinked client slug</label>
+                  <label className="block text-xs font-semibold text-slate-600">
+                    {hasRoster ? 'New / unlinked client slug' : 'Client slug (roster unavailable — enter manually)'}
+                  </label>
                   <input
                     value={manualSlug} onChange={(e) => setManualSlug(e.target.value)}
                     placeholder="e.g. acme"
@@ -200,14 +201,13 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
                   {manualSlug.trim() && (
                     <p className="text-[11px] text-slate-500">Links to slug <span className="font-mono text-slate-700">{slugifyClientId(manualSlug) || '—'}</span></p>
                   )}
-                  <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
-                    <input type="checkbox" checked={confirmNew} onChange={(e) => setConfirmNew(e.target.checked)} className="mt-0.5 shrink-0" />
-                    <span>I confirm this client isn’t in POM yet. I’ll add it there so its content, context and drafts link to this slug.</span>
-                  </label>
+                  {chosenNew && (
+                    <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+                      <input type="checkbox" checked={confirmNew} onChange={(e) => setConfirmNew(e.target.checked)} className="mt-0.5 shrink-0" />
+                      <span>I confirm this client isn’t in POM yet. I’ll add it there so its content, context and drafts link to this slug.</span>
+                    </label>
+                  )}
                 </div>
-              )}
-              {!hasRoster && (
-                <p className="text-[11px] text-slate-400">Client roster unavailable — enter the slug manually (it’ll be normalized).</p>
               )}
             </div>
           )}
