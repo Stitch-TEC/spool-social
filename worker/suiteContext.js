@@ -72,7 +72,12 @@ export async function fetchClientRoster(env) {
     if (!d || !d.ok || !Array.isArray(d.clients)) return [];
     return d.clients
       .filter((c) => c && c.slug)
-      .map((c) => ({ slug: c.slug, name: c.name || c.slug, status: c.status || '' }));
+      .map((c) => ({
+        slug: c.slug,
+        name: c.name || c.slug,
+        status: c.status || '',
+        domains: Array.isArray(c.domains) ? c.domains : [], // drives the picker's email-domain inference
+      }));
   } catch {
     return [];
   }
