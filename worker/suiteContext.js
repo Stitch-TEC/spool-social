@@ -53,3 +53,27 @@ export async function probeClientProfile(env, slug) {
     return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
   }
 }
+
+// The canonical client roster from POM (via feedback-worker's keyed /clients). Server-to-server,
+// CONTEXT_KEY-gated — backs Spool's "add users" client picker so a granted clientId is always a real
+// POM slug, never a free-text typo that joins to nothing. Returns [] on any miss (no key, network,
+// bad payload) so the picker degrades to empty rather than erroring. feedback-worker already filters
+// out 'internal' rows; the slug is returned verbatim and must NOT be re-slugified by the caller.
+export async function fetchClientRoster(env) {
+  if (!env || !env.CONTEXT_KEY) return [];
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/clients`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const d = await res.json();
+    if (!d || !d.ok || !Array.isArray(d.clients)) return [];
+    return d.clients
+      .filter((c) => c && c.slug)
+      .map((c) => ({ slug: c.slug, name: c.name || c.slug, status: c.status || '' }));
+  } catch {
+    return [];
+  }
+}

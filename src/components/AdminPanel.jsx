@@ -4,6 +4,7 @@ import { X, UserPlus, Trash2, Loader2, ShieldCheck } from 'lucide-react';
 import { db } from '../config/firebase';
 import { ROLES, slugifyClientId } from '../config/roles';
 import useEscapeKey from '../hooks/useEscapeKey';
+import { useClients } from '../hooks/useClients';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ROLE_LABELS = {
@@ -31,6 +32,12 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
   const [clientId, setClientId] = useState('');
   const [error, setError] = useState(null);
 
+  // Canonical client roster from POM (source of truth) — drives the picker so a granted clientId is
+  // always a real POM slug. Degrades to free-text entry if the roster is empty/unavailable (e.g. the
+  // /clients seam isn't live yet, or granting a brand-new client not yet in POM).
+  const { clients, loading: clientsLoading } = useClients();
+  const hasRoster = clients.length > 0;
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -52,7 +59,9 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
     const target = email.toLowerCase().trim();
     if (!EMAIL_RE.test(target)) { setError('Enter a valid email address.'); return; }
     if (target === myEmail) { setError("You can't change your own access here."); return; }
-    const cid = needsClient ? slugifyClientId(clientId) : '';
+    // Picker value is already a canonical POM slug — use it verbatim. Only the free-text fallback
+    // (roster unavailable) gets slugified, since the operator typed it raw.
+    const cid = needsClient ? (hasRoster ? clientId.trim() : slugifyClientId(clientId)) : '';
     if (needsClient && !cid) { setError('A client / client admin needs a client ID (slug).'); return; }
 
     setSaving(true);
@@ -106,10 +115,23 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
               <option value={ROLES.SUPER_ADMIN}>{ROLE_LABELS[ROLES.SUPER_ADMIN]}</option>
             </select>
             {needsClient ? (
-              <input
-                value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="client ID (e.g. cadden)"
-                className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
-              />
+              hasRoster ? (
+                <select
+                  value={clientId} onChange={(e) => setClientId(e.target.value)}
+                  className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Select a client…</option>
+                  {clients.map(c => (
+                    <option key={c.slug} value={c.slug}>{c.name !== c.slug ? `${c.name} (${c.slug})` : c.slug}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={clientId} onChange={(e) => setClientId(e.target.value)}
+                  placeholder={clientsLoading ? 'Loading clients…' : 'client ID (e.g. cadden)'}
+                  className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                />
+              )
             ) : (
               <div className="px-3 py-2 text-xs text-slate-400 italic flex items-center">Full access — no client scope</div>
             )}

@@ -14,7 +14,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { probeClientProfile } from './suiteContext.js';
+import { probeClientProfile, fetchClientRoster } from './suiteContext.js';
 import { PLATFORM_META, PLATFORM_CADENCE } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
@@ -252,6 +252,27 @@ export default {
             }
           : null,
       }, 200, cors);
+    }
+
+    // --- Canonical client roster from POM (authed) — backs Spool's "add users" client picker. ---
+    // Server-side CONTEXT_KEY round-trip to feedback-worker /clients; the secret never reaches the SPA.
+    // Degrades to an empty list on any upstream miss so the picker shows nothing rather than erroring.
+    if (url.pathname === '/api/clients') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      // Operator-only: the roster spans EVERY client, so a client / client_admin must not enumerate it.
+      // Trusted internal key passes (server-to-server); any human caller must be a super_admin operator.
+      if (auth.mode !== 'apikey') {
+        const caller = await resolveShareCaller(auth, env);
+        if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      const clients = await fetchClientRoster(env);
+      return json({ ok: true, clients }, 200, cors);
     }
 
     // --- Generation endpoints ---
