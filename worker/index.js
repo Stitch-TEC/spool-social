@@ -291,6 +291,15 @@ export default {
         );
       }
 
+      // Authorization: only a PROVISIONED user (an operator, or a client with a users/{email} doc) may
+      // spend AI + R2 budget. ALLOWED_EMAILS is empty, so authenticate() alone would admit ANY signed-in
+      // Google account (the Firebase web key is public) — closing that open paid-generation hole here.
+      // The trusted internal key (apikey mode) bypasses, same as the drafts/automation paths.
+      if (auth.mode !== 'apikey') {
+        const caller = await resolveShareCaller(auth, env);
+        if (!caller) return json({ error: 'Not authorized' }, 403, cors);
+      }
+
       let body;
       try {
         body = await request.json();
@@ -343,6 +352,12 @@ export default {
       const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
       if (!rl.ok) {
         return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      // Provisioned users only (or the internal key) — the media library writes/serves R2 + AI-cached
+      // assets, so don't let an arbitrary signed-in Google account read or grow it (ALLOWED_EMAILS empty).
+      if (auth.mode !== 'apikey') {
+        const caller = await resolveShareCaller(auth, env);
+        if (!caller) return json({ error: 'Not authorized' }, 403, cors);
       }
 
       // DELETE /api/media/:key
