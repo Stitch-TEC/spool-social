@@ -50,4 +50,4 @@ export const isOnCooldown = (key, ms = 5 * 60 * 1000) => {
   try { const last = localStorage.getItem(key); return !!(last && Date.now() - parseInt(last, 10) < ms); }
   catch { return false; }
 };
-export const stampCooldown = (key) => { try { localStorage.setItem(key, String(Date.now())); } catch {} };
+export const stampCooldown = (key) => { try { localStorage.setItem(key, String(Date.now())); } catch { /* localStorage unavailable (private mode/quota) — cooldown is best-effort */ } };
