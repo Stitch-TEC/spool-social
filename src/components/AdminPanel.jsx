@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { X, UserPlus, Trash2, Loader2, ShieldCheck } from 'lucide-react';
+import { X, UserPlus, Trash2, Loader2, ShieldCheck, Check, AlertTriangle } from 'lucide-react';
 import { db } from '../config/firebase';
 import { ROLES, slugifyClientId } from '../config/roles';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { useClients } from '../hooks/useClients';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NEW_CLIENT = '__NEW__'; // sentinel picker value: grant an unlinked client (not yet in POM)
 const ROLE_LABELS = {
   [ROLES.SUPER_ADMIN]: 'Operator (super admin)',
   [ROLES.CLIENT_ADMIN]: 'Client admin',
@@ -29,14 +30,33 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
   const [saving, setSaving] = useState(false);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState(ROLES.CLIENT);
-  const [clientId, setClientId] = useState('');
+  const [clientId, setClientId] = useState('');   // operator's explicit picker choice ('' | slug | NEW_CLIENT)
+  const [clientTouched, setClientTouched] = useState(false); // true once they override the inferred client
+  const [manualSlug, setManualSlug] = useState('');   // free-text slug for the new / unlinked path
+  const [confirmNew, setConfirmNew] = useState(false); // verify gate before granting an unlinked client
   const [error, setError] = useState(null);
 
   // Canonical client roster from POM (source of truth) — drives the picker so a granted clientId is
-  // always a real POM slug. Degrades to free-text entry if the roster is empty/unavailable (e.g. the
-  // /clients seam isn't live yet, or granting a brand-new client not yet in POM).
+  // always a real POM slug. Degrades to free-text entry if the roster is empty/unavailable (seam down).
   const { clients, loading: clientsLoading } = useClients();
   const hasRoster = clients.length > 0;
+
+  // Infer the intended client from the user's email DOMAIN (each POM client carries its domains[]).
+  // Matches the exact domain or any subdomain (jane@mail.acme.com -> acme.com).
+  const emailDomain = useMemo(() => (email.split('@')[1] || '').trim().toLowerCase(), [email]);
+  const inferredClient = useMemo(() => {
+    if (!emailDomain) return null;
+    return clients.find(c => (c.domains || []).some(d => {
+      const dom = String(d || '').toLowerCase();
+      return dom && (emailDomain === dom || emailDomain.endsWith('.' + dom));
+    })) || null;
+  }, [emailDomain, clients]);
+
+  // The picker shows the inferred client until the operator overrides it; then their choice sticks.
+  // Derived (not stored) so there's no setState-in-effect and inference stays live as the email is typed.
+  const effectiveClientId = clientTouched ? clientId : (inferredClient ? inferredClient.slug : '');
+  const chosenNew = hasRoster && effectiveClientId === NEW_CLIENT;
+  const usingNewClient = chosenNew || !hasRoster;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -59,10 +79,20 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
     const target = email.toLowerCase().trim();
     if (!EMAIL_RE.test(target)) { setError('Enter a valid email address.'); return; }
     if (target === myEmail) { setError("You can't change your own access here."); return; }
-    // Picker value is already a canonical POM slug — use it verbatim. Only the free-text fallback
-    // (roster unavailable) gets slugified, since the operator typed it raw.
-    const cid = needsClient ? (hasRoster ? clientId.trim() : slugifyClientId(clientId)) : '';
-    if (needsClient && !cid) { setError('A client / client admin needs a client ID (slug).'); return; }
+    // Resolve the client scope. A picker value is already a canonical POM slug (use verbatim); the
+    // new / unlinked path is typed raw, so slugify it — and gate it behind the confirm checkbox so an
+    // orphan tenant can never be created by accident.
+    let cid = '';
+    if (needsClient) {
+      if (usingNewClient) {
+        cid = slugifyClientId(manualSlug);
+        if (!cid) { setError('Enter a slug for the new client.'); return; }
+        if (hasRoster && !confirmNew) { setError('Confirm this is a new, unlinked client before granting.'); return; }
+      } else {
+        cid = effectiveClientId.trim();
+        if (!cid || cid === NEW_CLIENT) { setError('Pick a client, or choose “New / unlinked client”.'); return; }
+      }
+    }
 
     setSaving(true);
     setError(null);
@@ -71,7 +101,7 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
       if (needsClient) payload.clientId = cid;
       await setDoc(doc(db, 'users', target), payload);
       showToast?.(`Access granted: ${target}`);
-      setEmail(''); setClientId('');
+      setEmail(''); setClientId(''); setClientTouched(false); setManualSlug(''); setConfirmNew(false);
       await refresh();
     } catch (err) {
       setError(err.message || 'Could not grant access (check Firestore rules).');
@@ -117,17 +147,18 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
             {needsClient ? (
               hasRoster ? (
                 <select
-                  value={clientId} onChange={(e) => setClientId(e.target.value)}
+                  value={effectiveClientId} onChange={(e) => { setClientId(e.target.value); setClientTouched(true); }}
                   className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">Select a client…</option>
                   {clients.map(c => (
                     <option key={c.slug} value={c.slug}>{c.name !== c.slug ? `${c.name} (${c.slug})` : c.slug}</option>
                   ))}
+                  <option value={NEW_CLIENT}>➕ New / unlinked client…</option>
                 </select>
               ) : (
                 <input
-                  value={clientId} onChange={(e) => setClientId(e.target.value)}
+                  value={manualSlug} onChange={(e) => setManualSlug(e.target.value)}
                   placeholder={clientsLoading ? 'Loading clients…' : 'client ID (e.g. cadden)'}
                   className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
                 />
@@ -142,6 +173,45 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
               {saving ? <Loader2 size={16} className="animate-spin" /> : <UserPlus size={16} />} Grant access
             </button>
           </div>
+
+          {/* Inference + verify affordances: pre-select the client matched by email domain, flag an
+              unlinked domain, and gate the "new / unlinked client" path behind an explicit confirm. */}
+          {needsClient && (emailDomain || chosenNew || !hasRoster) && (
+            <div className="mb-2 space-y-2">
+              {hasRoster && emailDomain && inferredClient && effectiveClientId === inferredClient.slug && (
+                <p className="text-xs text-emerald-600 flex items-center gap-1.5">
+                  <Check size={13} className="shrink-0" /> Linked to&nbsp;<span className="font-semibold">{inferredClient.name}</span>&nbsp;— matched @{emailDomain}
+                  {!clientTouched && <span className="text-slate-400">&nbsp;(inferred — change above if wrong)</span>}
+                </p>
+              )}
+              {hasRoster && emailDomain && !inferredClient && !clientTouched && (
+                <p className="text-xs text-amber-600 flex items-center gap-1.5">
+                  <AlertTriangle size={13} className="shrink-0" /> No client linked to @{emailDomain}. Pick one above, or choose “New / unlinked client”.
+                </p>
+              )}
+              {chosenNew && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 space-y-2">
+                  <label className="block text-xs font-semibold text-slate-600">New / unlinked client slug</label>
+                  <input
+                    value={manualSlug} onChange={(e) => setManualSlug(e.target.value)}
+                    placeholder="e.g. acme"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                  />
+                  {manualSlug.trim() && (
+                    <p className="text-[11px] text-slate-500">Links to slug <span className="font-mono text-slate-700">{slugifyClientId(manualSlug) || '—'}</span></p>
+                  )}
+                  <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+                    <input type="checkbox" checked={confirmNew} onChange={(e) => setConfirmNew(e.target.checked)} className="mt-0.5 shrink-0" />
+                    <span>I confirm this client isn’t in POM yet. I’ll add it there so its content, context and drafts link to this slug.</span>
+                  </label>
+                </div>
+              )}
+              {!hasRoster && (
+                <p className="text-[11px] text-slate-400">Client roster unavailable — enter the slug manually (it’ll be normalized).</p>
+              )}
+            </div>
+          )}
+
           {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
 
           {/* Users list */}
