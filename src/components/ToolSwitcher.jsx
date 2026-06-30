@@ -3,7 +3,7 @@ import { LayoutGrid, Check } from 'lucide-react';
 import { STITCH_APPS, CURRENT_APP_ID } from '../stitch-apps';
 
 // Cross-app launcher for the Stitch Suite. Reads the canonical STITCH_APPS
-// registry (SUITE-SHARED-COMPONENTS-PLAN.md §2) so the app list stays in sync
+// registry (SUITE-ARCHITECTURE.md §2) so the app list stays in sync
 // across every app. Each row's "current" is derived from CURRENT_APP_ID.
 const ToolSwitcher = () => {
   const [open, setOpen] = useState(false);
