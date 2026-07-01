@@ -9,7 +9,7 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls, getUserRecord } from './firestore.js';
+import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
@@ -273,6 +273,51 @@ export default {
       }
       const clients = await fetchClientRoster(env);
       return json({ ok: true, clients }, 200, cors);
+    }
+
+    // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---
+    // Grants/revokes CLIENT access by upserting/deleting users/{email}. Privileged docs
+    // (super_admin / client_admin) are hand-managed and NEVER touched by this path — a 409 tells
+    // the broker "blocked" honestly instead of silently downgrading or deleting an admin.
+    if (url.pathname === '/api/people-sync') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ ok: false, error: 'Unauthorized' }, 401, cors);
+      if (auth.mode !== 'apikey') return json({ ok: false, error: 'internal key required' }, 403, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ ok: false, error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: 'Invalid JSON' }, 400, cors); }
+      const email = String(body?.email || '').trim().toLowerCase();
+      const action = body?.action === 'revoke' ? 'revoke' : body?.action === 'grant' ? 'grant' : '';
+      const clientId = String(body?.clientId || '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'valid email required' }, 400, cors);
+      if (!action) return json({ ok: false, error: "action must be 'grant' or 'revoke'" }, 400, cors);
+
+      try {
+        const existing = await getUserRecord(env, email);
+        const existingRoles = Array.isArray(existing?.roles) ? existing.roles : [];
+        if (existingRoles.includes('super_admin') || existingRoles.includes('client_admin')) {
+          return json({ ok: false, error: 'privileged account — hand-managed, not propagated' }, 409, cors);
+        }
+        if (action === 'grant') {
+          if (!clientId) return json({ ok: false, error: 'clientId required for grant' }, 400, cors);
+          await setUserRecord(env, email, {
+            roles: ['client'], email, clientId,
+            updatedAt: new Date().toISOString(), source: 'people-sync',
+          });
+          return json({ ok: true, status: 'granted' }, 200, cors);
+        }
+        // revoke: delete the doc (absent = idempotent success)
+        await deleteUserRecord(env, email);
+        return json({ ok: true, status: 'revoked' }, 200, cors);
+      } catch (err) {
+        console.error('people-sync failed:', err?.message || err);
+        return json({ ok: false, error: 'sync failed' }, 502, cors);
+      }
     }
 
     // --- Generation endpoints ---
