@@ -172,6 +172,35 @@ export async function getUserRecord(env, email) {
   return fromFields(data.fields);
 }
 
+// Upsert a users/{email} RBAC doc (the POM people-sync propagation path). PATCH with an
+// updateMask creates-or-merges, so unmanaged fields on an existing doc are never clobbered.
+export async function setUserRecord(env, email, record) {
+  const token = await getAccessToken(env);
+  const mask = Object.keys(record).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+  const res = await fetch(`${FS_BASE(env)}/users/${encodeURIComponent(email)}?${mask}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: toFields(record) })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `User upsert failed (${res.status})`);
+  return fromFields(data.fields);
+}
+
+// Delete a users/{email} RBAC doc (people-sync revoke). 404 = already gone (idempotent).
+export async function deleteUserRecord(env, email) {
+  const token = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}/users/${encodeURIComponent(email)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok && res.status !== 404) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `User delete failed (${res.status})`);
+  }
+  return true;
+}
+
 export async function updatePost(env, id, patch) {
   const token = await getAccessToken(env);
   const mask = Object.keys(patch).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
