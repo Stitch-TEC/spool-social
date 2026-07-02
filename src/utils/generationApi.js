@@ -28,16 +28,18 @@ async function postJSON(path, payload) {
   return res.json();
 }
 
-/** Generate an image from a prompt. Resolves to a hosted image URL. */
-export async function generateImage(prompt) {
-  const { url } = await postJSON('/api/generate', { prompt });
+/** Generate an image from a prompt. Resolves to a hosted image URL.
+ *  `opts` may include { clientId } — the suite slug, for per-client usage metering. */
+export async function generateImage(prompt, opts = {}) {
+  const { url } = await postJSON('/api/generate', { prompt, ...opts });
   return url;
 }
 
 /**
  * Generate text/copy from a prompt. Resolves to the generated string.
- * `opts` may include { system, temperature, maxTokens, imageUrl } — imageUrl
- * makes it a multimodal call (e.g. alt text from the actual image).
+ * `opts` may include { system, temperature, maxTokens, imageUrl, clientId } — imageUrl
+ * makes it a multimodal call (e.g. alt text from the actual image); clientId (suite slug)
+ * attributes the usage to that client at the gateway meter.
  */
 export async function generateText(prompt, opts = {}) {
   const { text } = await postJSON('/api/text', { prompt, ...opts });

@@ -775,6 +775,7 @@ const App = () => {
             isReadOnly={isReadOnly}
             clientMap={clientMap}
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+            clientIdByName={isOperator ? clientIdByName : (myClientName ? { [myClientName]: myClientId } : {})}
             showToast={showToast}
             onSave={handleSavePost}
             onCreateDrafts={handleCreateDrafts}

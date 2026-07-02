@@ -36,10 +36,11 @@ export async function storeImage(env, origin, bytes, mime, owner) {
 
 // Resolve a draft image input to a /media URL: { prompt } generates, { base64 }
 // uploads to R2, { url } references. Returns the URL, or null when no image.
+// img.clientId (optional, suite slug) attributes a generation to a client for usage metering.
 export async function resolveDraftImage(env, origin, img) {
   if (!img) return null;
   if (img.prompt) {
-    const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_IMG_PROMPT));
+    const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_IMG_PROMPT), { clientId: img.clientId });
     return (await storeImage(env, origin, b64ToBytes(b64), mime, 'internal')).url;
   }
   if (img.base64) {
