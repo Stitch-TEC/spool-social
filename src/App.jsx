@@ -7,7 +7,8 @@ import {
   deleteDoc,
   setDoc,
   doc,
-  writeBatch
+  writeBatch,
+  arrayUnion
 } from 'firebase/firestore';
 
 import { db } from './config/firebase';
@@ -369,16 +370,17 @@ const App = () => {
     }
 
     try {
-      // Append to a feedback thread (history across review rounds) rather than
-      // overwriting. `feedback` keeps the latest note for back-compat / card display.
-      const post = postsRef.current.find(p => p.id === postId);
-      const prevThread = Array.isArray(post?.feedbackThread) ? post.feedbackThread : [];
+      // Append to a feedback thread (history across review rounds) rather than overwriting.
+      // `feedback` keeps the latest note for back-compat / card display. ATOMIC append (arrayUnion),
+      // not a snapshot rebuild: POM's review verb (broker → worker PATCH) is a concurrent writer on
+      // the same field, and a read-modify-write here could silently drop its entry (or vice versa).
+      // Entries carry an ISO timestamp so the union-dedupe never merges two distinct notes. The old
+      // 20-entry cap can't be enforced atomically — readers trim for display instead.
       const entry = { text: sanitizedFeedback, by: isReadOnly ? 'client' : 'you', at: new Date().toISOString() };
-      const feedbackThread = [...prevThread, entry].slice(-20);
 
       await updateDoc(doc(db, 'posts', postId), {
         feedback: sanitizedFeedback,
-        feedbackThread,
+        feedbackThread: arrayUnion(entry),
         approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED,
         updatedAt: new Date().toISOString()
       });
