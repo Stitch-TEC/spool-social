@@ -9,7 +9,7 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, updatePost, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
+import { createPost, getPost, listPosts, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
@@ -491,7 +491,7 @@ export default {
     //   POST   /api/drafts       create
     //   GET    /api/drafts       list (filters: ?client= &platform= &status=)
     //   GET    /api/drafts/:id    fetch one
-    //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags)
+    //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags, approvalStatus+feedback)
     //   DELETE /api/drafts/:id    delete
     if (url.pathname === '/api/drafts' || url.pathname.startsWith('/api/drafts/')) {
       const auth = await authenticate(request, env);
@@ -533,6 +533,28 @@ export default {
             patch.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
           }
           if (['draft', 'scheduled', 'posted', 'archived'].includes(body.status)) patch.status = body.status;
+          // Review verbs (POM's Content card via the feedback-worker broker): approvalStatus
+          // transitions with an optional reviewer note. The note is appended SERVER-SIDE and
+          // ATOMICALLY (updatePostWithAppend — a :commit array transform) so a concurrent in-app /
+          // guest note on the same draft is never clobbered by a snapshot rebuild. Shape mirrors the
+          // UI's request-changes entries ({text, by, at}), so POM feedback renders like in-app feedback.
+          let threadEntry = null;
+          if (body.approvalStatus !== undefined) {
+            if (!['pending', 'approved', 'changes_requested'].includes(body.approvalStatus)) {
+              return json({ error: `Unknown approvalStatus '${body.approvalStatus}'` }, 400, cors);
+            }
+            const note = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 500) : '';
+            if (body.approvalStatus === 'changes_requested' && !note) {
+              return json({ error: 'feedback is required when requesting changes' }, 400, cors);
+            }
+            patch.approvalStatus = body.approvalStatus;
+            if (note) {
+              // Attribution whitelist — never store an arbitrary caller string in the thread.
+              const by = body.reviewedBy === 'client' ? 'client' : 'you';
+              patch.feedback = note;
+              threadEntry = { text: note, by, at: new Date().toISOString() };
+            }
+          }
           if (body.image) {
             try {
               const u = await resolveDraftImage(env, url.origin, body.image);
@@ -547,7 +569,9 @@ export default {
           if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
           patch.updatedAt = new Date().toISOString();
           try {
-            const draft = await updatePost(env, id, patch);
+            const draft = threadEntry
+              ? await updatePostWithAppend(env, id, patch, 'feedbackThread', threadEntry)
+              : await updatePost(env, id, patch);
             return json({ draft }, 200, cors);
           } catch (err) {
             console.error('Draft update failed:', err?.message || err);
@@ -586,6 +610,13 @@ export default {
         if (!content) return json({ error: 'content is required' }, 400, cors);
         const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
+        // The immutable tenant key (suite slug). Callers that know it send it (the broker / POM skill
+        // do); otherwise resolve it from existing posts for the same display name. Display NAME is
+        // mutable + not guaranteed unique, so the slug is what cross-app guards key on — a draft
+        // without it falls back to name matching (legacy behavior).
+        const clientId =
+          (body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) ||
+          (await resolveClientId(env, client)) || '';
 
         const title = (body?.title || '').toString().trim().slice(0, 200);
         const altText = (body?.altText || '').toString().trim().slice(0, 300);
@@ -609,6 +640,7 @@ export default {
           const id = await createPost(env, {
             uid: env.OWNER_UID,
             client, content, title, altText, metaDescription, slug,
+            ...(clientId ? { clientId } : {}),
             platform, status: 'draft', approvalStatus: 'pending', feedback: '',
             imageUrl, tags, scheduledDate,
             createdAt: nowIso, updatedAt: nowIso, source: 'api'

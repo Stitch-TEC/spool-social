@@ -75,16 +75,22 @@ async function getAccessToken(env) {
   return data.access_token;
 }
 
+// Convert a JS value to a Firestore REST typed value. RECURSIVE: arrays may hold nested maps
+// (feedbackThread entries are {text, by, at} objects — the old flat version stringified them to
+// "[object Object]"). Primitive + string-array behavior is unchanged.
+function toValue(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(toValue) } };
+  if (typeof v === 'object') return { mapValue: { fields: toFields(v) } };
+  return { stringValue: String(v) };
+}
+
 // Convert a flat object to Firestore REST typed fields.
 function toFields(obj) {
   const fields = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === null || v === undefined) fields[k] = { nullValue: null };
-    else if (typeof v === 'boolean') fields[k] = { booleanValue: v };
-    else if (typeof v === 'number') fields[k] = Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-    else if (Array.isArray(v)) fields[k] = { arrayValue: { values: v.map(x => ({ stringValue: String(x) })) } };
-    else fields[k] = { stringValue: String(v) };
-  }
+  for (const [k, v] of Object.entries(obj)) fields[k] = toValue(v);
   return fields;
 }
 
@@ -108,19 +114,24 @@ export async function createPost(env, docData) {
 const FS_BASE = (env) =>
   `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
 
+// Parse a Firestore REST typed value back into plain JS. RECURSIVE mirror of toValue — array items
+// may be maps (feedbackThread entries), which the old flat version silently dropped to null.
+function fromValue(v) {
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return parseInt(v.integerValue, 10);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromValue);
+  if ('mapValue' in v) return fromFields(v.mapValue.fields || {});
+  return null;
+}
+
 // Parse Firestore REST typed fields back into a plain JS object.
 function fromFields(fields = {}) {
   const out = {};
-  for (const [k, v] of Object.entries(fields)) {
-    if ('stringValue' in v) out[k] = v.stringValue;
-    else if ('integerValue' in v) out[k] = parseInt(v.integerValue, 10);
-    else if ('doubleValue' in v) out[k] = v.doubleValue;
-    else if ('booleanValue' in v) out[k] = v.booleanValue;
-    else if ('nullValue' in v) out[k] = null;
-    else if ('timestampValue' in v) out[k] = v.timestampValue;
-    else if ('arrayValue' in v) out[k] = (v.arrayValue.values || []).map(x => x.stringValue ?? x.integerValue ?? null);
-    else out[k] = null;
-  }
+  for (const [k, v] of Object.entries(fields)) out[k] = fromValue(v);
   return out;
 }
 
@@ -212,6 +223,35 @@ export async function updatePost(env, id, patch) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error?.message || `Update failed (${res.status})`);
   return { id, ...fromFields(data.fields) };
+}
+
+// Masked field update + ATOMIC array append in ONE Firestore commit (:commit with an
+// appendMissingElements transform). Used by the review verbs so a concurrent reviewer's
+// feedbackThread entry can never be clobbered by a snapshot rebuild — the Spool UI and the
+// POM broker both write this field. Entries carry an ISO timestamp, so the union-dedupe
+// never merges two distinct notes. The legacy 20-entry cap can't be enforced atomically;
+// readers trim for display instead.
+export async function updatePostWithAppend(env, id, patch, arrayField, entry) {
+  const token = await getAccessToken(env);
+  const res = await fetch(`${FS_BASE(env)}:commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      writes: [{
+        update: {
+          name: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/posts/${id}`,
+          fields: toFields(patch)
+        },
+        updateMask: { fieldPaths: Object.keys(patch) },
+        updateTransforms: [{ fieldPath: arrayField, appendMissingElements: { values: [toValue(entry)] } }],
+        currentDocument: { exists: true }
+      }]
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `Update failed (${res.status})`);
+  // :commit returns write results, not the doc — re-read so callers get the same shape as updatePost.
+  return await getPost(env, id);
 }
 
 export async function deletePost(env, id) {
