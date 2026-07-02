@@ -35,9 +35,15 @@ export default function usePosts(user, sharedUid, clientId, shareClientId) {
       return;
     }
 
-    // Scope by clientId (guest + client member) or by uid (operator).
+    // Scope by clientId (guest + client member) or by uid (operator). GUESTS additionally filter by
+    // the owner uid: the rules' isShareGuest requires shareOwner == resource.data.uid, and Firestore
+    // list evaluation can't prove that from a clientId-only query ("rules are not filters") — without
+    // the uid clause the guest subscription is permission-denied wholesale. Members must NOT get the
+    // uid filter (their targetUid is their own uid; posts carry the owner's).
     const constraints = scopeClientId
-      ? [where('clientId', '==', scopeClientId)]
+      ? (isGuest
+          ? [where('clientId', '==', scopeClientId), where('uid', '==', targetUid)]
+          : [where('clientId', '==', scopeClientId)])
       : [where('uid', '==', targetUid)];
 
     const q = query(collection(db, 'posts'), ...constraints);
@@ -110,8 +116,11 @@ export default function usePosts(user, sharedUid, clientId, shareClientId) {
     // Keyed by client *name* so lookups by post.client resolve, even though the
     // doc id is `${uid}__${name}` (see ClientSettingsModal). Guests may read only
     // their own client's branding, so scope the query by name too.
+    // Same guest uid-clause as the posts query above (rules list satisfiability).
     const clientConstraints = scopeClientId
-      ? [where('clientId', '==', scopeClientId)]
+      ? (isGuest
+          ? [where('clientId', '==', scopeClientId), where('uid', '==', targetUid)]
+          : [where('clientId', '==', scopeClientId)])
       : [where('uid', '==', targetUid)];
     const clientQuery = query(collection(db, 'clients'), ...clientConstraints);
     const clientUnsub = onSnapshot(clientQuery, (snapshot) => {
@@ -134,7 +143,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId) {
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
-  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId]);
+  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId, isGuest]);
 
   // Loading = an active subscription that hasn't delivered its first snapshot.
   const isLoading = shouldSubscribe && !hasLoaded;

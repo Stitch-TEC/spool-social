@@ -106,18 +106,33 @@ service cloud.firestore {
 
     // --- Review-guest helpers ------------------------------------------------
     // A token-scoped review guest: signed in via a Worker-minted custom token
-    // carrying { share, shareOwner, shareClientId } claims, bound to exactly one
-    // (owner, clientId) pair. The match is on the IMMUTABLE clientId (not the
-    // free-text display name) so a client member cannot forge a post into
+    // carrying { share, shareOwner, shareClientId, shareToken } claims, bound to
+    // exactly one (owner, clientId) pair. The match is on the IMMUTABLE clientId
+    // (not the free-text display name) so a client member cannot forge a post into
     // another tenant's review queue. `cid != null` requires a real clientId on
     // both sides — an un-backfilled doc or a legacy token (shareClientId absent
     // → null) fails closed (re-issue the link). shareClient (name) is display-only.
+    //
+    // REVOKE-AT-REQUEST-TIME (identity P3): shareStillLive() re-checks the share
+    // DOC on every guest request (the shareToken claim = the shares/ doc id).
+    // Revoking a link hard-deletes shares/{token}, so an already-signed-in guest
+    // loses access on their NEXT request — not after their ~1h ID-token expiry.
+    // The soft `revoked` flag is honored too. Legacy tokens without the claim
+    // fail closed; useAuth force-re-exchanges any persisted guest session when a
+    // ?s= link loads (it never trusts stored claims), so still-valid links
+    // self-heal on reload and revoked ones land on the link-invalid screen.
+    function shareStillLive() {
+      return request.auth.token.get('shareToken', '') != ''
+        && exists(/databases/$(database)/documents/shares/$(request.auth.token.shareToken))
+        && get(/databases/$(database)/documents/shares/$(request.auth.token.shareToken)).data.get('revoked', false) != true;
+    }
     function isShareGuest(uid, cid) {
       return isSignedIn()
         && request.auth.token.share == true
         && request.auth.token.shareOwner == uid
         && cid != null
-        && request.auth.token.shareClientId == cid;
+        && request.auth.token.shareClientId == cid
+        && shareStillLive();
     }
 
     // A guest may ONLY approve / request changes / append feedback — never edit

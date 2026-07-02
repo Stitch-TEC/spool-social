@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   signInWithPopup,
   signInAnonymously,
@@ -45,6 +45,9 @@ export default function useAuth(showToast) {
   const [shareScope, setShareScope] = useState(
     legacyUid ? { ownerUid: legacyUid, client: legacyClient || null } : null
   );
+  // True only when THIS page-load minted the guest session via the ?s= exchange below. Guards the
+  // forced re-exchange in the guest branch from looping (exchange → sign-in → guest branch → accept).
+  const exchangedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +86,21 @@ export default function useAuth(showToast) {
         // Review guests sign in via a custom/anonymous token with NO email claim.
         const isGuest = currentUser.isAnonymous || !currentUser.email;
         if (isGuest) {
+          // A ?s= link must NEVER trust a persisted guest session: Firebase keeps custom-token
+          // claims for the life of the session, so a session minted before the shareToken claim
+          // existed (or for a DIFFERENT link) would be permanently denied by the rules'
+          // shareStillLive() check — or scoped to the wrong link — with no recovery, and with
+          // shareScope unresolved it would render the empty non-review dashboard. Unless THIS
+          // page-load just minted the session via the exchange below (exchangedRef), sign out and
+          // fall through to the no-session branch, which re-exchanges the URL token: still-valid
+          // links self-heal, revoked ones land on the "link no longer valid" screen.
+          if (shareToken && !exchangedRef.current) {
+            signOut(auth).catch((err) => {
+              console.error('Guest session reset failed:', err);
+              if (!cancelled) setAuthLoading(false);
+            });
+            return;
+          }
           setUser(currentUser);
           setRole(null);
           setClientId(null);
@@ -121,6 +139,7 @@ export default function useAuth(showToast) {
           const { customToken, ownerUid, client, clientId: scopeId } = await exchangeShareToken(shareToken);
           if (cancelled) return;
           setShareScope({ ownerUid, client, clientId: scopeId || null });
+          exchangedRef.current = true; // the very next guest sign-in is OURS — accept it (no re-exchange loop)
           await signInWithCustomToken(auth, customToken); // re-fires onAuthStateChanged with the guest
         } catch (err) {
           console.error('Share session failed:', err);
