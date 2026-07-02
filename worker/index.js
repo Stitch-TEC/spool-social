@@ -688,7 +688,13 @@ export default {
           // rules deny (the link is dead; re-issue it). shareClient (name) is
           // kept for display only.
           const customToken = await mintCustomToken(env, guestUid, {
-            share: true, shareOwner: share.ownerUid, shareClient: share.client, shareClientId: share.clientId || null
+            share: true, shareOwner: share.ownerUid, shareClient: share.client, shareClientId: share.clientId || null,
+            // The share DOC ID — lets firestore.rules re-check the share EXISTS (and isn't revoked)
+            // on EVERY request, so a revoked link dies on the guest's NEXT request (reads, writes,
+            // stream re-auth) instead of after the ID token's ~1h expiry. (An idle already-open
+            // listener keeps only its last-delivered snapshot until its next event.) It's the
+            // guest's own bearer secret, so putting it on their token leaks nothing.
+            shareToken: token
           });
           return json({ customToken, ownerUid: share.ownerUid, client: share.client, clientId: share.clientId || null, label: share.label || '' }, 200, cors);
         } catch (err) {
