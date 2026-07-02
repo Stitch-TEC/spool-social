@@ -97,7 +97,9 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       // Best-effort image: for text+image, persist the already-generated text
       // rather than discarding it. Image-only has nothing to salvage, so let
       // the failure surface (recorded as lastStatus:'error', schedule advances).
-      if (!wantText) throw err;
+      // A QUOTA denial always surfaces — swallowing it would record lastStatus 'ok'
+      // and hide the exhausted budget from the operator.
+      if (!wantText || err?.quotaExceeded) throw err;
       console.error('Automation image failed; persisting text-only draft:', err?.message || err);
     }
   }

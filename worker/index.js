@@ -383,6 +383,9 @@ export default {
         const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner);
         return json({ url: stored.url, key: stored.key }, 200, cors);
       } catch (err) {
+        // A quota denial is a POLICY outcome the user must see (raise the quota in POM) — pass its
+        // message + 429 through instead of masking it as a generic failure.
+        if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
         // Log upstream detail server-side (visible via `wrangler tail`), but do
         // not reflect raw Gemini error text back to API callers.
         console.error('Generation failed:', err?.message || err);
@@ -566,6 +569,8 @@ export default {
               const u = await resolveDraftImage(env, url.origin, { ...body.image, clientId: existing.clientId || undefined });
               if (u) patch.imageUrl = u;
             } catch (err) {
+              // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
+              if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
               console.error('Patch image failed:', err?.message || err);
               return json({ error: 'Image processing failed' }, 502, cors);
             }
@@ -639,6 +644,8 @@ export default {
           // overriding any caller-supplied image.clientId.
           imageUrl = (await resolveDraftImage(env, url.origin, body?.image ? { ...body.image, clientId: clientId || undefined } : null)) || '';
         } catch (err) {
+          // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
+          if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
           console.error('Draft image failed:', err?.message || err);
           return json({ error: 'Image processing failed' }, 502, cors);
         }
@@ -826,7 +833,7 @@ export default {
             }).catch(() => {});
             return json({ ok: true, postId: result.postId }, 200, cors);
           } catch (err) {
-            if (err?.budgetExhausted) return json({ error: err.message }, 429, cors);
+            if (err?.quotaExceeded || err?.budgetExhausted) return json({ error: err.message }, 429, cors);
             console.error('Automation run failed:', err?.message || err);
             return json({ error: 'Generation failed' }, 502, cors);
           }

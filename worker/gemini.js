@@ -42,6 +42,16 @@ async function generateTextViaGateway(env, prompt, opts = {}) {
     }),
     signal: AbortSignal.timeout(20000)
   });
+  // A quota 429 is a POLICY denial, not an outage — tag it so generateText SURFACES it instead of
+  // silently falling back to direct Gemini (which would bypass the client's budget entirely).
+  if (res.status === 429) {
+    const d = await res.json().catch(() => ({}));
+    if (d.error === 'quota_exceeded') {
+      const err = new Error(`This client's monthly AI budget is used up (${(d.used ?? 0).toLocaleString()} of ${(d.quota ?? 0).toLocaleString()} tokens). Raise the AI quota in POM to continue.`);
+      err.quotaExceeded = true;
+      throw err;
+    }
+  }
   if (!res.ok) throw new Error(`ai gateway ${res.status}`);
   const data = await res.json().catch(() => ({}));
   if (!data.ok || !data.text) throw new Error('ai gateway returned no text');
@@ -54,8 +64,10 @@ export async function generateText(env, prompt, opts = {}) {
   if (env.AI && env.STITCH_AI_KEY && !opts.image) {
     try {
       return await generateTextViaGateway(env, prompt, opts);
-    } catch {
-      // fall through to direct Gemini (resident fallback during cutover)
+    } catch (e) {
+      // A quota denial is policy, not an outage — surface it; falling back would bypass the budget.
+      if (e && e.quotaExceeded) throw e;
+      // Anything else falls through to direct Gemini (resident fallback during cutover)
     }
   }
 
@@ -110,12 +122,22 @@ export async function generateImage(env, prompt, opts = {}) {
         body: JSON.stringify({ task: 'spool-image', prompt, clientId: opts.clientId || undefined }),
         signal: AbortSignal.timeout(60000) // image gen is slower than text
       });
+      // Quota denial = policy, not outage — surface it (falling back would bypass the budget).
+      if (res.status === 429) {
+        const d = await res.json().catch(() => ({}));
+        if (d.error === 'quota_exceeded') {
+          const err = new Error(`This client's monthly AI budget is used up (${(d.used ?? 0).toLocaleString()} of ${(d.quota ?? 0).toLocaleString()} tokens). Raise the AI quota in POM to continue.`);
+          err.quotaExceeded = true;
+          throw err;
+        }
+      }
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
         if (data.ok && data.b64) return { b64: data.b64, mime: data.mime || 'image/png' };
       }
-    } catch {
-      // fall through to direct Gemini
+    } catch (e) {
+      if (e && e.quotaExceeded) throw e;
+      // anything else falls through to direct Gemini
     }
   }
 
