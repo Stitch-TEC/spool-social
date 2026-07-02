@@ -357,6 +357,9 @@ export default {
       if (prompt.length > MAX_PROMPT) {
         return json({ error: `prompt exceeds ${MAX_PROMPT} chars` }, 400, cors);
       }
+      // Per-client usage metering (Phase 3): the UI sends the selected client's slug; sanitized here
+      // (it's contextual attribution, not auth — the gateway meters 'unattributed' when absent).
+      const genClientId = (body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) || undefined;
 
       try {
         if (url.pathname === '/api/text') {
@@ -368,13 +371,14 @@ export default {
                 ? body.temperature
                 : undefined,
             maxTokens: clampMaxTokens(body?.maxTokens),
-            image
+            image,
+            clientId: genClientId
           });
           return json({ text }, 200, cors);
         }
 
         // Image: generate -> store in R2 -> return a URL.
-        const { b64, mime } = await generateImage(env, prompt);
+        const { b64, mime } = await generateImage(env, prompt, { clientId: genClientId });
         const owner = auth.mode === 'firebase' ? auth.principal : 'internal';
         const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner);
         return json({ url: stored.url, key: stored.key }, 200, cors);
@@ -557,7 +561,9 @@ export default {
           }
           if (body.image) {
             try {
-              const u = await resolveDraftImage(env, url.origin, body.image);
+              // Thread the DRAFT's own tenant slug into the image generation for usage metering —
+              // server-resolved, overriding any caller-supplied image.clientId (never trust raw input).
+              const u = await resolveDraftImage(env, url.origin, { ...body.image, clientId: existing.clientId || undefined });
               if (u) patch.imageUrl = u;
             } catch (err) {
               console.error('Patch image failed:', err?.message || err);
@@ -629,7 +635,9 @@ export default {
 
         let imageUrl = '';
         try {
-          imageUrl = (await resolveDraftImage(env, url.origin, body?.image)) || '';
+          // Same server-resolved clientId threading as PATCH — the sanitized slug from above,
+          // overriding any caller-supplied image.clientId.
+          imageUrl = (await resolveDraftImage(env, url.origin, body?.image ? { ...body.image, clientId: clientId || undefined } : null)) || '';
         } catch (err) {
           console.error('Draft image failed:', err?.message || err);
           return json({ error: 'Image processing failed' }, 502, cors);

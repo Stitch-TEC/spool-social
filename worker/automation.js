@@ -81,7 +81,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       platform, tone: auto.tone, length: auto.length,
       clientName: auto.client, clientSettings, pomContext: profile?.aiContext
     });
-    const out = await generateText(env, seed, { system, maxTokens });
+    const out = await generateText(env, seed, { system, maxTokens, clientId: auto.clientId });
     content = String(out || '').trim().slice(0, max);
   }
 
@@ -92,7 +92,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       clientName: auto.client, clientSettings, pomBrand: profile?.brand
     });
     try {
-      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt })) || '';
+      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId: auto.clientId })) || '';
     } catch (err) {
       // Best-effort image: for text+image, persist the already-generated text
       // rather than discarding it. Image-only has nothing to salvage, so let

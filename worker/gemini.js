@@ -35,7 +35,10 @@ async function generateTextViaGateway(env, prompt, opts = {}) {
       tier: env.SPOOL_AI_TIER || 'cheap', // bump to "standard" for higher-quality copy
       system: opts.system || undefined,
       prompt,
-      maxTokens: opts.maxTokens || parseInt(env.MAX_OUTPUT_TOKENS || '1024', 10)
+      maxTokens: opts.maxTokens || parseInt(env.MAX_OUTPUT_TOKENS || '1024', 10),
+      // Per-client usage metering (control-plane Phase 3) — contextual, not auth; the gateway
+      // meters under 'unattributed' when absent.
+      clientId: opts.clientId || undefined
     }),
     signal: AbortSignal.timeout(20000)
   });
@@ -95,7 +98,7 @@ export async function generateText(env, prompt, opts = {}) {
   return text;
 }
 
-export async function generateImage(env, prompt) {
+export async function generateImage(env, prompt, opts = {}) {
   // Prefer the shared AI gateway (ai-worker /image); ANY failure falls through to
   // the direct-Gemini path below (resident fallback during cutover).
   if (env.AI && env.STITCH_AI_KEY) {
@@ -103,7 +106,8 @@ export async function generateImage(env, prompt) {
       const res = await env.AI.fetch('https://ai-worker.internal/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', authorization: `Bearer ${env.STITCH_AI_KEY}` },
-        body: JSON.stringify({ task: 'spool-image', prompt }),
+        // clientId = per-client usage metering (Phase 3); contextual, 'unattributed' when absent.
+        body: JSON.stringify({ task: 'spool-image', prompt, clientId: opts.clientId || undefined }),
         signal: AbortSignal.timeout(60000) // image gen is slower than text
       });
       if (res.ok) {

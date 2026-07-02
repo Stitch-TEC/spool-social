@@ -14,7 +14,8 @@ import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '..
  *       Hashtags  — append relevant hashtags to the current draft
  *     onResult receives the new value (content string, or image URL).
  *
- * Shared props: platform, clientName, clientSettings (clientMap[client]).
+ * Shared props: platform, clientName, clientSettings (clientMap[client]),
+ * clientId (the suite slug — attributes gateway usage to the client for per-client metering).
  * Text adds: currentText (for Improve / Hashtags).
  */
 const AIGenerate = ({
@@ -25,6 +26,7 @@ const AIGenerate = ({
   platform = 'gmb',
   clientName = '',
   clientSettings = null,
+  clientId = '',
   currentText = ''
 }) => {
   const isText = kind === 'text';
@@ -64,7 +66,7 @@ const AIGenerate = ({
       if (mode === 'hashtags') {
         const tags = (await generateText(
           `Suggest 3–6 relevant, high-quality hashtags for the post below. Return ONLY the hashtags separated by spaces — nothing else.\n\nPOST:\n${currentText}`,
-          { system, maxTokens: 60 }
+          { system, maxTokens: 60, clientId }
         )).trim();
         // Append to the LATEST content (avoids clobbering edits made mid-request).
         if (onAppend) onAppend(tags);
@@ -76,12 +78,12 @@ const AIGenerate = ({
 
       let result;
       if (mode === 'generate') {
-        result = await generateText(p, { system, maxTokens });
+        result = await generateText(p, { system, maxTokens, clientId });
       } else {
         const guidance = p ? ` Additional guidance: ${p}.` : '';
         result = await generateText(
           `Rewrite and improve the post below for this platform and brand, keeping its core message.${guidance}\n\nPOST:\n${currentText}`,
-          { system, maxTokens }
+          { system, maxTokens, clientId }
         );
       }
       onResult(result);
@@ -100,7 +102,7 @@ const AIGenerate = ({
     setLoading(true);
     try {
       const fullPrompt = buildImagePrompt({ prompt: p, style, platform, clientName, clientSettings });
-      const url = await generateImage(fullPrompt);
+      const url = await generateImage(fullPrompt, { clientId });
       onResult(url);
       close();
       showToast?.('Image generated');

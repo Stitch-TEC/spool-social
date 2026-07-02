@@ -15,6 +15,7 @@ import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
 import { describeImage, generateText } from '../utils/generationApi';
+import { slugifyClientId } from '../config/roles';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -33,11 +34,23 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, isReadOnly, onCreateDrafts }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
   }, [uniqueClients, clientMap]);
+
+  // The selected client's suite SLUG — attributes AI generation to the client at the gateway meter.
+  // Resolution order matches the app's canonical clientIdFor: the edited post's already-stamped id,
+  // then the posts-derived name→id map (App.jsx passes it role-scoped), then the branding doc's
+  // stamped id, then the slugified name as the last resort (a drifted display name could otherwise
+  // meter under a phantom slug).
+  const genClientId = (name) => (
+    (post?.client === name && post?.clientId)
+      || clientIdByName?.[name]
+      || clientMap?.[name]?.clientId
+      || (name ? slugifyClientId(name) : '')
+  );
 
   const [formData, setFormData] = useState({
     platform: 'gmb',
@@ -219,7 +232,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
     try {
       const meta = await generateText(
         `Write a compelling SEO meta description (max 155 characters, one sentence, no quotes) for the post below.\n\nTITLE: ${formData.title || ''}\n\nPOST:\n${formData.content}`,
-        { maxTokens: 80 }
+        { maxTokens: 80, clientId: genClientId(formData.client) }
       );
       setFormData(prev => ({ ...prev, metaDescription: meta.trim().slice(0, 200) }));
       showToast?.('Meta description generated');
@@ -328,6 +341,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                   platform={formData.platform}
                   clientName={formData.client}
                   clientSettings={clientMap?.[formData.client]}
+                  clientId={genClientId(formData.client)}
                   currentText={formData.content}
                   showToast={showToast}
                   onResult={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
@@ -342,6 +356,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                   content={formData.content}
                   client={formData.client}
                   clientSettings={clientMap?.[formData.client]}
+                  clientId={genClientId(formData.client)}
                   onCreateDrafts={onCreateDrafts}
                   showToast={showToast}
                 />
@@ -441,6 +456,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, showToast, i
                   platform={formData.platform}
                   clientName={formData.client}
                   clientSettings={clientMap?.[formData.client]}
+                  clientId={genClientId(formData.client)}
                   showToast={showToast}
                   onResult={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
                 />

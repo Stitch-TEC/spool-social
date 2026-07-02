@@ -11,7 +11,8 @@ const TARGETS = ['linkedin', 'twitter', 'instagram', 'gmb'];
  * Generates one post per selected platform and hands them to onCreateDrafts,
  * which persists them as new draft posts for the same client.
  */
-const RepurposeBlog = ({ title, content, client, clientSettings, onCreateDrafts, showToast }) => {
+// clientId (optional suite slug) attributes the per-channel generations to the client at the gateway meter.
+const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCreateDrafts, showToast }) => {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(() => new Set(['linkedin', 'twitter']));
   const [loading, setLoading] = useState(false);
@@ -36,7 +37,7 @@ const RepurposeBlog = ({ title, content, client, clientSettings, onCreateDrafts,
         const { system, maxTokens } = buildTextContext({ platform, clientName: client, clientSettings });
         const text = await generateText(
           `Adapt the following long-form post into ${PLATFORMS[platform].name} copy that drives readers to the full piece. Make it native to the platform; don't just truncate.\n\nTITLE: ${title || '(untitled)'}\n\nPOST:\n${content}`,
-          { system, maxTokens }
+          { system, maxTokens, clientId }
         );
         drafts.push({ platform, content: text, client });
       }
