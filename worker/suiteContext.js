@@ -8,11 +8,15 @@
 
 const DEFAULT_URL = 'https://feedback.stitchtec.dev';
 
-export async function fetchClientProfile(env, slug) {
+// `tier` (cheap|standard|hard) = the TASK's difficulty — the broker sizes the aiContext slice to it
+// (tier-based injection depth; the policy lives broker-side). Default 'standard' fits Spool's copy
+// work; pass 'hard' for long-form (blog) so it gets the full context. Back-compatible: an old broker
+// simply ignores the param and returns the full context.
+export async function fetchClientProfile(env, slug, tier = 'standard') {
   if (!env || !env.CONTEXT_KEY || !slug) return null;
   const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
   try {
-    const res = await fetch(`${base}/client-profile?slug=${encodeURIComponent(slug)}`, {
+    const res = await fetch(`${base}/client-profile?slug=${encodeURIComponent(slug)}&tier=${encodeURIComponent(tier)}`, {
       headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
       signal: AbortSignal.timeout(5000),
     });

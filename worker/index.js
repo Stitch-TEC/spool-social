@@ -615,7 +615,9 @@ export default {
         try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
 
         const platform = String(body?.platform || 'gmb');
-        if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
+        // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would
+        // wrongly validate and let a junk platform through). PLATFORM_MAX is a plain object literal.
+        if (!Object.prototype.hasOwnProperty.call(PLATFORM_MAX, platform)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
 
         const content = (body?.content || '').toString().trim().slice(0, PLATFORM_MAX[platform]);
         if (!content) return json({ error: 'content is required' }, 400, cors);
@@ -886,7 +888,9 @@ export default {
         try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
 
         const platform = String(body?.platform || 'gmb');
-        if (!(platform in PLATFORM_MAX)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
+        // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would
+        // wrongly validate and let a junk platform through). PLATFORM_MAX is a plain object literal.
+        if (!Object.prototype.hasOwnProperty.call(PLATFORM_MAX, platform)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
         const bodyClientId = String(body?.clientId || '').trim().slice(0, 64);
         const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
         if (!bodyClientId || !client) return json({ error: 'client and clientId are required' }, 400, cors);
