@@ -43,7 +43,8 @@ async function spendBudget(env, principal = 'automation') {
  * records lastError); throws a BudgetExhaustedError when the budget is hit.
  */
 export async function generateForAutomation(env, origin, auto, principal = 'automation') {
-  const platform = (auto.platform in PLATFORM_META) ? auto.platform : 'gmb';
+  // Own-property check, not `in` (prototype-chain walk would let 'constructor'/'toString'/… validate).
+  const platform = Object.prototype.hasOwnProperty.call(PLATFORM_META, auto.platform) ? auto.platform : 'gmb';
   const max = PLATFORM_META[platform].maxChars;
   const contentType = auto.contentType || 'text';
   const wantText = contentType.includes('text');
@@ -64,7 +65,10 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
 
   // POM per-client context + brand (the cross-app seam) — makes the copy client-aware + imagery on-brand.
   // Non-fatal: null on any miss falls back to Spool's local clientSettings above.
-  const profile = await fetchClientProfile(env, auto.clientId);
+  // Tier-based injection depth: long-form (blog/job) earns the FULL client context; social copy gets
+  // the standard slice (the broker sizes it — policy lives there).
+  const ctxTier = PLATFORM_META[platform]?.longForm ? 'hard' : 'standard';
+  const profile = await fetchClientProfile(env, auto.clientId, ctxTier);
   // Presence-safe observability (no secret/content) so `wrangler tail` shows whether the seam is feeding
   // this run — silent degradation was the one ops gap flagged in review.
   if (env.CONTEXT_KEY) {
