@@ -14,8 +14,8 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { probeClientProfile, fetchClientRoster } from './suiteContext.js';
-import { PLATFORM_META, PLATFORM_CADENCE } from '../src/generation/prompts.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster } from './suiteContext.js';
+import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
 // Per-platform character caps, derived from the shared PLATFORM_META so the
@@ -378,11 +378,40 @@ export default {
       // (it's contextual attribution, not auth — the gateway meters 'unattributed' when absent).
       const genClientId = (body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) || undefined;
 
+      // POM per-client context + brand + asset manifest (the cross-app seam) — the SAME injection
+      // the automation path does, now for interactive generation. The SPA builds the base
+      // system/prompt; the profile is fetched and appended SERVER-side so CONTEXT_KEY never
+      // reaches the browser. `platform` (optional in the body) sizes the fetch tier via the
+      // shared contextTierForPlatform rule (long-form earns the full context; absent/unknown →
+      // 'standard'). Fail-OPEN by design: fetchClientProfile returns null on any miss (no key,
+      // unknown slug, timeout — it carries its own 5s cap, no retries) and generation proceeds
+      // without it. A quota denial downstream still surfaces as 429 — that logic is untouched.
+      const genPlatform = typeof body?.platform === 'string' ? body.platform : '';
+      const profile = genClientId ? await fetchClientProfile(env, genClientId, contextTierForPlatform(genPlatform)) : null;
+      // Presence-safe observability (no secret/content), same as the automation path — so
+      // `wrangler tail` shows whether the seam fed an interactive call or silently degraded.
+      if (genClientId && env.CONTEXT_KEY) {
+        console.log(
+          profile
+            ? `[suite-context] ${genClientId}: profile injected (${url.pathname}, ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'}, assets=${profile.assets ? (profile.assets.count ?? 0) : 'n/a'})`
+            : `[suite-context] ${genClientId}: no profile — generating without it (${url.pathname})`,
+        );
+      }
+
       try {
         if (url.pathname === '/api/text') {
           const image = body?.imageUrl ? await resolveImage(body.imageUrl, env) : undefined;
+          // Append the client context + asset manifest to the caller-built system instruction —
+          // the shared renderers keep the framing identical to buildTextContext's own output.
+          let system = body?.system ? String(body.system).slice(0, 4000) : undefined;
+          if (profile) {
+            const extras = [renderPomContextLine(profile.aiContext), renderPomAssetsLine(profile.assets)]
+              .filter(Boolean)
+              .join('\n');
+            if (extras) system = system ? `${system}\n${extras}` : extras;
+          }
           const text = await generateText(env, prompt, {
-            system: body?.system ? String(body.system).slice(0, 4000) : undefined,
+            system,
             temperature:
               typeof body?.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2
                 ? body.temperature
@@ -394,8 +423,11 @@ export default {
           return json({ text }, 200, cors);
         }
 
-        // Image: generate -> store in R2 -> return a URL.
-        const { b64, mime } = await generateImage(env, prompt, { clientId: genClientId });
+        // Image: generate -> store in R2 -> return a URL. The POM brand palette is appended the
+        // same way buildImagePrompt does for automation drafts (space-joined sentence).
+        const brandPart = profile ? renderPomBrandPart(profile.brand) : '';
+        const imgPrompt = brandPart ? `${prompt} ${brandPart}` : prompt;
+        const { b64, mime } = await generateImage(env, imgPrompt, { clientId: genClientId });
         const owner = auth.mode === 'firebase' ? auth.principal : 'internal';
         const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner);
         return json({ url: stored.url, key: stored.key }, 200, cors);

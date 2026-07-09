@@ -232,7 +232,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     try {
       const meta = await generateText(
         `Write a compelling SEO meta description (max 155 characters, one sentence, no quotes) for the post below.\n\nTITLE: ${formData.title || ''}\n\nPOST:\n${formData.content}`,
-        { maxTokens: 80, clientId: genClientId(formData.client) }
+        { maxTokens: 80, clientId: genClientId(formData.client), platform: formData.platform }
       );
       setFormData(prev => ({ ...prev, metaDescription: meta.trim().slice(0, 200) }));
       showToast?.('Meta description generated');
@@ -571,6 +571,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
           onClose={() => setPickerOpen(false)}
           onSelect={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
           showToast={showToast}
+          /* The post's client resolved to the canonical SLUG (same genClientId chain the AI calls
+             use: stamped id → clientIdByName → branding doc → slugify fallback) so the picker can
+             also offer the client's curated library — the slug-keyed folder POM's Assets card shares. */
+          clientKey={genClientId(formData.client)}
+          clientName={formData.client}
         />
       )}
     </div>
