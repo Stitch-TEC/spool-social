@@ -10,7 +10,7 @@ const MEDIA_CAP = 50; // mirrors MEDIA_PER_CLIENT in wrangler.toml
  * Standalone per-client media library: browse, upload (optimized), add video-URL
  * references, and delete. Opened from the sidebar.
  */
-const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', showToast }) => {
+const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientIdFor, showToast }) => {
   useEscapeKey(onClose);
   const [client, setClient] = useState(initialClient || uniqueClients[0] || '');
   const [items, setItems] = useState(null); // null = loading
@@ -20,14 +20,21 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', showToa
   const [reloadKey, setReloadKey] = useState(0);
   const fileRef = useRef(null);
 
+  // The library is keyed by the canonical SLUG (the universal join key), so it lines up with the
+  // POM Assets card + the AI's asset manifest. The dropdown still shows/holds the display name;
+  // this resolves it to the slug for the API. Falls back to the raw value if no resolver is passed
+  // (the worker slugifies either form, so a name still works — it just may not match a hand-authored
+  // short slug for the ~half of clients whose slug isn't slugify(name)).
+  const clientKey = client ? (clientIdFor ? clientIdFor(client) : client) : '';
+
   useEffect(() => {
-    if (!client) return; // render shows the "select a client" state
+    if (!clientKey) return; // render shows the "select a client" state
     let live = true;
-    listClientMedia(client)
+    listClientMedia(clientKey)
       .then(m => { if (live) { setItems(m); setError(null); } })
       .catch(err => { if (live) { setError(err.message || 'Could not load media'); setItems([]); } });
     return () => { live = false; };
-  }, [client, reloadKey]);
+  }, [clientKey, reloadKey]);
 
   const refresh = () => { setItems(null); setError(null); setReloadKey(k => k + 1); };
   const pickClient = (e) => { setItems(null); setError(null); setClient(e.target.value); };
@@ -39,7 +46,7 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', showToa
     setBusy(true);
     try {
       const optimized = await processImageFile(file, { maxWidth: 2048, quality: 0.82 });
-      await uploadMedia(client, optimized);
+      await uploadMedia(clientKey, optimized);
       showToast?.('Image added to library');
       refresh();
     } catch (err) {
@@ -54,7 +61,7 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', showToa
     if (!v || !client || busy) return;
     setBusy(true);
     try {
-      await addVideoUrl(client, v);
+      await addVideoUrl(clientKey, v);
       showToast?.('Video added');
       setVideoUrl('');
       refresh();

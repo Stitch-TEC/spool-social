@@ -976,6 +976,7 @@ const App = () => {
           onClose={() => setIsMediaOpen(false)}
           uniqueClients={uniqueClients}
           initialClient={filterClient || ''}
+          clientIdFor={clientIdFor}
           showToast={showToast}
         />
       )}
