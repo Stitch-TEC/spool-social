@@ -29,7 +29,9 @@ async function postJSON(path, payload) {
 }
 
 /** Generate an image from a prompt. Resolves to a hosted image URL.
- *  `opts` may include { clientId } — the suite slug, for per-client usage metering. */
+ *  `opts` may include { clientId, platform } — clientId (the suite slug) attributes usage at the
+ *  gateway meter AND triggers the server-side POM brand injection; platform sizes the profile
+ *  fetch tier (long-form → full context). */
 export async function generateImage(prompt, opts = {}) {
   const { url } = await postJSON('/api/generate', { prompt, ...opts });
   return url;
@@ -37,9 +39,10 @@ export async function generateImage(prompt, opts = {}) {
 
 /**
  * Generate text/copy from a prompt. Resolves to the generated string.
- * `opts` may include { system, temperature, maxTokens, imageUrl, clientId } — imageUrl
+ * `opts` may include { system, temperature, maxTokens, imageUrl, clientId, platform } — imageUrl
  * makes it a multimodal call (e.g. alt text from the actual image); clientId (suite slug)
- * attributes the usage to that client at the gateway meter.
+ * attributes the usage to that client at the gateway meter AND triggers the server-side POM
+ * client-context injection; platform sizes the profile fetch tier (long-form → full context).
  */
 export async function generateText(prompt, opts = {}) {
   const { text } = await postJSON('/api/text', { prompt, ...opts });

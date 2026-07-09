@@ -16,7 +16,7 @@
 import { generateText } from './gemini.js';
 import { resolveDraftImage } from './media.js';
 import { checkRateLimit } from './ratelimit.js';
-import { buildTextContext, buildImagePrompt, PLATFORM_META } from '../src/generation/prompts.js';
+import { buildTextContext, buildImagePrompt, contextTierForPlatform, PLATFORM_META } from '../src/generation/prompts.js';
 import { createPost, getClientSettings, listAutomations, updateAutomation } from './firestore.js';
 import { fetchClientProfile } from './suiteContext.js';
 
@@ -66,15 +66,15 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   // POM per-client context + brand (the cross-app seam) — makes the copy client-aware + imagery on-brand.
   // Non-fatal: null on any miss falls back to Spool's local clientSettings above.
   // Tier-based injection depth: long-form (blog/job) earns the FULL client context; social copy gets
-  // the standard slice (the broker sizes it — policy lives there).
-  const ctxTier = PLATFORM_META[platform]?.longForm ? 'hard' : 'standard';
-  const profile = await fetchClientProfile(env, auto.clientId, ctxTier);
+  // the standard slice (the broker sizes it — policy lives there; the rule is the shared
+  // contextTierForPlatform, also used by the interactive generation paths in index.js).
+  const profile = await fetchClientProfile(env, auto.clientId, contextTierForPlatform(platform));
   // Presence-safe observability (no secret/content) so `wrangler tail` shows whether the seam is feeding
   // this run — silent degradation was the one ops gap flagged in review.
   if (env.CONTEXT_KEY) {
     console.log(
       profile
-        ? `[suite-context] ${auto.clientId}: profile loaded (ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'})`
+        ? `[suite-context] ${auto.clientId}: profile loaded (ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'}, assets=${profile.assets ? (profile.assets.count ?? 0) : 'n/a'})`
         : `[suite-context] ${auto.clientId}: no profile — falling back to local settings`,
     );
   }
@@ -83,7 +83,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   if (wantText) {
     const { system, maxTokens } = buildTextContext({
       platform, tone: auto.tone, length: auto.length,
-      clientName: auto.client, clientSettings, pomContext: profile?.aiContext
+      clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets
     });
     const out = await generateText(env, seed, { system, maxTokens, clientId: auto.clientId });
     content = String(out || '').trim().slice(0, max);

@@ -66,7 +66,7 @@ const AIGenerate = ({
       if (mode === 'hashtags') {
         const tags = (await generateText(
           `Suggest 3–6 relevant, high-quality hashtags for the post below. Return ONLY the hashtags separated by spaces — nothing else.\n\nPOST:\n${currentText}`,
-          { system, maxTokens: 60, clientId }
+          { system, maxTokens: 60, clientId, platform }
         )).trim();
         // Append to the LATEST content (avoids clobbering edits made mid-request).
         if (onAppend) onAppend(tags);
@@ -78,12 +78,12 @@ const AIGenerate = ({
 
       let result;
       if (mode === 'generate') {
-        result = await generateText(p, { system, maxTokens, clientId });
+        result = await generateText(p, { system, maxTokens, clientId, platform });
       } else {
         const guidance = p ? ` Additional guidance: ${p}.` : '';
         result = await generateText(
           `Rewrite and improve the post below for this platform and brand, keeping its core message.${guidance}\n\nPOST:\n${currentText}`,
-          { system, maxTokens, clientId }
+          { system, maxTokens, clientId, platform }
         );
       }
       onResult(result);
@@ -102,7 +102,7 @@ const AIGenerate = ({
     setLoading(true);
     try {
       const fullPrompt = buildImagePrompt({ prompt: p, style, platform, clientName, clientSettings });
-      const url = await generateImage(fullPrompt, { clientId });
+      const url = await generateImage(fullPrompt, { clientId, platform });
       onResult(url);
       close();
       showToast?.('Image generated');

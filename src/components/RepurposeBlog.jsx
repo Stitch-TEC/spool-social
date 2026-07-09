@@ -37,7 +37,7 @@ const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCre
         const { system, maxTokens } = buildTextContext({ platform, clientName: client, clientSettings });
         const text = await generateText(
           `Adapt the following long-form post into ${PLATFORMS[platform].name} copy that drives readers to the full piece. Make it native to the platform; don't just truncate.\n\nTITLE: ${title || '(untitled)'}\n\nPOST:\n${content}`,
-          { system, maxTokens, clientId }
+          { system, maxTokens, clientId, platform }
         );
         drafts.push({ platform, content: text, client });
       }

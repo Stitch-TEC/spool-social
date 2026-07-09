@@ -23,7 +23,15 @@ export async function fetchClientProfile(env, slug, tier = 'standard') {
     if (!res.ok) return null;
     const d = await res.json();
     if (!d || !d.ok) return null;
-    return { name: d.name || '', aiContext: d.aiContext || '', brand: d.brand || '' };
+    return {
+      name: d.name || '',
+      aiContext: d.aiContext || '',
+      brand: d.brand || '',
+      // Optional asset-library manifest (standard/hard tiers only): { count, images, videos,
+      // recent:[{name,type,provider?}] } — counts + filenames, never blobs. Absent on old
+      // brokers / cheap tier / any broker-side miss; consumers must treat it as optional.
+      assets: d.assets && typeof d.assets === 'object' ? d.assets : undefined,
+    };
   } catch {
     return null;
   }
