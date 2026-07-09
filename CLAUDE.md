@@ -59,6 +59,10 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - `src/generation/prompts.js` — AI prompt builders. `src/stitch-apps.js` — shared app registry.
 - `worker/` — `index.js` (router + cron `scheduled()`), `auth.js`, `firestore.js`, `gemini.js`
   (gateway + direct fallback), `media.js` (R2), `ratelimit.js`, `automation.js`, `suiteContext.js`.
+  The curated media library is keyed by the canonical **slug** (`slugifyClient` in `index.js` maps a
+  display name OR a slug to the same folder) so Spool's editor and POM's Assets card (via the
+  feedback-worker broker `/spool/assets`) share ONE library. The internal key can only manage the
+  OWNER namespace (`canManageKey`).
 - `scripts/admin.mjs` — owner/RBAC CLI (needs a Firebase service-account key, kept out of repo).
 
 ## Deeper context

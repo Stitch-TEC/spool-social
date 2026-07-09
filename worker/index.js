@@ -111,6 +111,17 @@ async function resolveImage(src, env) {
   return null;
 }
 
+// Canonicalize a client identifier to the SLUG used as the R2 library folder. Mirrors
+// src/config/roles.js `slugifyClientId` EXACTLY (kept inline so the worker bundle stays
+// self-contained; the algorithm is stable — if roles.js ever changes, change both). Both a
+// display name ("OMNI NDE") and a slug ("omni-nde") map to the same slug, so the in-app editor
+// (which passes the display name) and the POM Assets card via the broker (which passes the slug)
+// share ONE slug-keyed library — the suite's universal join key, never the mutable name. Idempotent
+// on an already-slug input.
+function slugifyClient(name) {
+  return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+}
+
 // Accept only YouTube / Vimeo / direct video-file URLs as references.
 function validateVideoUrl(raw) {
   let u;
@@ -159,8 +170,14 @@ async function resolveShareCaller(auth, env) {
 }
 
 // Owner-scoped delete authorization for an R2 key.
+// The internal key (apikey mode — the broker/tools) may only manage objects under the OWNER's
+// namespace, NOT any `library/`/`generated/` key. Scoping to `library/${OWNER_UID}/` closes a
+// cross-owner reach: a client-member's own uploads live under `library/<theirUid>/…`, so a bare
+// `library/` allowance would let a brokered delete (whose tenant gate only checks the client
+// segment) land in another owner's namespace. The broker's per-request tenant gate + this owner
+// gate are belt-and-braces.
 function canManageKey(auth, env, key) {
-  if (auth.mode === 'apikey') return key.startsWith('library/') || key.startsWith('generated/');
+  if (auth.mode === 'apikey') return key.startsWith(`library/${env.OWNER_UID}/`) || key.startsWith(`generated/${env.OWNER_UID}/`) || key.startsWith('generated/internal/');
   if (key.startsWith(`library/${auth.principal}/`) || key.startsWith(`generated/${auth.principal}/`)) return true;
   if (auth.principal === env.OWNER_UID && key.startsWith('generated/internal/')) return true;
   return false;
@@ -428,7 +445,9 @@ export default {
         try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
         const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
         if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
-        const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
+        // Key the library by the canonical SLUG (a display name or a slug both resolve here), so the
+        // in-app editor and the POM Assets card share one folder and two orgs can never collide.
+        const client = slugifyClient(body?.client || '');
         if (!client) return json({ error: 'client is required' }, 400, cors);
 
         const base = `library/${owner}/${client}/`;
@@ -466,7 +485,8 @@ export default {
         if (clientParam) {
           const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
           if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
-          const client = clientParam.trim().replace(/\//g, '').slice(0, 50);
+          // Same slug canonicalization as POST — list the slug-keyed folder.
+          const client = slugifyClient(clientParam);
           const media = await listMediaPrefix(env, url.origin, `library/${owner}/${client}/`);
           return json({ media, count: media.length }, 200, cors);
         }
