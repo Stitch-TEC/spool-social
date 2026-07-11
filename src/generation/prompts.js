@@ -12,6 +12,7 @@
 // PLATFORMS sources maxChars/longForm from here so the two never drift.
 export const PLATFORM_META = {
   gmb:       { id: 'gmb',       maxChars: 1500,   longForm: false },
+  facebook:  { id: 'facebook',  maxChars: 63206,  longForm: false },
   linkedin:  { id: 'linkedin',  maxChars: 3000,   longForm: false },
   twitter:   { id: 'twitter',   maxChars: 280,    longForm: false },
   instagram: { id: 'instagram', maxChars: 2200,   longForm: false },
@@ -25,6 +26,7 @@ export const PLATFORM_META = {
 // pre-fills the create form. Both the Worker and the admin UI read this.
 export const PLATFORM_CADENCE = {
   gmb:       { minHours: 12, defaultHours: 48 },
+  facebook:  { minHours: 12, defaultHours: 48 },
   linkedin:  { minHours: 24, defaultHours: 72 },
   twitter:   { minHours: 6,  defaultHours: 24 },
   instagram: { minHours: 12, defaultHours: 24 },
@@ -36,6 +38,7 @@ export const PLATFORM_CADENCE = {
 // match each channel's norms and limits.
 export const PLATFORM_AI_GUIDANCE = {
   gmb: 'a Google Business Profile update — local and action-oriented with a clear call to action; avoid hashtags.',
+  facebook: 'a Facebook post — friendly and community-oriented; open with a short hook, 1–2 approachable paragraphs, and an optional call to action; hashtags are fine but keep them minimal.',
   linkedin: 'a LinkedIn post — professional and insightful, 1–3 short paragraphs; up to ~3 relevant hashtags.',
   twitter: 'an X/Twitter post — punchy and concise; it MUST stay under 280 characters; at most 1–2 hashtags.',
   instagram: 'an Instagram caption — engaging and friendly; a few relevant hashtags grouped at the end.',
@@ -68,6 +71,7 @@ export const IMAGE_STYLE_PRESETS = [
 // Platform-appropriate aspect-ratio guidance for generated images.
 export const PLATFORM_IMAGE_ASPECT = {
   gmb: 'landscape 4:3',
+  facebook: 'landscape 1.91:1',
   linkedin: 'landscape 1.91:1',
   twitter: 'landscape 16:9',
   instagram: 'square 1:1',

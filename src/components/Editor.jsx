@@ -27,6 +27,7 @@ const toLocalISOString = (date) => {
 // Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
 const PLATFORM_ACTIVE_CLASSES = {
   gmb: 'border-blue-500 bg-blue-50',
+  facebook: 'border-[#1877F2] bg-blue-50',
   linkedin: 'border-sky-500 bg-sky-50',
   twitter: 'border-slate-800 bg-slate-50',
   instagram: 'border-pink-500 bg-pink-50',

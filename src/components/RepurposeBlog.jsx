@@ -4,7 +4,7 @@ import { generateText } from '../utils/generationApi';
 import { buildTextContext } from '../utils/aiPrompt';
 import { PLATFORMS } from '../constants';
 
-const TARGETS = ['linkedin', 'twitter', 'instagram', 'gmb'];
+const TARGETS = ['linkedin', 'twitter', 'instagram', 'facebook', 'gmb'];
 
 /**
  * Turn the current long-form draft into channel-tailored social drafts.
