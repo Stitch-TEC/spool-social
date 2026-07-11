@@ -219,6 +219,28 @@ export const postsToJSON = (posts) => {
 export const postFingerprint = (p) =>
   `${(p.client || '').trim().toLowerCase()}|${p.platform || ''}|${(p.content || '').trim()}`;
 
+/**
+ * Restrict a post list to an explicit set of client display names. A null /
+ * empty selection means "no filter" (return everything) — the caller decides
+ * whether that's "all clients" or "nothing" before calling. Used by both the
+ * export scope picker and the operator's per-client import filter.
+ */
+export const filterPostsByClients = (posts, clientNames) => {
+  if (!clientNames || clientNames.length === 0) return (posts || []).slice();
+  const keep = new Set(clientNames);
+  return (posts || []).filter((p) => keep.has(p.client));
+};
+
+/**
+ * Force every row's display `client` to a single name — used when a client
+ * member imports: their content can only ever land in their OWN tenant, so the
+ * `client` column in the uploaded file is ignored (the immutable clientId is
+ * pinned server-side on write, and the Firestore rules enforce it regardless).
+ * Idempotent: the App write path re-pins as defense-in-depth.
+ */
+export const repinPostsToClient = (posts, clientName) =>
+  (posts || []).map((p) => ({ ...p, client: clientName }));
+
 /** Triggers a browser download of a text file. */
 export const downloadFile = (text, filename, mime = 'text/csv;charset=utf-8;') => {
   const blob = new Blob([text], { type: mime });

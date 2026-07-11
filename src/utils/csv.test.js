@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { convertToCSV, parseCSV, parseJSON, parseImportFile, postsToJSON, postFingerprint, CSV_COLUMNS } from './csv';
+import { convertToCSV, parseCSV, parseJSON, parseImportFile, postsToJSON, postFingerprint, filterPostsByClients, repinPostsToClient, CSV_COLUMNS } from './csv';
 
 describe('csv round-trip', () => {
   it('preserves content containing commas, quotes and newlines', () => {
@@ -136,5 +136,42 @@ describe('postFingerprint', () => {
   it('matches on client+platform+content, case-insensitive client', () => {
     expect(postFingerprint({ client: 'Acme', platform: 'gmb', content: 'x' }))
       .toBe(postFingerprint({ client: 'acme', platform: 'gmb', content: 'x' }));
+  });
+});
+
+describe('filterPostsByClients', () => {
+  const posts = [
+    { client: 'Acme', content: 'a' },
+    { client: 'Beta', content: 'b' },
+    { client: 'Acme', content: 'c' },
+  ];
+
+  it('returns everything (a copy) when the selection is null or empty', () => {
+    expect(filterPostsByClients(posts, null)).toHaveLength(3);
+    expect(filterPostsByClients(posts, [])).toHaveLength(3);
+    expect(filterPostsByClients(posts, null)).not.toBe(posts); // copy, not the same ref
+  });
+
+  it('keeps only the named clients', () => {
+    expect(filterPostsByClients(posts, ['Acme']).map(p => p.content)).toEqual(['a', 'c']);
+    expect(filterPostsByClients(posts, ['Beta'])).toHaveLength(1);
+    expect(filterPostsByClients(posts, ['Nope'])).toHaveLength(0);
+  });
+
+  it('tolerates a null post list', () => {
+    expect(filterPostsByClients(null, ['Acme'])).toEqual([]);
+  });
+});
+
+describe('repinPostsToClient', () => {
+  it('overwrites every row\'s client, leaving other fields intact', () => {
+    const rows = [
+      { client: 'Acme', content: 'a', platform: 'gmb' },
+      { client: 'Evil Corp', content: 'b', platform: 'blog' },
+    ];
+    const pinned = repinPostsToClient(rows, 'MyClient');
+    expect(pinned.map(p => p.client)).toEqual(['MyClient', 'MyClient']);
+    expect(pinned[0]).toMatchObject({ content: 'a', platform: 'gmb' });
+    expect(rows[0].client).toBe('Acme'); // does not mutate the input
   });
 });

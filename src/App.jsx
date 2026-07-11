@@ -13,7 +13,7 @@ import {
 
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
-import { convertToCSV, parseImportFile, postsToJSON, downloadFile } from './utils/csv';
+import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -31,7 +31,7 @@ import ReviewModal from './components/ReviewModal';
 import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
-import ImportModal from './components/ImportModal';
+import ImportExportModal from './components/ImportExportModal';
 import BulkActionBar from './components/BulkActionBar';
 import ShareManager from './components/ShareManager';
 import AdminPanel from './components/AdminPanel';
@@ -70,7 +70,7 @@ const App = () => {
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isAutomationsOpen, setIsAutomationsOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
-  const [importData, setImportData] = useState(null); // { posts, fileName } — drives the import-preview modal
+  const [isDataOpen, setIsDataOpen] = useState(false); // Import & Export modal
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -294,42 +294,28 @@ const App = () => {
     }
   }, [isReadOnly, showToast]);
 
-  // Parse a CSV/JSON file and open the preview modal — nothing is written until
-  // the user confirms (see handleConfirmImport). parseImportFile normalizes &
-  // sanitizes every row (single source of truth for field mapping).
-  const handleImportFile = useCallback((e) => {
-    if (isReadOnly) return;
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const parsed = parseImportFile(event.target.result, file.name);
-        setImportData({ posts: parsed, fileName: file.name });
-      } catch (err) {
-        console.error("Import parse error:", err);
-        showToast("Couldn't read that file — use a Spool CSV or JSON export", "error");
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = ''; // Reset input so re-selecting the same file fires again
-  }, [isReadOnly, showToast]);
-
-  // Commit the previewed rows. Rows are already sanitized by parseImportFile;
-  // here we only attach ownership/timestamps and chunk to the 500-op batch cap.
-  const handleConfirmImport = useCallback(async (rows) => {
-    if (isReadOnly || !user || !rows?.length) { setImportData(null); return; }
+  // Commit previewed import rows. Rows are already sanitized by parseImportFile
+  // (in ImportExportModal); here we attach ownership/timestamps and chunk to the
+  // 500-op batch cap. Returns true on success so the modal can close.
+  //
+  // 🔒 SECURITY: a client member's rows are FORCE-pinned to their own client
+  // (name + immutable clientId), ignoring the file's client column — mirrors the
+  // save/create-drafts write paths. firestore.rules enforce the same boundary
+  // (isEntityMember(clientId) && uid == ownerUid()), so a mislabelled or hostile
+  // file can never land content in another tenant.
+  const handleImportRows = useCallback(async (rows) => {
+    if (isReadOnly || !user || !rows?.length) return false;
     try {
       const now = new Date().toISOString();
       const CHUNK = 450; // Firestore writeBatch hard limit is 500 ops
       for (let i = 0; i < rows.length; i += CHUNK) {
         const batch = writeBatch(db);
         rows.slice(i, i + CHUNK).forEach(item => {
+          const client = isClientMember ? (myClientName || myClientId) : item.client;
           batch.set(doc(collection(db, 'posts')), {
             uid: OPERATOR_UID,
-            clientId: clientIdFor(item.client),
-            client: item.client,
+            clientId: isClientMember ? myClientId : clientIdFor(item.client),
+            client,
             content: item.content,
             title: item.title || '',
             altText: item.altText || '',
@@ -350,13 +336,13 @@ const App = () => {
         await batch.commit();
       }
       showToast(`Imported ${rows.length} thread${rows.length === 1 ? '' : 's'}! 🚀`);
+      return true;
     } catch (err) {
       console.error("Import error:", err);
       showToast("Import failed. Please try again.", "error");
-    } finally {
-      setImportData(null);
+      return false;
     }
-  }, [isReadOnly, user, showToast, clientIdFor]);
+  }, [isReadOnly, user, isClientMember, myClientName, myClientId, showToast, clientIdFor]);
 
   const handleRequestChanges = useCallback(async (postId, feedback) => {
     // 🔒 SECURITY: Input Validation & Sanitization
@@ -805,8 +791,7 @@ const App = () => {
             uniqueClients={uniqueClients}
             onOpenClientSettings={() => setIsClientSettingsOpen(true)}
             onOpenMedia={() => setIsMediaOpen(true)}
-            onImport={handleImportFile}
-            onExport={handleExport}
+            onOpenData={() => setIsDataOpen(true)}
             isOperator={isOperator}
             onOpenAdmin={() => setIsAdminOpen(true)}
             onOpenAutomations={() => setIsAutomationsOpen(true)}
@@ -996,13 +981,15 @@ const App = () => {
           showToast={showToast}
         />
       )}
-      {importData && (
-        <ImportModal
-          posts={importData.posts}
-          existingPosts={posts}
-          fileName={importData.fileName}
-          onConfirm={handleConfirmImport}
-          onCancel={() => setImportData(null)}
+      {isDataOpen && !isReadOnly && (isOperator || isClientMember) && (
+        <ImportExportModal
+          posts={posts}
+          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+          isOperator={isOperator}
+          scopeClient={isOperator ? null : (myClientName || myClientId)}
+          onImport={handleImportRows}
+          onClose={() => setIsDataOpen(false)}
+          showToast={showToast}
         />
       )}
     </ErrorBoundary>
