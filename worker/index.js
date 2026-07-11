@@ -310,7 +310,10 @@ export default {
       try { body = await request.json(); } catch { return json({ ok: false, error: 'Invalid JSON' }, 400, cors); }
       const email = String(body?.email || '').trim().toLowerCase();
       const action = body?.action === 'revoke' ? 'revoke' : body?.action === 'grant' ? 'grant' : '';
-      const clientId = String(body?.clientId || '').trim();
+      // Lowercase the slug (Sender's receiver already does) so a mixed-case clientId can't produce a
+      // users doc Spool's login lookup — which lowercases — then fails to match. Slugs are lowercase by
+      // convention; this is a fail-safe backstop.
+      const clientId = String(body?.clientId || '').trim().toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'valid email required' }, 400, cors);
       if (!action) return json({ ok: false, error: "action must be 'grant' or 'revoke'" }, 400, cors);
 
