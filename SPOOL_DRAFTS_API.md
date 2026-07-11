@@ -13,7 +13,7 @@ review + client-approval flow. Drop this file in a Claude project and say e.g.
 | field | required | notes |
 |---|---|---|
 | `client` | ✅ | client/workspace name (existing or new) |
-| `platform` | ✅ | `gmb` · `linkedin` · `twitter` · `instagram` · `blog` · `job` |
+| `platform` | ✅ | `gmb` · `facebook` · `linkedin` · `twitter` · `instagram` · `blog` · `job` |
 | `content` | ✅ | post body (Markdown for `blog`/`job`); capped to the platform's limit |
 | `title` | – | long-form only (`blog`/`job`) |
 | `altText` | – | image alt text |

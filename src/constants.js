@@ -1,4 +1,4 @@
-import { MapPin, Linkedin, Twitter, Instagram, FileText, Briefcase } from 'lucide-react';
+import { MapPin, Facebook, Linkedin, Twitter, Instagram, FileText, Briefcase } from 'lucide-react';
 import { PLATFORM_META } from './generation/prompts';
 
 // Display metadata (icons/colors/placeholders) for each platform. The character
@@ -15,6 +15,17 @@ export const PLATFORMS = {
     url: 'https://business.google.com',
     placeholder: 'Share an update, offer, or event...',
     maxChars: PLATFORM_META.gmb.maxChars
+  },
+  facebook: {
+    id: 'facebook',
+    name: 'Facebook',
+    color: 'bg-[#1877F2]',
+    text: 'text-[#1877F2]',
+    border: 'border-[#1877F2]',
+    icon: Facebook,
+    url: 'https://www.facebook.com',
+    placeholder: 'Share an update with your community...',
+    maxChars: PLATFORM_META.facebook.maxChars
   },
   linkedin: {
     id: 'linkedin',

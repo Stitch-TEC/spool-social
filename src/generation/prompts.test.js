@@ -26,4 +26,11 @@ describe('platform table parity', () => {
       expect(typeof PLATFORM_IMAGE_ASPECT[id]).toBe('string');
     }
   });
+
+  it('includes facebook as a first-class social platform with a rendered icon', () => {
+    expect(PLATFORM_META.facebook).toBeDefined();
+    expect(PLATFORM_META.facebook.longForm).toBe(false);
+    expect(PLATFORMS.facebook?.name).toBe('Facebook');
+    expect(PLATFORMS.facebook?.icon).toBeTruthy(); // lucide Facebook component wired in
+  });
 });
