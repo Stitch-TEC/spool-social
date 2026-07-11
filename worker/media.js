@@ -29,7 +29,16 @@ export function mediaUrl(origin, key) {
 
 export async function storeImage(env, origin, bytes, mime, owner) {
   const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'bin';
-  const key = `generated/${owner}/${crypto.randomUUID()}.${ext}`;
+  // Content-addressed key: identical bytes hash to the same key, so the same image
+  // is stored ONCE and every caller (this API, the editor, the automation runner)
+  // gets the same /media URL back — no duplicate R2 objects when a photo is reused
+  // across posts. put() over an existing key just re-writes identical bytes. Safe
+  // with the nightly orphan GC, which is reference-based: a shared key is deleted
+  // only once NO post references it. (AI-generated images have unique bytes, so
+  // they're unaffected — they simply get a hash name instead of a random UUID.)
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  const key = `generated/${owner}/${hash}.${ext}`;
   await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
   return { url: mediaUrl(origin, key), key };
 }
