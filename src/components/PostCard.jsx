@@ -1,18 +1,19 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
+  const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
 
   const statusPill = isPosted ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
     : isScheduled ? 'bg-amber-100 text-amber-800 border-amber-200'
@@ -137,19 +138,31 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
             </button>
             <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Open platform app" aria-label="Open platform app" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} /><span className="hidden sm:inline">Open App</span></a>
-            <select
-              value={post.status}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => { e.stopPropagation(); onStatusChange(post.id, e.target.value); }}
-              aria-label="Set post status"
-              title="Set status"
-              className={`text-xs font-bold rounded-full px-2.5 py-1.5 border cursor-pointer transition-colors ${statusPill}`}
-            >
-              <option value={STATUS.DRAFT}>Draft</option>
-              <option value={STATUS.SCHEDULED}>Scheduled</option>
-              <option value={STATUS.POSTED}>Posted</option>
-              {isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
-            </select>
+            {/* Changes requested → the primary action is sending the revised post
+                back to the client (reset to pending), not moving toward posted. */}
+            {isChangesRequested && onResubmit ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); onResubmit(post.id); }}
+                title="Send the revised post back to the client for review"
+                className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+              >
+                <RefreshCw size={13} /> Back for review
+              </button>
+            ) : (
+              <select
+                value={post.status}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => { e.stopPropagation(); onStatusChange(post.id, e.target.value); }}
+                aria-label="Set post status"
+                title="Set status"
+                className={`text-xs font-bold rounded-full px-2.5 py-1.5 border cursor-pointer transition-colors ${statusPill}`}
+              >
+                <option value={STATUS.DRAFT}>Draft</option>
+                <option value={STATUS.SCHEDULED}>Scheduled</option>
+                <option value={STATUS.POSTED}>Posted</option>
+                {isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
+              </select>
+            )}
           </div>
         )}
 

@@ -52,4 +52,13 @@ describe('PostCard', () => {
     fireEvent.change(sel, { target: { value: 'scheduled' } });
     expect(onStatusChange).toHaveBeenCalledWith('p1', 'scheduled');
   });
+
+  it('offers "Back for review" (replacing the status selector) when changes are requested', () => {
+    const onResubmit = vi.fn();
+    const post = { ...basePost, approvalStatus: 'changes_requested', feedback: 'Tighten the CTA' };
+    render(<PostCard post={post} onEdit={() => {}} onStatusChange={() => {}} onResubmit={onResubmit} />);
+    expect(screen.queryByLabelText('Set post status')).toBeNull();
+    fireEvent.click(screen.getByText('Back for review'));
+    expect(onResubmit).toHaveBeenCalledWith('p1');
+  });
 });

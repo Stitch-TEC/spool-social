@@ -368,6 +368,23 @@ const App = () => {
     }
   }, [isReadOnly, user, isClientMember, myClientName, myClientId, showToast, clientIdFor]);
 
+  // Operator: after addressing client feedback, send the revised post back for
+  // another review round — reset approvalStatus to pending and clear the current
+  // feedback note (the full feedbackThread history is preserved for the reviewer).
+  const handleResubmitForReview = useCallback(async (postId) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), {
+        approvalStatus: APPROVAL_STATUS.PENDING,
+        feedback: '',
+        updatedAt: new Date().toISOString()
+      });
+      showToast("Sent back for review 🔁");
+    } catch {
+      showToast("Couldn't update — please try again", "error");
+    }
+  }, [isReadOnly, showToast]);
+
   const handleRequestChanges = useCallback(async (postId, feedback) => {
     // 🔒 SECURITY: Input Validation & Sanitization
     const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
@@ -1034,6 +1051,7 @@ const App = () => {
                     onArchive={handleArchivePost}
                     onRestore={handleRestorePost}
                     onUseTemplate={showTemplates ? handleUseTemplate : undefined}
+                    onResubmit={handleResubmitForReview}
                     onCreate={() => setView('editor')}
                     selectable={!isReadOnly && !showTemplates && selectionMode}
                     selectedIds={selectedIds}
