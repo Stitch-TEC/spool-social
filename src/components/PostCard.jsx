@@ -1,18 +1,24 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
+  const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+
+  const statusPill = isPosted ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
+    : isScheduled ? 'bg-amber-100 text-amber-800 border-amber-200'
+    : isArchived ? 'bg-slate-200 text-slate-500 border-slate-300'
+    : 'bg-slate-100 text-slate-600 border-slate-200';
 
   // ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat and memoize the result.
   // This avoids redundant formatting work on every render, leveraging referentially
@@ -64,7 +70,9 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <div>
                 <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
                 <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>
+                    {post.isTemplate
+                      ? <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Template</span>
+                      : <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
                 </div>
             </div>
@@ -98,7 +106,27 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         
         {post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">"{post.feedback}"</div>}
 
-        {!isReadOnly && !selectable && (
+        {/* Template card: primary action is "Use as draft" (clone into a new post). */}
+        {!isReadOnly && !selectable && onUseTemplate && (
+          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+            <button
+              onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
+              className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
+              title="Copy content to clipboard" aria-label="Copy content to clipboard"
+            >
+              {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
+              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onUseTemplate(post); }}
+              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+            >
+              <FilePlus size={14} /> Use as draft
+            </button>
+          </div>
+        )}
+
+        {!isReadOnly && !selectable && !onUseTemplate && (
           <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
@@ -110,7 +138,31 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
             </button>
             <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Open platform app" aria-label="Open platform app" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} /><span className="hidden sm:inline">Open App</span></a>
-            <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, isPosted ? STATUS.DRAFT : STATUS.POSTED); }} className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 sm:px-2.5 sm:py-1.5 rounded-full transition-colors ${isPosted ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{isPosted ? 'Posted' : 'Mark Done'}</button>
+            {/* Changes requested → the primary action is sending the revised post
+                back to the client (reset to pending), not moving toward posted. */}
+            {isChangesRequested && onResubmit ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); onResubmit(post.id); }}
+                title="Send the revised post back to the client for review"
+                className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+              >
+                <RefreshCw size={13} /> Back for review
+              </button>
+            ) : (
+              <select
+                value={post.status}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => { e.stopPropagation(); onStatusChange(post.id, e.target.value); }}
+                aria-label="Set post status"
+                title="Set status"
+                className={`text-xs font-bold rounded-full px-2.5 py-1.5 border cursor-pointer transition-colors ${statusPill}`}
+              >
+                <option value={STATUS.DRAFT}>Draft</option>
+                <option value={STATUS.SCHEDULED}>Scheduled</option>
+                <option value={STATUS.POSTED}>Posted</option>
+                {isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
+              </select>
+            )}
           </div>
         )}
 

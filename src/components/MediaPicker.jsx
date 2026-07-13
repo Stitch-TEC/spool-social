@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ImageOff, Loader2, AlertCircle, FolderHeart } from 'lucide-react';
+import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images } from 'lucide-react';
 import { listMedia, listClientMedia } from '../utils/generationApi';
 import useEscapeKey from '../hooks/useEscapeKey';
 
@@ -24,7 +24,7 @@ const Thumb = ({ item, onPick }) => (
  * reference can't be inserted as the post's imageUrl. The curated fetch degrades gracefully
  * (inline note, never blocks the generated pool). onSelect receives the image URL.
  */
-const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName = '' }) => {
+const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName = '', clientImages = [] }) => {
   useEscapeKey(onClose);
   const [items, setItems] = useState(null); // null = loading
   const [error, setError] = useState(null);
@@ -87,6 +87,17 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
           </button>
         </div>
         <div className="p-4 overflow-y-auto space-y-5">
+          {/* Images already used on this client's posts — the most relevant reuse
+              source (e.g. the imported calendar's hero photos). No re-upload. */}
+          {clientImages.length > 0 && (
+            <section aria-label="Images used on this client's posts">
+              <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                <Images size={13} className="text-indigo-400" /> Used on {clientName ? `${clientName}’s` : 'these'} posts
+              </h3>
+              {grid(clientImages.map((url) => ({ key: url, url })))}
+            </section>
+          )}
+
           {/* Curated client library — its own labeled section when a client is resolved. */}
           {clientKey && (
             <section aria-label={`${clientName || clientKey}'s library`}>

@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Grid, Archive, Settings, Image as ImageIcon, Database, Users, Zap
+  Grid, Archive, Settings, Image as ImageIcon, Database, Users, Zap, Files
 } from 'lucide-react';
 
 const navButtonClass = (active) =>
@@ -13,6 +13,8 @@ const Sidebar = ({
   onClose,
   showArchived,
   onShowArchived,
+  showTemplates,
+  onShowTemplates,
   filterClient,
   onFilterClient,
   uniqueClients,
@@ -33,7 +35,9 @@ const Sidebar = ({
         />
       )}
 
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'} lg:static`}>
+      {/* Mobile: fixed slide-in overlay. Desktop: sticky, full-viewport-height rail
+          that stays pinned as the page scrolls (its nav scrolls internally). */}
+      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'} lg:sticky lg:top-0 lg:self-start lg:h-screen`}>
         <div className="p-6 h-full flex flex-col">
           {/* Branding */}
           <div className="flex flex-col mb-8">
@@ -55,8 +59,11 @@ const Sidebar = ({
             <div className="mb-6">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Views</h3>
               <div className="space-y-1">
-                <button onClick={() => { onShowArchived(false); onClose(); }} className={navButtonClass(!showArchived)}>
+                <button onClick={() => { onShowArchived(false); onClose(); }} className={navButtonClass(!showArchived && !showTemplates)}>
                   <div className="flex items-center gap-2"><Grid size={16} /> <span>Active Threads</span></div>
+                </button>
+                <button onClick={() => { onShowTemplates(true); onClose(); }} className={navButtonClass(showTemplates)}>
+                  <div className="flex items-center gap-2"><Files size={16} /> <span>Templates</span></div>
                 </button>
                 <button onClick={() => { onShowArchived(true); onClose(); }} className={navButtonClass(showArchived)}>
                   <div className="flex items-center gap-2"><Archive size={16} /> <span>Archived</span></div>

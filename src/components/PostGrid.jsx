@@ -15,16 +15,21 @@ const PostGrid = ({
   onArchive,
   onRestore,
   onCreate,
+  onUseTemplate,
+  onResubmit,
   selectable = false,
   selectedIds,
   onToggleSelect
 }) => {
   if (posts.length === 0) {
+    const isTemplates = !!onUseTemplate;
     return (
       <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
         <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4"><Grid className="text-slate-300" /></div>
-        <h3 className="text-slate-900 font-bold text-lg">No threads found</h3>
-        {!isReadOnly && <button onClick={onCreate} className="text-indigo-600 font-bold hover:underline">Create Thread</button>}
+        <h3 className="text-slate-900 font-bold text-lg">{isTemplates ? 'No templates yet' : 'No threads found'}</h3>
+        {isTemplates
+          ? <p className="text-slate-400 text-sm mt-1">Turn any post into one with the “Reusable template” toggle in the editor.</p>
+          : (!isReadOnly && <button onClick={onCreate} className="text-indigo-600 font-bold hover:underline">Create Thread</button>)}
       </div>
     );
   }
@@ -44,6 +49,8 @@ const PostGrid = ({
           onStatusChange={onStatusChange}
           onArchive={onArchive}
           onRestore={onRestore}
+          onUseTemplate={onUseTemplate}
+          onResubmit={onResubmit}
           selectable={selectable}
           selected={selectable && selectedIds?.has(p.id)}
           onToggleSelect={onToggleSelect}
