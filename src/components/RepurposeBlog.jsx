@@ -87,12 +87,16 @@ const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCre
       <button
         type="button"
         onClick={run}
-        disabled={loading || sel.size === 0}
+        disabled={loading || sel.size === 0 || !client?.trim()}
+        title={!client?.trim() ? 'Set a client on this post first — drafts need a client to land under' : undefined}
         className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 disabled:opacity-50"
       >
         {loading ? <Loader2 size={12} className="animate-spin" /> : <Share2 size={12} />}
         {loading ? 'Generating…' : `Create ${sel.size} draft${sel.size === 1 ? '' : 's'}`}
       </button>
+      {!client?.trim() && (
+        <p className="text-[11px] text-slate-400 mt-1.5">Set a client on this post first — the drafts are created for that client.</p>
+      )}
     </div>
   );
 };

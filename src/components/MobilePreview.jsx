@@ -37,7 +37,7 @@ const MobilePreview = memo(({ post, clientSettings = {} }) => {
                    <span className="text-slate-500 text-sm">@handle · 1m</span>
                 </div>
                 <p className="text-slate-900 text-sm mt-1 whitespace-pre-wrap leading-normal">{content}</p>
-                {post.imageUrl && <div className="mt-3 rounded-2xl overflow-hidden border border-slate-100"><img src={post.imageUrl} className="w-full h-auto object-cover" /></div>}
+                {post.imageUrl && <div className="mt-3 rounded-2xl overflow-hidden border border-slate-100"><img src={post.imageUrl} alt={post.altText || ''} className="w-full h-auto object-cover" /></div>}
              </div>
            </div>
         </div>
@@ -58,7 +58,7 @@ const MobilePreview = memo(({ post, clientSettings = {} }) => {
               <MoreHorizontal size={16} />
            </div>
            <div className="bg-slate-100 w-full aspect-square flex items-center justify-center overflow-hidden">
-              {post.imageUrl ? <img src={post.imageUrl} className="w-full h-full object-cover" /> : <span className="text-slate-400 text-xs">No Image</span>}
+              {post.imageUrl ? <img src={post.imageUrl} alt={post.altText || ''} className="w-full h-full object-cover" /> : <span className="text-slate-400 text-xs">No Image</span>}
            </div>
            <div className="p-3">
               <p className="text-slate-900 text-xs"><span className="font-semibold mr-2">{post.client ? post.client.toLowerCase().replace(/\s+/g,'_') : 'your_username'}</span>{content}</p>
@@ -83,7 +83,7 @@ const MobilePreview = memo(({ post, clientSettings = {} }) => {
               </div>
            </div>
            <div className="px-3 pb-2 text-xs text-slate-900 whitespace-pre-wrap">{content}</div>
-           {post.imageUrl && <img src={post.imageUrl} className="w-full h-auto object-cover" />}
+           {post.imageUrl && <img src={post.imageUrl} alt={post.altText || ''} className="w-full h-auto object-cover" />}
         </div>
       </Wrapper>
     );
@@ -102,7 +102,7 @@ const MobilePreview = memo(({ post, clientSettings = {} }) => {
                  <div className="text-xs text-slate-500">Posted on Google</div>
               </div>
            </div>
-           {post.imageUrl && <div className="rounded-lg overflow-hidden mb-3"><img src={post.imageUrl} className="w-full h-40 object-cover" /></div>}
+           {post.imageUrl && <div className="rounded-lg overflow-hidden mb-3"><img src={post.imageUrl} alt={post.altText || ''} className="w-full h-40 object-cover" /></div>}
            <p className="text-slate-800 text-sm mb-4 whitespace-pre-wrap">{content}</p>
            <button className="w-full py-2 bg-slate-100 font-medium rounded-full text-xs" style={{ color: brandColor }}>Learn More</button>
         </div>
@@ -115,6 +115,7 @@ const MobilePreview = memo(({ post, clientSettings = {} }) => {
   return (
     prev.post.content === next.post.content &&
     prev.post.imageUrl === next.post.imageUrl &&
+    prev.post.altText === next.post.altText &&
     prev.post.platform === next.post.platform &&
     prev.post.client === next.post.client &&
     prev.clientSettings === next.clientSettings

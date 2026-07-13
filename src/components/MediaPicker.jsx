@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info } from 'lucide-react';
 import { listMedia, listClientMedia } from '../utils/generationApi';
+import { imageContentId } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 
-// One selectable thumbnail — shared by both sections so they look identical.
+// One selectable thumbnail — shared by all sections so they look identical.
 const Thumb = ({ item, onPick }) => (
   <button
     type="button"
@@ -18,11 +19,15 @@ const Thumb = ({ item, onPick }) => (
 /**
  * Modal that lists reusable images so the editor can insert one instead of regenerating.
  *
- * Always shows the user's generated AI-cache pool. When `clientKey` (the client's canonical
- * suite SLUG) is passed, it ALSO shows that client's curated library (the slug-keyed folder
- * shared with POM's Assets card) as its own labeled section — images only, since a video
- * reference can't be inserted as the post's imageUrl. The curated fetch degrades gracefully
- * (inline note, never blocks the generated pool). onSelect receives the image URL.
+ * Three sections, deduplicated across each other (an image already shown in an
+ * earlier section never repeats in a later one):
+ *   1. Images already used on this client's posts (`clientImages`) — the most
+ *      relevant reuse source, no re-upload needed.
+ *   2. The client's curated library (the slug-keyed folder shared with POM's
+ *      Assets card) when `clientKey` is resolved. Images only — a video
+ *      reference can't be a post's imageUrl. Degrades gracefully on fetch error.
+ *   3. The user's generated/uploaded AI-cache pool.
+ * onSelect receives the image URL.
  */
 const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName = '', clientImages = [] }) => {
   useEscapeKey(onClose);
@@ -60,6 +65,24 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
     return () => { live = false; };
   }, [clientKey, reloadKey]);
 
+  // Cross-section dedupe: an image kept by an earlier (higher-priority) section is
+  // dropped from every later one. This is the fix for the same photo showing 2-3
+  // times when it's on a post AND in the curated library AND in the generated pool.
+  const sections = useMemo(() => {
+    const seen = new Set();
+    const take = (list) => (list || []).filter(m => {
+      const k = imageContentId(m.url);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    return {
+      used: take(clientImages.map((url) => ({ key: url, url }))),
+      curated: clientItems === null ? null : take(clientItems),
+      generated: items === null ? null : take(items),
+    };
+  }, [clientImages, clientItems, items]);
+
   const pick = (url) => { onSelect(url); onClose(); };
 
   const grid = (list) => (
@@ -87,18 +110,27 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
           </button>
         </div>
         <div className="p-4 overflow-y-auto space-y-5">
+          {/* No client context yet (new post, client not picked) — say so instead of
+              silently hiding the per-client sections. */}
+          {!clientKey && (
+            <p className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+              <Info size={13} className="shrink-0 text-indigo-400" /> Pick a client in the editor to also see that client&rsquo;s post images and library.
+            </p>
+          )}
+
           {/* Images already used on this client's posts — the most relevant reuse
               source (e.g. the imported calendar's hero photos). No re-upload. */}
-          {clientImages.length > 0 && (
+          {sections.used.length > 0 && (
             <section aria-label="Images used on this client's posts">
               <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                 <Images size={13} className="text-indigo-400" /> Used on {clientName ? `${clientName}’s` : 'these'} posts
               </h3>
-              {grid(clientImages.map((url) => ({ key: url, url })))}
+              {grid(sections.used)}
             </section>
           )}
 
-          {/* Curated client library — its own labeled section when a client is resolved. */}
+          {/* Curated client library — its own labeled section when a client is resolved.
+              Hidden when everything it holds is already shown above. */}
           {clientKey && (
             <section aria-label={`${clientName || clientKey}'s library`}>
               <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
@@ -108,21 +140,23 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
                 <p className="text-xs text-slate-400 flex items-center gap-1.5">
                   <AlertCircle size={13} className="text-rose-400" /> {clientError}
                 </p>
-              ) : clientItems === null ? (
+              ) : sections.curated === null ? (
                 <div className="flex items-center text-slate-400 text-xs py-2">
                   <Loader2 className="animate-spin mr-2" size={14} /> Loading…
                 </div>
               ) : clientItems.length === 0 ? (
                 <p className="text-xs text-slate-400">No images in this client&rsquo;s library yet.</p>
+              ) : sections.curated.length === 0 ? (
+                <p className="text-xs text-slate-400">All of this library&rsquo;s images are shown above.</p>
               ) : (
-                grid(clientItems)
+                grid(sections.curated)
               )}
             </section>
           )}
 
-          {/* Generated AI-cache pool — the existing reuse library. */}
+          {/* Generated / uploaded pool — the reuse cache. */}
           <section aria-label="Generated images">
-            {clientKey && (
+            {(clientKey || sections.used.length > 0) && (
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Generated images</h3>
             )}
             {error ? (
@@ -133,7 +167,7 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
                   Retry
                 </button>
               </div>
-            ) : items === null ? (
+            ) : sections.generated === null ? (
               <div className="flex items-center justify-center h-40 text-slate-400">
                 <Loader2 className="animate-spin mr-2" size={20} /> Loading…
               </div>
@@ -141,8 +175,10 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
               <div className="flex flex-col items-center justify-center h-40 text-slate-400 text-sm">
                 <ImageOff size={28} className="mb-2" /> No images yet — generate one first.
               </div>
+            ) : sections.generated.length === 0 ? (
+              <p className="text-xs text-slate-400">All generated images are shown above.</p>
             ) : (
-              grid(items)
+              grid(sections.generated)
             )}
           </section>
         </div>

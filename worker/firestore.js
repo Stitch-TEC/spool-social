@@ -489,27 +489,35 @@ export async function resolveClientId(env, clientName) {
   }
 }
 
-// All image URLs referenced by any post (for the orphan-image sweep).
-export async function listAllImageUrls(env, limit = 2000) {
+// All image URLs referenced by any post (for the orphan-image sweep). Paginates
+// with a __name__ cursor: a fixed single-page limit silently dropped references
+// once the posts collection outgrew it, and the GC would then delete images that
+// are still in use. The sweep must see EVERY post or not run at all (it throws).
+export async function listAllImageUrls(env, pageSize = 1000) {
   const token = await getAccessToken(env);
-  const body = {
-    structuredQuery: {
+  const urls = new Set();
+  let startAfter = null;
+  for (;;) {
+    const structuredQuery = {
       from: [{ collectionId: 'posts' }],
       select: { fields: [{ fieldPath: 'imageUrl' }] },
-      limit
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: pageSize
+    };
+    if (startAfter) structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
+    const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structuredQuery })
+    });
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
+    const rows = (Array.isArray(data) ? data : []).filter(r => r.document);
+    for (const r of rows) {
+      const u = r.document?.fields?.imageUrl?.stringValue;
+      if (u) urls.add(u);
     }
-  };
-  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const data = await res.json().catch(() => ([]));
-  if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
-  const urls = new Set();
-  for (const r of (Array.isArray(data) ? data : [])) {
-    const u = r.document?.fields?.imageUrl?.stringValue;
-    if (u) urls.add(u);
+    if (rows.length < pageSize) return urls;
+    startAfter = rows[rows.length - 1].document.name;
   }
-  return urls;
 }

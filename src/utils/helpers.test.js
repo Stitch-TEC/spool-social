@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { sortPosts, SORT_ORDERS } from './helpers';
+import { sortPosts, SORT_ORDERS, imageKey } from './helpers';
+
+describe('imageKey', () => {
+  it('canonicalizes /media URLs to their R2 key across origins and encodings', () => {
+    expect(imageKey('https://a.example/media/generated/u/abc.jpg')).toBe('generated/u/abc.jpg');
+    expect(imageKey('/media/generated/u/abc.jpg?x=1')).toBe('generated/u/abc.jpg');
+    expect(imageKey('https://b.example/media/library/o/my%20client/1.jpg')).toBe('library/o/my client/1.jpg');
+  });
+
+  it('passes data URLs and external URLs through unchanged', () => {
+    expect(imageKey('data:image/png;base64,AAA')).toBe('data:image/png;base64,AAA');
+    expect(imageKey('https://cdn.example/photo.jpg')).toBe('https://cdn.example/photo.jpg');
+    expect(imageKey(undefined)).toBe(undefined);
+  });
+});
 
 const p = (id, ts, created, client, platform) => ({
   id, _sortTs: ts, createdAt: new Date(created), client, platform,

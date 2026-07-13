@@ -68,6 +68,16 @@ describe('Editor', () => {
     expect(handle).toHaveAttribute('tabindex', '0');
   });
 
+  it('prefills the client on a new post from the caller context', () => {
+    render(<Editor {...baseProps} initialClient="Acme" />);
+    expect(screen.getByPlaceholderText('Select or type a new client...').value).toBe('Acme');
+  });
+
+  it('locks the client field for client members (save path pins it anyway)', () => {
+    render(<Editor {...baseProps} initialClient="Acme" clientLocked />);
+    expect(screen.getByPlaceholderText('Select or type a new client...')).toBeDisabled();
+  });
+
   it('keeps unsaved form fields when picking a Spark Deck prompt', () => {
     render(<Editor {...baseProps} />);
 

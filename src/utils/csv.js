@@ -12,7 +12,7 @@ import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 export const CSV_COLUMNS = [
   'id', 'client', 'platform', 'title', 'content', 'altText', 'metaDescription',
   'slug', 'status', 'approvalStatus', 'tags', 'scheduledDate', 'createdAt',
-  'updatedAt', 'feedback', 'imageUrl'
+  'updatedAt', 'feedback', 'imageUrl', 'isTemplate'
 ];
 
 // Multi-value fields (tags) are joined with this so they survive inside a
@@ -195,6 +195,9 @@ export const normalizeImportedPost = (raw) => {
     feedback: String(raw.feedback || '').trim().slice(0, 500),
     imageUrl: String(raw.imageUrl || '').slice(0, 500000),
     tags,
+    // Survives the backup round-trip (JSON boolean or CSV "true") so restoring a
+    // full export doesn't flood the dated queue with evergreen templates.
+    isTemplate: raw.isTemplate === true || String(raw.isTemplate).toLowerCase() === 'true',
     scheduledDate
   };
 };

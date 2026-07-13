@@ -20,7 +20,10 @@ export default defineConfig({
         // Split heavyweight vendors into separate long-term-cacheable chunks
         // so app-code changes don't invalidate the whole bundle.
         manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
+          // 'react-dom' alone does NOT capture the react-dom/client entry the app
+          // actually imports — without it the ~180KB renderer lands in the app
+          // chunk and is re-downloaded on every deploy.
+          'vendor-react': ['react', 'react-dom', 'react-dom/client'],
           'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
         },
       },
@@ -29,5 +32,14 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.js',
+    // firebase.js calls getAuth() at module load, which throws without an API
+    // key. Bake harmless dummies into test runs so a fresh clone's `npm test`
+    // works without a .env (CI sets the same values in its own env block).
+    env: {
+      VITE_FIREBASE_API_KEY: 'test-dummy-api-key',
+      VITE_FIREBASE_AUTH_DOMAIN: 'localhost',
+      VITE_FIREBASE_PROJECT_ID: 'test-dummy',
+      VITE_FIREBASE_APP_ID: 'test-dummy-app-id',
+    },
   },
 })

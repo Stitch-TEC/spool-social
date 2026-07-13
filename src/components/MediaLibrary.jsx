@@ -1,16 +1,33 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Trash2, UploadCloud, Loader2, Video, Plus, ImageOff, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { X, Trash2, UploadCloud, Loader2, Video, Plus, ImageOff, AlertCircle, Images, FolderPlus } from 'lucide-react';
 import { listClientMedia, uploadMedia, addVideoUrl, deleteMedia } from '../utils/generationApi';
-import { processImageFile } from '../utils/helpers';
+import { processImageFile, imageContentId } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 
 const MEDIA_CAP = 50; // mirrors MEDIA_PER_CLIENT in wrangler.toml
 
+// Resolve any image URL to a data URL for the library-upload endpoint. Data URLs
+// pass through; /media URLs are same-origin fetches; an external URL may fail
+// CORS — callers surface that as a toast.
+const toDataUrl = async (src) => {
+  if (typeof src === 'string' && src.startsWith('data:')) return src;
+  const res = await fetch(src);
+  if (!res.ok) throw new Error('Could not fetch the image');
+  const blob = await res.blob();
+  return await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Could not read the image'));
+    r.readAsDataURL(blob);
+  });
+};
+
 /**
  * Standalone per-client media library: browse, upload (optimized), add video-URL
- * references, and delete. Opened from the sidebar.
+ * references, delete, and promote images already used on the client's posts into
+ * the curated (POM-shared) library. Opened from the sidebar.
  */
-const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientIdFor, showToast }) => {
+const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientIdFor, postImagesByClient = {}, showToast }) => {
   useEscapeKey(onClose);
   const [client, setClient] = useState(initialClient || uniqueClients[0] || '');
   const [items, setItems] = useState(null); // null = loading
@@ -18,7 +35,17 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   const [busy, setBusy] = useState(false);
   const [videoUrl, setVideoUrl] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Two-step delete: first tap arms ("Delete?"), second tap within 3s commits.
+  // Deletion is permanent and unconfirmed was the only destructive action
+  // without a guard — and the hover-only button was invisible on touch.
+  const [confirmKey, setConfirmKey] = useState(null);
   const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (!confirmKey) return;
+    const t = setTimeout(() => setConfirmKey(null), 3000);
+    return () => clearTimeout(t);
+  }, [confirmKey]);
 
   // The library is keyed by the canonical SLUG (the universal join key), so it lines up with the
   // POM Assets card + the AI's asset manifest. The dropdown still shows/holds the display name;
@@ -74,6 +101,7 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
 
   const handleDelete = async (key) => {
     if (busy) return;
+    setConfirmKey(null);
     setBusy(true);
     try {
       await deleteMedia(key);
@@ -84,6 +112,31 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
       setBusy(false);
     }
   };
+
+  // Promote an image already used on a post into the curated (POM-shared) library.
+  const handleSaveToLibrary = async (srcUrl) => {
+    if (busy || !client) return;
+    setBusy(true);
+    try {
+      const dataUrl = await toDataUrl(srcUrl);
+      await uploadMedia(clientKey, dataUrl);
+      showToast?.('Saved to library');
+      refresh();
+    } catch (err) {
+      showToast?.(err.message || 'Could not save to library', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Images in use on this client's posts that aren't in the curated library yet —
+  // the "available content" that used to be invisible here. Compared by canonical
+  // R2 key so a library image reused on a post doesn't show twice.
+  const postImages = useMemo(() => {
+    if (!client) return [];
+    const curatedKeys = new Set((Array.isArray(items) ? items : []).map(m => imageContentId(m.url)));
+    return (postImagesByClient[client] || []).filter(u => !curatedKeys.has(imageContentId(u)));
+  }, [client, items, postImagesByClient]);
 
   const count = Array.isArray(items) ? items.length : 0;
 
@@ -133,27 +186,65 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
             </div>
           ) : items === null ? (
             <div className="flex items-center justify-center h-40 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading…</div>
-          ) : items.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-40 text-slate-400 text-sm"><ImageOff size={26} className="mb-2" /> No media yet — upload an image or add a video URL.</div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {items.map(m => (
-                <div key={m.key} className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
-                  {m.type === 'video' ? (
-                    <a href={m.url} target="_blank" rel="noopener noreferrer" className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-2 text-center">
-                      <Video size={26} />
-                      <span className="text-[10px] mt-1 font-bold uppercase">{m.provider}</span>
-                      <span className="text-[9px] text-slate-400 truncate w-full mt-0.5">{m.url}</span>
-                    </a>
-                  ) : (
-                    <img src={m.url} alt="" loading="lazy" className="w-full h-full object-cover" />
-                  )}
-                  <button onClick={() => handleDelete(m.key)} disabled={busy} title="Delete"
-                    className="absolute top-1.5 right-1.5 p-1.5 bg-black/50 text-white rounded-full hover:bg-rose-600 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity">
-                    <Trash2 size={13} />
-                  </button>
+            <div className="space-y-6">
+              {items.length === 0 ? (
+                <div className={`flex flex-col items-center justify-center text-slate-400 text-sm ${postImages.length > 0 ? 'h-20' : 'h-40'}`}>
+                  <ImageOff size={26} className="mb-2" /> No media in the library yet — upload an image or add a video URL.
                 </div>
-              ))}
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {items.map(m => (
+                    <div key={m.key} className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+                      {m.type === 'video' ? (
+                        <a href={m.url} target="_blank" rel="noopener noreferrer" className="w-full h-full flex flex-col items-center justify-center text-slate-500 p-2 text-center">
+                          <Video size={26} />
+                          <span className="text-[10px] mt-1 font-bold uppercase">{m.provider}</span>
+                          <span className="text-[9px] text-slate-400 truncate w-full mt-0.5">{m.url}</span>
+                        </a>
+                      ) : (
+                        <img src={m.url} alt="" loading="lazy" className="w-full h-full object-cover" />
+                      )}
+                      <button
+                        onClick={() => (confirmKey === m.key ? handleDelete(m.key) : setConfirmKey(m.key))}
+                        disabled={busy}
+                        title={confirmKey === m.key ? 'Tap again to delete permanently' : 'Delete'}
+                        aria-label={confirmKey === m.key ? 'Tap again to delete permanently' : 'Delete'}
+                        className={`absolute top-1.5 right-1.5 flex items-center gap-1 p-1.5 text-white rounded-full transition-all ${
+                          confirmKey === m.key
+                            ? 'bg-rose-600 opacity-100'
+                            : 'bg-black/50 hover:bg-rose-600 [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 focus:opacity-100'
+                        }`}
+                      >
+                        <Trash2 size={13} />{confirmKey === m.key && <span className="text-[10px] font-bold pr-0.5">Delete?</span>}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Everything already used on this client's posts but not curated yet —
+                  previously invisible here, which made the library look empty even
+                  when the client had plenty of content. */}
+              {postImages.length > 0 && (
+                <section aria-label="Images used on posts">
+                  <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    <Images size={13} className="text-indigo-400" /> Used on {client}&rsquo;s posts
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mb-2">Not in the library yet — save one to share it with the rest of the suite (e.g. POM&rsquo;s Assets card).</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {postImages.map(u => (
+                      <div key={u} className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+                        <img src={u} alt="" loading="lazy" className="w-full h-full object-cover" />
+                        <button onClick={() => handleSaveToLibrary(u)} disabled={busy} title="Save to library"
+                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-2 py-1 bg-black/50 text-white rounded-full text-[10px] font-bold hover:bg-indigo-600 [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 focus:opacity-100 transition-opacity">
+                          <FolderPlus size={12} /> Save
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           )}
         </div>

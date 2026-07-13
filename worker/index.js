@@ -176,10 +176,15 @@ async function resolveShareCaller(auth, env) {
 // `library/` allowance would let a brokered delete (whose tenant gate only checks the client
 // segment) land in another owner's namespace. The broker's per-request tenant gate + this owner
 // gate are belt-and-braces.
-function canManageKey(auth, env, key) {
+function canManageKey(auth, env, key, caller) {
   if (auth.mode === 'apikey') return key.startsWith(`library/${env.OWNER_UID}/`) || key.startsWith(`generated/${env.OWNER_UID}/`) || key.startsWith('generated/internal/');
   if (key.startsWith(`library/${auth.principal}/`) || key.startsWith(`generated/${auth.principal}/`)) return true;
   if (auth.principal === env.OWNER_UID && key.startsWith('generated/internal/')) return true;
+  // The curated library lives under the OWNER namespace for every caller (one shared,
+  // slug-keyed folder — see the media routes). An operator manages all of it; a client
+  // member only their own client's slug folder inside it (the tenant boundary).
+  if (caller?.isOperator) return key.startsWith(`library/${env.OWNER_UID}/`);
+  if (caller?.clientId) return key.startsWith(`library/${env.OWNER_UID}/${slugifyClient(caller.clientId)}/`);
   return false;
 }
 
@@ -249,6 +254,12 @@ export default {
       const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
       if (!rl.ok) {
         return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      // Operator-only (like /api/clients): the probe reflects any client's name + brand
+      // kit, so an arbitrary signed-in Google account must not be able to enumerate them.
+      if (auth.mode !== 'apikey') {
+        const caller = await resolveShareCaller(auth, env);
+        if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
       }
       const slug = (url.searchParams.get('slug') || '').trim().toLowerCase();
       if (!slug) return json({ error: 'slug is required' }, 400, cors);
@@ -360,9 +371,10 @@ export default {
       // spend AI + R2 budget. ALLOWED_EMAILS is empty, so authenticate() alone would admit ANY signed-in
       // Google account (the Firebase web key is public) — closing that open paid-generation hole here.
       // The trusted internal key (apikey mode) bypasses, same as the drafts/automation paths.
+      let genCaller = null;
       if (auth.mode !== 'apikey') {
-        const caller = await resolveShareCaller(auth, env);
-        if (!caller) return json({ error: 'Not authorized' }, 403, cors);
+        genCaller = await resolveShareCaller(auth, env);
+        if (!genCaller) return json({ error: 'Not authorized' }, 403, cors);
       }
 
       let body;
@@ -379,7 +391,11 @@ export default {
       }
       // Per-client usage metering (Phase 3): the UI sends the selected client's slug; sanitized here
       // (it's contextual attribution, not auth — the gateway meters 'unattributed' when absent).
-      const genClientId = (body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) || undefined;
+      // A client MEMBER is tenant-pinned: their generations always meter (and pull POM
+      // context/brand for) their OWN client, never a body-supplied one.
+      const genClientId = genCaller && !genCaller.isOperator
+        ? (slugifyClient(genCaller.clientId) || undefined)
+        : ((body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) || undefined);
 
       // POM per-client context + brand + asset manifest (the cross-app seam) — the SAME injection
       // the automation path does, now for interactive generation. The SPA builds the base
@@ -446,10 +462,11 @@ export default {
     }
 
     // --- Media library (browser: Firebase token; tools: internal key) ---
-    //   GET    /api/media              generated AI-cache pool (in-editor reuse)
+    //   GET    /api/media              generated/uploaded reuse pool (in-editor reuse)
     //   GET    /api/media?client=X     curated per-client library (images + videos)
-    //   POST   /api/media              add to a client's library { client, image:{base64} | videoUrl }
-    //   DELETE /api/media/:key         remove one item (owner-scoped)
+    //   POST   /api/media              { client, image:{base64} | videoUrl } → curated library
+    //                                  { image:{base64} } (no client) → content-addressed pool
+    //   DELETE /api/media/:key         remove one item (owner/tenant-scoped)
     if (url.pathname === '/api/media' || url.pathname.startsWith('/api/media/')) {
       const auth = await authenticate(request, env);
       if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
@@ -459,40 +476,65 @@ export default {
       }
       // Provisioned users only (or the internal key) — the media library writes/serves R2 + AI-cached
       // assets, so don't let an arbitrary signed-in Google account read or grow it (ALLOWED_EMAILS empty).
+      let caller = null;
       if (auth.mode !== 'apikey') {
-        const caller = await resolveShareCaller(auth, env);
+        caller = await resolveShareCaller(auth, env);
         if (!caller) return json({ error: 'Not authorized' }, 403, cors);
       }
+      // The curated per-client library lives under ONE namespace — the owner's — so the
+      // operator, client members, and the POM broker (apikey) all see the same slug-keyed
+      // folder. A client member is tenant-pinned to their own client slug; previously the
+      // library was keyed by the caller's uid, so members always saw an empty folder.
+      const memberSlug = caller && !caller.isOperator ? slugifyClient(caller.clientId) : null;
 
       // DELETE /api/media/:key
       if (url.pathname.startsWith('/api/media/')) {
         if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
         const key = decodeURIComponent(url.pathname.slice('/api/media/'.length));
         if (!key) return json({ error: 'Missing key' }, 400, cors);
-        if (!canManageKey(auth, env, key)) return json({ error: 'Not found' }, 404, cors);
+        if (!canManageKey(auth, env, key, caller)) return json({ error: 'Not found' }, 404, cors);
         await env.MEDIA.delete(key);
         return json({ deleted: key }, 200, cors);
       }
 
-      // POST /api/media — add an image or video to a client's curated library.
+      // POST /api/media — add an image or video to a client's curated library, or (with
+      // no client) store a post-attachment image in the content-addressed reuse pool.
       if (request.method === 'POST') {
         let body;
         try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-        const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
-        if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
+        if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
         // Key the library by the canonical SLUG (a display name or a slug both resolve here), so the
         // in-app editor and the POM Assets card share one folder and two orgs can never collide.
         const client = slugifyClient(body?.client || '');
-        if (!client) return json({ error: 'client is required' }, 400, cors);
 
-        const base = `library/${owner}/${client}/`;
-        const cap = parseInt(env.MEDIA_PER_CLIENT || '50', 10);
-        const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
-        if (existing.objects.length >= cap) {
-          return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
+        // No client → editor post-image upload. Content-addressed (storeImage hashes the
+        // bytes), so re-attaching the same photo to many posts yields ONE object and ONE
+        // URL — this is what keeps Firestore posts small and the reuse picker dedupable.
+        // Doesn't count against the curated per-client cap; the nightly reference-based
+        // GC reclaims it once no post references it.
+        if (!client && !body?.videoUrl && body?.image?.base64) {
+          const m = String(body.image.base64).match(/^data:([^;]+);base64,(.+)$/);
+          const mime = m ? m[1] : (body.image.mime || 'image/jpeg');
+          let bytes;
+          try { bytes = b64ToBytes(m ? m[2] : String(body.image.base64)); }
+          catch { return json({ error: 'Invalid base64 image' }, 400, cors); }
+          if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
+          const poolOwner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
+          const stored = await storeImage(env, url.origin, bytes, mime, poolOwner);
+          return json({ key: stored.key, type: 'image', url: stored.url }, 201, cors);
         }
 
+        if (!client) return json({ error: 'client is required' }, 400, cors);
+        if (memberSlug && client !== memberSlug) return json({ error: 'Not authorized for this client' }, 403, cors);
+
+        const base = `library/${env.OWNER_UID}/${client}/`;
+        const cap = parseInt(env.MEDIA_PER_CLIENT || '50', 10);
+        const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
+
         if (body?.videoUrl) {
+          if (existing.objects.length >= cap) {
+            return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
+          }
           const v = validateVideoUrl(body.videoUrl);
           if (!v) return json({ error: 'Unsupported video URL (use YouTube, Vimeo, or a direct .mp4/.webm/.mov link)' }, 400, cors);
           const key = `${base}v-${crypto.randomUUID()}`;
@@ -504,12 +546,23 @@ export default {
         if (b64) {
           const m = String(b64).match(/^data:([^;]+);base64,(.+)$/);
           const mime = m ? m[1] : (body.image.mime || 'image/jpeg');
-          const bytes = b64ToBytes(m ? m[2] : String(b64));
+          let bytes;
+          try { bytes = b64ToBytes(m ? m[2] : String(b64)); }
+          catch { return json({ error: 'Invalid base64 image' }, 400, cors); }
           if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
           const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
-          const key = `${base}${crypto.randomUUID()}.${ext}`;
+          // Content-addressed like the pool: re-saving the same bytes lands on the SAME
+          // key (an idempotent overwrite), so "Save to library" / repeat uploads can never
+          // fill the library with duplicates. Only a genuinely new image counts at the cap.
+          const digest = await crypto.subtle.digest('SHA-256', bytes);
+          const hash = Array.from(new Uint8Array(digest), (bt) => bt.toString(16).padStart(2, '0')).join('');
+          const key = `${base}${hash}.${ext}`;
+          const already = existing.objects.some(o => o.key === key);
+          if (!already && existing.objects.length >= cap) {
+            return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
+          }
           await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
-          return json({ key, type: 'image', url: mediaUrl(url.origin, key) }, 201, cors);
+          return json({ key, type: 'image', url: mediaUrl(url.origin, key), deduped: already }, 201, cors);
         }
         return json({ error: 'image.base64 or videoUrl is required' }, 400, cors);
       }
@@ -518,11 +571,11 @@ export default {
       if (request.method === 'GET') {
         const clientParam = url.searchParams.get('client');
         if (clientParam) {
-          const owner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
-          if (!owner) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
-          // Same slug canonicalization as POST — list the slug-keyed folder.
+          if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
+          // Same slug canonicalization as POST — list the shared slug-keyed folder.
           const client = slugifyClient(clientParam);
-          const media = await listMediaPrefix(env, url.origin, `library/${owner}/${client}/`);
+          if (memberSlug && client !== memberSlug) return json({ error: 'Not authorized for this client' }, 403, cors);
+          const media = await listMediaPrefix(env, url.origin, `library/${env.OWNER_UID}/${client}/`);
           return json({ media, count: media.length }, 200, cors);
         }
         // No client → the generated AI-cache pool (in-editor "Choose from library").
@@ -1013,6 +1066,12 @@ export default {
       const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      // Conditional-request support: keys are content-addressed/immutable, so a
+      // revalidating client gets a bodyless 304 instead of a full R2 read-through.
+      headers.set('ETag', obj.httpEtag);
+      if (request.headers.get('If-None-Match') === obj.httpEtag) {
+        return new Response(null, { status: 304, headers });
+      }
       return new Response(isHead ? null : obj.body, { headers });
     }
 

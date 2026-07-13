@@ -86,8 +86,9 @@ export default function usePosts(user, sharedUid, clientId, shareClientId) {
               _raw_scheduledDate: data.scheduledDate,
               _raw_createdAt: data.createdAt,
               _sortTs,
-              // Cached lowercase fields for fast search filtering.
-              _searchContent: (data.content || "").toLowerCase(),
+              // Cached lowercase fields for fast search filtering. Title is folded
+              // into content so long-form posts are findable by their headline.
+              _searchContent: `${data.title || ""}\n${data.content || ""}`.toLowerCase(),
               _searchClient: (data.client || "").toLowerCase()
             });
             hasChanges = true;
