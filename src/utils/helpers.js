@@ -7,6 +7,40 @@ export const DATE_FORMATTERS = {
   time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' })
 };
 
+// Post sort orders offered in the grid toolbar. `_sortTs` is the pre-computed
+// (scheduledDate || createdAt) epoch ms set in usePosts; posts arrive already in
+// SCHEDULED_DESC order, so that case is a cheap no-op re-sort.
+export const SORT_ORDERS = {
+  SCHEDULED_DESC: 'scheduled_desc',
+  SCHEDULED_ASC: 'scheduled_asc',
+  CREATED_DESC: 'created_desc',
+  CREATED_ASC: 'created_asc',
+  CLIENT_AZ: 'client_az',
+  PLATFORM: 'platform',
+};
+
+const _ts = (p) => p._sortTs ?? 0;
+const _created = (p) =>
+  (p.createdAt instanceof Date ? p.createdAt.getTime() : new Date(p.createdAt || 0).getTime()) || 0;
+
+/**
+ * Returns a NEW array of posts ordered by `sortBy` (a SORT_ORDERS value).
+ * Secondary tiebreak is always most-recent-first so groups stay stable. Pure —
+ * never mutates the input (callers pass memoized arrays).
+ */
+export const sortPosts = (posts, sortBy) => {
+  const arr = (posts || []).slice();
+  switch (sortBy) {
+    case SORT_ORDERS.SCHEDULED_ASC: return arr.sort((a, b) => _ts(a) - _ts(b));
+    case SORT_ORDERS.CREATED_DESC: return arr.sort((a, b) => _created(b) - _created(a));
+    case SORT_ORDERS.CREATED_ASC: return arr.sort((a, b) => _created(a) - _created(b));
+    case SORT_ORDERS.CLIENT_AZ: return arr.sort((a, b) => (a.client || '').localeCompare(b.client || '') || _ts(b) - _ts(a));
+    case SORT_ORDERS.PLATFORM: return arr.sort((a, b) => (a.platform || '').localeCompare(b.platform || '') || _ts(b) - _ts(a));
+    case SORT_ORDERS.SCHEDULED_DESC:
+    default: return arr.sort((a, b) => _ts(b) - _ts(a));
+  }
+};
+
 // Image Compression Logic. Accepts a high-res file and returns an optimized
 // JPEG data URL (only the optimized version is ever kept/uploaded).
 // Defaults match the legacy in-editor dropzone; the media library passes larger
