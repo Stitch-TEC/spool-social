@@ -423,6 +423,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                   <option value={STATUS.DRAFT}>Draft</option>
                   <option value={STATUS.SCHEDULED}>Scheduled</option>
                   <option value={STATUS.POSTED}>Posted</option>
+                  {formData.status === STATUS.ARCHIVED && <option value={STATUS.ARCHIVED}>Archived</option>}
                 </select>
              </div>
              <div className="flex flex-col gap-1">
