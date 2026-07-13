@@ -5,6 +5,12 @@ import {
 } from 'lucide-react';
 import ToolSwitcher from './ToolSwitcher';
 
+const ROLE_LABELS = {
+  super_admin: 'Operator',
+  client_admin: 'Client admin',
+  client: 'Client',
+};
+
 const DashboardHeader = ({
   isReadOnly,
   view,
@@ -15,8 +21,12 @@ const DashboardHeader = ({
   onShare,
   filterClient,
   onNew,
-  onSignOut
+  onSignOut,
+  userEmail = '',
+  role = null
 }) => {
+  const initial = (userEmail.trim()[0] || '?').toUpperCase();
+  const roleLabel = ROLE_LABELS[role] || '';
   const searchInputRef = useRef(null);
 
   // "/" focuses search (unless already typing in a field).
@@ -110,10 +120,25 @@ const DashboardHeader = ({
           </button>
         )}
 
+        {!isReadOnly && userEmail && (
+          <div
+            className="flex items-center gap-2 sm:pl-1 sm:pr-2.5 sm:py-1 sm:rounded-full sm:bg-slate-100 sm:border sm:border-slate-200"
+            title={`Signed in as ${userEmail}${roleLabel ? ` · ${roleLabel}` : ''}`}
+          >
+            <div className="w-8 h-8 sm:w-7 sm:h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0" aria-hidden="true">
+              {initial}
+            </div>
+            <div className="hidden sm:flex flex-col leading-tight min-w-0 max-w-[160px]">
+              <span className="text-xs font-semibold text-slate-700 truncate">{userEmail}</span>
+              {roleLabel && <span className="text-[10px] text-slate-400 -mt-0.5">{roleLabel}</span>}
+            </div>
+          </div>
+        )}
+
         <button
           onClick={onSignOut}
           className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
-          title={isReadOnly ? "Exit View" : "Log Out"}
+          title={isReadOnly ? "Exit View" : `Log out ${userEmail}`.trim()}
           aria-label={isReadOnly ? "Exit View" : "Log Out"}
         >
           <LogOut size={20} />

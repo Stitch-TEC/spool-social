@@ -10,7 +10,7 @@ const CHIPS = [
 ];
 
 const StatusFilterChips = ({ value, onChange, counts }) => (
-  <div className="flex flex-wrap gap-2 mb-6" role="group" aria-label="Filter by status">
+  <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
     {CHIPS.map(({ key, label }) => {
       const count = counts[key ?? 'all'] ?? 0;
       const active = value === key;

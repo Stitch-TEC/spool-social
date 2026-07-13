@@ -32,6 +32,8 @@ import CalendarView from './components/CalendarView';
 import ClientSettingsModal from './components/ClientSettingsModal';
 import MediaLibrary from './components/MediaLibrary';
 import ImportExportModal from './components/ImportExportModal';
+import PostControls from './components/PostControls';
+import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import BulkActionBar from './components/BulkActionBar';
 import ShareManager from './components/ShareManager';
 import AdminPanel from './components/AdminPanel';
@@ -57,6 +59,10 @@ const App = () => {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [filterClient, setFilterClient] = useState(clientParam);
   const [filterStatus, setFilterStatus] = useState(null); // null | status | 'changes_requested'
+  const [filterPlatform, setFilterPlatform] = useState(null); // null | platform id
+  const [filterTag, setFilterTag] = useState(null); // null | tag string
+  // Default: what's coming up soonest sits at the top (the next thing to handle).
+  const [sortBy, setSortBy] = useState(SORT_ORDERS.SCHEDULED_ASC); // grid sort order
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   // Deferred so the input stays responsive while filtering large lists.
@@ -487,9 +493,10 @@ const App = () => {
     return valid.length;
   }, [isReadOnly, user, isClientMember, myClientName, myClientId, clientIdFor]);
 
-  // Client/archive/search filters (status chips applied separately so chip
-  // counts always reflect the current context).
-  const baseFilteredPosts = useMemo(() => {
+  // Client/archive/search scope — the set BEFORE the platform + status filters.
+  // Platform-filter counts derive from here so every platform with posts in the
+  // current context is offered (and the count reflects client/search/archive).
+  const scopedPosts = useMemo(() => {
     const searchLower = deferredSearchQuery.toLowerCase();
 
     return posts.filter(post => {
@@ -503,6 +510,29 @@ const App = () => {
       return matchesClient && matchesArchive && matchesSearch;
     });
   }, [posts, filterClient, showArchived, deferredSearchQuery]);
+
+  const platformCounts = useMemo(() => {
+    const counts = {};
+    for (const p of scopedPosts) counts[p.platform] = (counts[p.platform] || 0) + 1;
+    return counts;
+  }, [scopedPosts]);
+
+  // Tag counts across the scope (a post carries several tags → counted once each).
+  const tagCounts = useMemo(() => {
+    const counts = {};
+    for (const p of scopedPosts) for (const t of (p.tags || [])) counts[t] = (counts[t] || 0) + 1;
+    return counts;
+  }, [scopedPosts]);
+
+  // Add the platform + tag filters. Status chips + their counts are applied on
+  // top of this, so a chip count reflects the selected platform/tag too.
+  const baseFilteredPosts = useMemo(
+    () => scopedPosts.filter(p =>
+      (!filterPlatform || p.platform === filterPlatform) &&
+      (!filterTag || (p.tags || []).includes(filterTag))
+    ),
+    [scopedPosts, filterPlatform, filterTag]
+  );
 
   const statusCounts = useMemo(() => {
     const counts = {
@@ -520,12 +550,14 @@ const App = () => {
   }, [baseFilteredPosts]);
 
   const filteredPosts = useMemo(() => {
-    if (!filterStatus) return baseFilteredPosts;
+    let result = baseFilteredPosts;
     if (filterStatus === APPROVAL_STATUS.CHANGES_REQUESTED) {
-      return baseFilteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED);
+      result = baseFilteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED);
+    } else if (filterStatus) {
+      result = baseFilteredPosts.filter(p => p.status === filterStatus);
     }
-    return baseFilteredPosts.filter(p => p.status === filterStatus);
-  }, [baseFilteredPosts, filterStatus]);
+    return sortPosts(result, sortBy);
+  }, [baseFilteredPosts, filterStatus, sortBy]);
 
   const calendarPosts = useMemo(() => {
     if (view !== 'calendar') return [];
@@ -811,6 +843,8 @@ const App = () => {
             filterClient={filterClient}
             onNew={() => setView('editor')}
             onSignOut={signOutAndExit}
+            userEmail={user?.email || ''}
+            role={role}
           />
 
           {postsError && (
@@ -879,9 +913,22 @@ const App = () => {
                       </div>
                     </div>
                   )}
-                  {!showArchived && (
-                    <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
-                  )}
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+                    {!showArchived
+                      ? <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
+                      : <span />}
+                    <PostControls
+                      sortBy={sortBy}
+                      onSortChange={setSortBy}
+                      filterPlatform={filterPlatform}
+                      onPlatformChange={setFilterPlatform}
+                      platformCounts={platformCounts}
+                      filterTag={filterTag}
+                      onTagChange={setFilterTag}
+                      tagCounts={tagCounts}
+                      showClientSort={isOperator}
+                    />
+                  </div>
                   <PostGrid
                     posts={filteredPosts}
                     clientMap={clientMap}
