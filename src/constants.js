@@ -118,6 +118,11 @@ export const SPARK_PROMPTS = [
 // when a component doesn't have associated client settings.
 export const DEFAULT_CLIENT_SETTINGS = Object.freeze({});
 
+// Max reusable evergreen templates per client — mirrors the media library's
+// per-client cap so a client's reusable library stays curated, not a dumping
+// ground. UI-enforced (templates are client-SDK writes, no worker write path).
+export const TEMPLATE_LIMIT_PER_CLIENT = 50;
+
 // --- AI generation presets ------------------------------------------------
 // These live in the pure src/generation/prompts.js module (shared with the
 // Worker, no lucide/React) and are re-exported here so existing UI imports

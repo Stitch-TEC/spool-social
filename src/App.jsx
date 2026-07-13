@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
-import { Loader2, ShieldCheck, X, CheckSquare } from 'lucide-react';
+import { Loader2, ShieldCheck, X, CheckSquare, Files, Plus } from 'lucide-react';
 import {
   collection,
   addDoc,
@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 
 import { db } from './config/firebase';
-import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS } from './constants';
+import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT } from './constants';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
@@ -64,6 +64,7 @@ const App = () => {
   // Default: what's coming up soonest sits at the top (the next thing to handle).
   const [sortBy, setSortBy] = useState(SORT_ORDERS.SCHEDULED_ASC); // grid sort order
   const [showArchived, setShowArchived] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false); // Templates (evergreen) view
   const [searchQuery, setSearchQuery] = useState('');
   // Deferred so the input stays responsive while filtering large lists.
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -159,6 +160,16 @@ const App = () => {
       return showToast(`Content exceeds ${platform.name} limit (${platform.maxChars} chars)`, "error");
     }
 
+    // Evergreen cap: block a NEW template (or flipping an existing post into one)
+    // once this client is at the per-client limit. Editing a post that's ALREADY
+    // a template is always fine — it's already counted.
+    if (formData.isTemplate && !existingPost?.isTemplate) {
+      const templateCount = postsRef.current.filter(p => p.isTemplate && p.client === client).length;
+      if (templateCount >= TEMPLATE_LIMIT_PER_CLIENT) {
+        return showToast(`Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${client}. Delete one to add another.`, "error");
+      }
+    }
+
     try {
       // Safe Date Conversion Helper
       const getSafeDateString = (val) => {
@@ -185,6 +196,9 @@ const App = () => {
         feedback: (formData.feedback || "").trim().slice(0, 500),
         imageUrl: (formData.imageUrl || '').slice(0, 500000),
         tags,
+        // Evergreen flag: templates live in the posts collection but are excluded
+        // from the dated queue + the drafts API — surfaced only in the Templates view.
+        isTemplate: !!formData.isTemplate,
         // All posts are attributed to the operator uid (so the operator's query
         // + the single per-client review token resolve across multi-author
         // content); clientId is the immutable tenant key.
@@ -288,13 +302,17 @@ const App = () => {
       }
     }
 
+    // Only the guest review flow (scheduling == approval) flips approvalStatus.
+    // An operator setting "Scheduled" from the card just changes the workflow
+    // status — it doesn't stand in for the client's approval.
+    const markApproved = isApproving && isReadOnly;
     try {
       await updateDoc(doc(db, 'posts', postId), {
         status: newStatus,
         updatedAt: new Date().toISOString(),
-        ...(isApproving ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
+        ...(markApproved ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
       });
-      showToast(isApproving ? "Approved ✓" : `Status updated to ${newStatus}`);
+      showToast(markApproved ? "Approved ✓" : `Status updated to ${newStatus}`);
     } catch {
       showToast("Update failed", "error");
     }
@@ -451,15 +469,35 @@ const App = () => {
 
   const handleDuplicatePost = useCallback((p) => {
     // Reset review state — a copy of an approved post is a fresh draft,
-    // and inherited client feedback wouldn't apply to it.
+    // and inherited client feedback wouldn't apply to it. A clone is never a
+    // template (that's what "Use as draft" is for).
     handleSavePost({
       ...p,
       id: undefined,
       status: STATUS.DRAFT,
       approvalStatus: APPROVAL_STATUS.PENDING,
-      feedback: ''
+      feedback: '',
+      isTemplate: false
     });
   }, [handleSavePost]);
+
+  // "Use as draft": open the editor pre-filled from a template as a brand-new,
+  // non-template draft. Nothing is written until the user saves — so they alter
+  // + schedule this iteration before it lands in the queue.
+  const handleUseTemplate = useCallback((tmpl) => {
+    if (isReadOnly) return;
+    setEditingPost({
+      ...tmpl,
+      id: undefined,
+      isTemplate: false,
+      status: STATUS.DRAFT,
+      approvalStatus: APPROVAL_STATUS.PENDING,
+      feedback: '',
+      scheduledDate: null
+    });
+    setShowTemplates(false);
+    setView('editor');
+  }, [isReadOnly]);
 
   // Batch-create draft posts (used by "Repurpose blog → social"). Returns count.
   const handleCreateDrafts = useCallback(async (drafts) => {
@@ -500,6 +538,7 @@ const App = () => {
     const searchLower = deferredSearchQuery.toLowerCase();
 
     return posts.filter(post => {
+      if (post.isTemplate) return false; // templates live in their own view, not the queue
       const matchesClient = filterClient ? post.client === filterClient : true;
       const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
       const matchesSearch =
@@ -510,6 +549,30 @@ const App = () => {
       return matchesClient && matchesArchive && matchesSearch;
     });
   }, [posts, filterClient, showArchived, deferredSearchQuery]);
+
+  // Distinct images already used on each client's posts (incl. templates) — so the
+  // editor's media picker can offer "reuse an image from this client" without any
+  // re-upload. The Compass import's hero photos live here immediately.
+  const postImagesByClient = useMemo(() => {
+    const sets = {};
+    for (const p of posts) {
+      if (!p.imageUrl || !p.client) continue;
+      (sets[p.client] = sets[p.client] || new Set()).add(p.imageUrl);
+    }
+    const out = {};
+    for (const k in sets) out[k] = Array.from(sets[k]);
+    return out;
+  }, [posts]);
+
+  // Evergreen templates (client/search scoped, newest first). Their own area.
+  const templatesList = useMemo(() => {
+    const searchLower = deferredSearchQuery.toLowerCase();
+    return posts.filter(post =>
+      post.isTemplate &&
+      (filterClient ? post.client === filterClient : true) &&
+      (!searchLower || post._searchContent?.includes(searchLower) || post._searchClient?.includes(searchLower))
+    );
+  }, [posts, filterClient, deferredSearchQuery]);
 
   const platformCounts = useMemo(() => {
     const counts = {};
@@ -797,6 +860,7 @@ const App = () => {
             showToast={showToast}
             onSave={handleSavePost}
             onCreateDrafts={handleCreateDrafts}
+            postImagesByClient={postImagesByClient}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>
@@ -817,7 +881,9 @@ const App = () => {
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
             showArchived={showArchived}
-            onShowArchived={(v) => { setShowArchived(v); setFilterStatus(null); }}
+            onShowArchived={(v) => { setShowArchived(v); setShowTemplates(false); setFilterStatus(null); }}
+            showTemplates={showTemplates}
+            onShowTemplates={(v) => { setShowTemplates(v); if (v) { setShowArchived(false); setFilterStatus(null); exitSelectionMode(); } }}
             filterClient={filterClient}
             onFilterClient={setFilterClient}
             uniqueClients={uniqueClients}
@@ -861,7 +927,7 @@ const App = () => {
                   <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500 shrink-0"><X size={20}/></button>
                 )}
               </h2>
-              {isOperator && view === 'grid' && filteredPosts.length > 0 && (
+              {isOperator && view === 'grid' && !showTemplates && filteredPosts.length > 0 && (
                 <button
                   onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
                   className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold border transition-colors ${selectionMode ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
@@ -913,24 +979,51 @@ const App = () => {
                       </div>
                     </div>
                   )}
-                  <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-                    {!showArchived
-                      ? <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
-                      : <span />}
-                    <PostControls
-                      sortBy={sortBy}
-                      onSortChange={setSortBy}
-                      filterPlatform={filterPlatform}
-                      onPlatformChange={setFilterPlatform}
-                      platformCounts={platformCounts}
-                      filterTag={filterTag}
-                      onTagChange={setFilterTag}
-                      tagCounts={tagCounts}
-                      showClientSort={isOperator}
-                    />
-                  </div>
+                  {showTemplates ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+                      <div>
+                        <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                          <Files size={18} className="text-indigo-500" /> Templates
+                          <span className="text-xs font-semibold text-slate-400 tabular-nums">
+                            {templatesList.length}{filterClient ? ` / ${TEMPLATE_LIMIT_PER_CLIENT}` : ''}
+                          </span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Reusable evergreen content — “Use as draft” spins off a new post to tweak &amp; schedule.</p>
+                      </div>
+                      {!isReadOnly && (() => {
+                        const atLimit = !!filterClient && templatesList.length >= TEMPLATE_LIMIT_PER_CLIENT;
+                        return (
+                          <button
+                            onClick={() => { setEditingPost({ isTemplate: true }); setView('editor'); }}
+                            disabled={atLimit}
+                            title={atLimit ? `Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${filterClient}` : 'New template'}
+                            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <Plus size={16} /> New template
+                          </button>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+                      {!showArchived
+                        ? <StatusFilterChips value={filterStatus} onChange={setFilterStatus} counts={statusCounts} />
+                        : <span />}
+                      <PostControls
+                        sortBy={sortBy}
+                        onSortChange={setSortBy}
+                        filterPlatform={filterPlatform}
+                        onPlatformChange={setFilterPlatform}
+                        platformCounts={platformCounts}
+                        filterTag={filterTag}
+                        onTagChange={setFilterTag}
+                        tagCounts={tagCounts}
+                        showClientSort={isOperator}
+                      />
+                    </div>
+                  )}
                   <PostGrid
-                    posts={filteredPosts}
+                    posts={showTemplates ? templatesList : filteredPosts}
                     clientMap={clientMap}
                     isReadOnly={isReadOnly}
                     onEdit={handleSelectPost}
@@ -940,8 +1033,9 @@ const App = () => {
                     onStatusChange={handleStatusChange}
                     onArchive={handleArchivePost}
                     onRestore={handleRestorePost}
+                    onUseTemplate={showTemplates ? handleUseTemplate : undefined}
                     onCreate={() => setView('editor')}
-                    selectable={!isReadOnly && selectionMode}
+                    selectable={!isReadOnly && !showTemplates && selectionMode}
                     selectedIds={selectedIds}
                     onToggleSelect={toggleSelect}
                   />
@@ -975,7 +1069,7 @@ const App = () => {
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
-      {isOperator && selectionMode && selectedIds.size > 0 && (
+      {isOperator && !showTemplates && selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
           count={selectedIds.size}
           totalFiltered={filteredPosts.length}

@@ -652,6 +652,7 @@ export default {
       if (request.method === 'GET') {
         try {
           let drafts = await listPosts(env, env.OWNER_UID);
+          drafts = drafts.filter(d => !d.isTemplate); // evergreen templates aren't drafts
           const q = url.searchParams;
           const fc = q.get('client'), fp = q.get('platform'), fst = q.get('status');
           if (fc) drafts = drafts.filter(d => d.client === fc);

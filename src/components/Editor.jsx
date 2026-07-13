@@ -35,7 +35,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {} }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -63,7 +63,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     imageUrl: '',
     scheduledDate: toLocalISOString(new Date()),
     status: STATUS.DRAFT,
-    tags: []
+    tags: [],
+    isTemplate: false
   });
   const [previewMode, setPreviewMode] = useState(false);
   const [isSparkOpen, setIsSparkOpen] = useState(false);
@@ -176,7 +177,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         imageUrl: '',
         scheduledDate: safeDateString,
         status: STATUS.DRAFT,
-        tags: []
+        tags: [],
+        isTemplate: false
       };
       setFormData({
         ...defaultState,
@@ -391,6 +393,19 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             )}
           </div>
 
+          {/* Evergreen: mark as a reusable template (kept out of the dated queue,
+              lives in the Templates library — "Use as draft" clones it into a post). */}
+          <label className="flex items-center gap-2.5 mb-5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!formData.isTemplate}
+              onChange={(e) => setFormData({ ...formData, isTemplate: e.target.checked })}
+              className="accent-indigo-600 w-4 h-4 shrink-0"
+            />
+            <span className="text-sm font-semibold text-slate-700">Reusable template</span>
+            <span className="text-xs text-slate-400 hidden sm:inline">— saved to your Templates library; no date needed</span>
+          </label>
+
           {/* Metadata Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
              <div>
@@ -399,6 +414,16 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                    <CalendarIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                    <input type="datetime-local" value={formData.scheduledDate} onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
                 </div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mt-4 mb-2">Status</label>
+                <select
+                  value={formData.status}
+                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all"
+                >
+                  <option value={STATUS.DRAFT}>Draft</option>
+                  <option value={STATUS.SCHEDULED}>Scheduled</option>
+                  <option value={STATUS.POSTED}>Posted</option>
+                </select>
              </div>
              <div className="flex flex-col gap-1">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Client Name</label>
@@ -577,6 +602,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
              also offer the client's curated library — the slug-keyed folder POM's Assets card shares. */
           clientKey={genClientId(formData.client)}
           clientName={formData.client}
+          clientImages={postImagesByClient[formData.client] || []}
         />
       )}
     </div>
