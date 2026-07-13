@@ -41,6 +41,29 @@ export const sortPosts = (posts, sortBy) => {
   }
 };
 
+// Canonical identity for an image URL: the R2 object key for /media URLs (any
+// origin or percent-encoding), else the URL string itself. Two UI sections can
+// surface the SAME stored object under superficially different URLs — comparing
+// keys is what lets pickers collapse them into one thumbnail.
+export const imageKey = (u) => {
+  if (typeof u !== 'string') return u;
+  const i = u.indexOf('/media/');
+  if (i === -1) return u;
+  const raw = u.slice(i + '/media/'.length).split('?')[0];
+  try { return decodeURIComponent(raw); } catch { return raw; }
+};
+
+// Content identity: content-addressed /media keys end in the bytes' SHA-256, so
+// the SAME image stored in two folders (the generated pool and a client's curated
+// library) still collapses to one identity. Non-hashed keys fall back to imageKey.
+export const imageContentId = (u) => {
+  const k = imageKey(u);
+  if (typeof k !== 'string') return k;
+  const base = k.slice(k.lastIndexOf('/') + 1);
+  const m = base.match(/^([0-9a-f]{64})\.\w+$/);
+  return m ? m[1] : k;
+};
+
 // Image Compression Logic. Accepts a high-res file and returns an optimized
 // JPEG data URL (only the optimized version is ever kept/uploaded).
 // Defaults match the legacy in-editor dropzone; the media library passes larger

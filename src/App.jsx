@@ -14,6 +14,7 @@ import {
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT } from './constants';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
+import { ensureHostedImage } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -91,11 +92,25 @@ const App = () => {
   // Stable display-name → clientId map (clientId is the immutable tenant key,
   // backfilled onto posts). Used to stamp clientId on writes and to bind a
   // review link to the right client. Falls back to a slug for brand-new names.
+  // ⚡ Same hash-stabilization trick as uniqueClients below: `posts` gets a new
+  // array identity on every snapshot, but the name→id pairs rarely change. Keying
+  // the map off a content hash keeps clientIdByName (and everything downstream —
+  // clientIdFor → the CRUD callbacks → every memoized PostCard) referentially stable.
+  const clientIdPairsHash = useMemo(() => {
+    const seen = new Map();
+    for (const p of posts) if (p.client && p.clientId && !seen.has(p.client)) seen.set(p.client, p.clientId);
+    return [...seen.entries()].map(([n, id]) => `${n}\u0000${id}`).sort().join('\u0001');
+  }, [posts]);
   const clientIdByName = useMemo(() => {
     const m = {};
-    for (const p of posts) if (p.client && p.clientId && !(p.client in m)) m[p.client] = p.clientId;
+    if (clientIdPairsHash) {
+      for (const pair of clientIdPairsHash.split('\u0001')) {
+        const [n, id] = pair.split('\u0000');
+        m[n] = id;
+      }
+    }
     return m;
-  }, [posts]);
+  }, [clientIdPairsHash]);
   const clientIdFor = useCallback(
     (name) => clientIdByName[name] || slugifyClientId(name),
     [clientIdByName]
@@ -183,6 +198,18 @@ const App = () => {
       const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
       const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
 
+      // Swap a bulky base64 data URL for a small hosted /media URL (content-addressed
+      // in R2, so a reused photo keeps one URL). Also opportunistically migrates
+      // legacy data-URL posts whenever they're re-saved. Falls back to the data URL
+      // if the upload fails, so saving never blocks on the media API.
+      let imageUrl = await ensureHostedImage(formData.imageUrl || '');
+      // The Firestore fallback has a hard budget. Truncating base64 mid-stream would
+      // store a CORRUPTED image with a success toast — drop it honestly instead.
+      if (imageUrl.startsWith('data:') && imageUrl.length > 500000) {
+        imageUrl = '';
+        showToast("Image couldn't be uploaded and is too large to store offline — saved without it", "error");
+      }
+
       const postData = {
         client,
         content,
@@ -194,7 +221,7 @@ const App = () => {
         status,
         approvalStatus,
         feedback: (formData.feedback || "").trim().slice(0, 500),
-        imageUrl: (formData.imageUrl || '').slice(0, 500000),
+        imageUrl: imageUrl.slice(0, 500000),
         tags,
         // Evergreen flag: templates live in the posts collection but are excluded
         // from the dated queue + the drafts API — surfaced only in the Templates view.
@@ -244,6 +271,13 @@ const App = () => {
               content: post.content || '',
               title: (post.title || '').slice(0, 200),
               altText: (post.altText || '').slice(0, 300),
+              // Undo must restore the WHOLE post — dropping these silently turned a
+              // restored template into a queue draft and lost SEO fields + the
+              // client-feedback history.
+              metaDescription: (post.metaDescription || '').slice(0, 200),
+              slug: (post.slug || '').slice(0, 80),
+              isTemplate: !!post.isTemplate,
+              feedbackThread: Array.isArray(post.feedbackThread) ? post.feedbackThread : [],
               platform: post.platform || 'gmb',
               status: Object.values(STATUS).includes(post.status) ? post.status : STATUS.DRAFT,
               approvalStatus: Object.values(APPROVAL_STATUS).includes(post.approvalStatus) ? post.approvalStatus : APPROVAL_STATUS.PENDING,
@@ -351,6 +385,9 @@ const App = () => {
             feedback: item.feedback || '',
             imageUrl: item.imageUrl || '',
             tags: item.tags || [],
+            // Preserve templates through a backup → restore round-trip (otherwise a
+            // full-backup import floods the dated queue with evergreen content).
+            isTemplate: !!item.isTemplate,
             scheduledDate: item.scheduledDate || null,
             createdAt: now,
             updatedAt: now,
@@ -453,6 +490,8 @@ const App = () => {
               content: post.content || "",
               title: (post.title || '').slice(0, 200),
               altText: (post.altText || '').slice(0, 300),
+              metaDescription: (post.metaDescription || '').slice(0, 200),
+              slug: (post.slug || '').slice(0, 80),
               platform: post.platform || 'gmb',
               status: STATUS.DRAFT,
               approvalStatus: APPROVAL_STATUS.PENDING,
@@ -878,6 +917,10 @@ const App = () => {
             onSave={handleSavePost}
             onCreateDrafts={handleCreateDrafts}
             postImagesByClient={postImagesByClient}
+            /* New posts inherit the caller's client context (active filter, or a
+               member's own client) so the media picker works before first save. */
+            initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+            clientLocked={isClientMember}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>
@@ -1104,7 +1147,7 @@ const App = () => {
         />
       )}
       {isClientSettingsOpen && isOperator && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} clientIdFor={clientIdFor} />
       )}
       {isShareOpen && !isReadOnly && (
         <ShareManager
@@ -1115,12 +1158,17 @@ const App = () => {
           showToast={showToast}
         />
       )}
-      {isMediaOpen && isOperator && (
+      {isMediaOpen && (isOperator || isClientMember) && (
         <MediaLibrary
           onClose={() => setIsMediaOpen(false)}
-          uniqueClients={uniqueClients}
-          initialClient={filterClient || ''}
-          clientIdFor={clientIdFor}
+          /* Client members get the library too, pinned to their own client (the
+             worker enforces the same tenant boundary server-side). */
+          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+          initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+          /* A member's display name may drift from their hand-authored slug —
+             resolve their own name straight to their pinned clientId. */
+          clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
+          postImagesByClient={postImagesByClient}
           showToast={showToast}
         />
       )}

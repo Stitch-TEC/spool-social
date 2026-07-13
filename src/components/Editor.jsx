@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
 import {
   X, Save, Wand2, Smartphone, Image as ImageIcon, Eye, Sparkles,
   Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
@@ -14,7 +14,7 @@ import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
-import { describeImage, generateText } from '../utils/generationApi';
+import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
@@ -35,7 +35,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {} }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -59,7 +59,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     title: '',
     altText: '',
     metaDescription: '',
-    client: '',
+    // New posts start with the caller's client context (the active sidebar filter,
+    // or a client member's own client) so the media picker's per-client sections
+    // work immediately — previously they only appeared when editing an existing post.
+    client: initialClient,
     imageUrl: '',
     scheduledDate: toLocalISOString(new Date()),
     status: STATUS.DRAFT,
@@ -81,7 +84,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const [previewWidth, setPreviewWidth] = useState(() => {
     try {
       const saved = parseInt(window.localStorage?.getItem('spool:previewWidth'), 10);
-      return Number.isFinite(saved) ? Math.min(PREVIEW_MAX, Math.max(PREVIEW_MIN, saved)) : 420;
+      // Clamp to the CURRENT viewport too — a width persisted on a wide monitor
+      // would otherwise squeeze the edit pane to a sliver on a smaller screen.
+      const viewportMax = Math.max(PREVIEW_MIN, window.innerWidth - 360);
+      return Number.isFinite(saved) ? Math.min(PREVIEW_MAX, viewportMax, Math.max(PREVIEW_MIN, saved)) : 420;
     } catch { return 420; }
   });
   const resizingRef = useRef(false);
@@ -135,18 +141,29 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     e.preventDefault();
     setIsDragging(false);
   };
+
+  // Optimize the file, show it immediately, then swap the bulky data URL for a
+  // hosted /media URL in the background (content-addressed, so the same photo
+  // reused across posts keeps ONE URL). Falls back to the data URL on failure.
+  const attachImageFile = async (file) => {
+    try {
+      const processedImage = await processImageFile(file);
+      setFormData(prev => ({ ...prev, imageUrl: processedImage }));
+      const hosted = await ensureHostedImage(processedImage);
+      if (hosted !== processedImage) {
+        // Only swap if the user hasn't replaced/removed the image meanwhile.
+        setFormData(prev => (prev.imageUrl === processedImage ? { ...prev, imageUrl: hosted } : prev));
+      }
+    } catch {
+      showToast("Error processing image", "error");
+    }
+  };
+
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) {
-      try {
-        const processedImage = await processImageFile(file);
-        setFormData(prev => ({ ...prev, imageUrl: processedImage }));
-      } catch {
-        showToast("Error processing image", "error");
-      }
-    }
+    if (file && file.type.startsWith('image/')) await attachImageFile(file);
   };
 
   useEffect(() => {
@@ -173,7 +190,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         title: '',
         altText: '',
         metaDescription: '',
-        client: '',
+        client: initialClient,
         imageUrl: '',
         scheduledDate: safeDateString,
         status: STATUS.DRAFT,
@@ -183,27 +200,31 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       setFormData({
         ...defaultState,
         ...post,
+        // A post with no client (e.g. "New template") still gets the caller's context.
+        client: post.client || initialClient,
         scheduledDate: safeDateString
       });
     }
-  }, [post]);
+  }, [post, initialClient]);
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      try {
-        const processedImage = await processImageFile(file); // ✅ COMPRESSION
-        setFormData(prev => ({ ...prev, imageUrl: processedImage }));
-      } catch {
-        showToast("Error processing image", "error");
-      }
-    }
+    if (file) await attachImageFile(file);
   };
 
   const currentPlatform = PLATFORMS[formData.platform] || PLATFORMS.gmb;
   const isLongForm = currentPlatform.longForm === true;
   const wordCount = formData.content.length;
   const isOverLimit = wordCount > currentPlatform.maxChars;
+
+  // ⚡ The live preview re-renders at DEFERRED priority: typing stays responsive
+  // even while react-markdown re-parses a long blog post, and MobilePreview's memo
+  // skips the urgent keystroke render entirely (its compared fields lag behind).
+  const deferredContent = useDeferredValue(formData.content);
+  const previewPost = useMemo(
+    () => ({ ...formData, content: deferredContent }),
+    [formData, deferredContent]
+  );
 
   const handleSaveWrapper = async () => {
     if (isReadOnly || isOverLimit || !formData.content || isSaving) return;
@@ -428,8 +449,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
              </div>
              <div className="flex flex-col gap-1">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Client Name</label>
-                {/* 🔒 SECURITY: Input length limit */}
-                <input type="text" list="client-list" maxLength={50} placeholder="Select or type a new client..." value={formData.client} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
+                {/* 🔒 SECURITY: Input length limit. Client members are pinned to their own
+                    client (the save path enforces it) — show the field locked instead of an
+                    editable value that would silently be overridden. */}
+                <input type="text" list="client-list" maxLength={50} placeholder="Select or type a new client..." value={formData.client} disabled={clientLocked} title={clientLocked ? 'Posts are always saved to your own client' : undefined} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-70 disabled:cursor-not-allowed" />
                 <datalist id="client-list">
                     {allClients.map(c => <option key={c} value={c} />)}
                 </datalist>
@@ -563,11 +586,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
          <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 backdrop-blur-3xl overflow-hidden">
             {isLongForm ? (
               <div className="w-full h-full overflow-y-auto bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-                <MarkdownPreview content={formData.content} title={formData.title} imageUrl={formData.imageUrl} />
+                <MarkdownPreview content={deferredContent} title={formData.title} imageUrl={formData.imageUrl} />
               </div>
             ) : (
               <MobilePreview
-                post={formData}
+                post={previewPost}
                 clientSettings={clientMap[formData.client] || DEFAULT_CLIENT_SETTINGS}
               />
             )}

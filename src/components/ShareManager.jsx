@@ -3,6 +3,7 @@ import { X, Link as LinkIcon, Copy, Check, Trash2, Plus, Loader2, ShieldCheck } 
 import { listShareLinks, createShareLink, revokeShareLink } from '../utils/shareApi';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { DATE_FORMATTERS } from '../utils/helpers';
+import { slugifyClientId } from '../config/roles';
 
 /**
  * Owner tool to create, copy and revoke per-client review links. Each link is a
@@ -50,8 +51,10 @@ const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', clientI
     try {
       // clientId is the secure tenant key the review token is bound to. The
       // Worker forces it to the caller's own for a client member; for an
-      // operator we resolve it from the selected client's posts.
-      const created = await createShareLink(client, '', clientIdByName[client] || '');
+      // operator we resolve it from the selected client's posts, falling back
+      // to the canonical slug for clients whose posts predate the clientId
+      // backfill (otherwise creation fails with a raw "clientId is required").
+      const created = await createShareLink(client, '', clientIdByName[client] || slugifyClientId(client));
       setLinks(prev => [{ ...created, createdAt: new Date().toISOString() }, ...prev]);
       await copy(created.url, created.token);
     } catch (err) {

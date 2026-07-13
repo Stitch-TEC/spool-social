@@ -36,6 +36,11 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+      # The Worker only gets bundled at deploy time (wrangler), so a syntax error
+      # in worker/*.js would otherwise surface AFTER merge, in the production
+      # deploy job. This is a cheap pre-merge guard, not a full bundle check.
+      - name: Worker syntax check
+        run: for f in worker/*.js; do node --check "$f"; done
 
   audit:
     name: audit

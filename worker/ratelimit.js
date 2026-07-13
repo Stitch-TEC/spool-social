@@ -31,10 +31,18 @@ function limitsFor(mode, env) {
 }
 
 async function bump(kv, key, ttlSeconds) {
-  const current = parseInt((await kv.get(key)) || '0', 10);
-  const next = current + 1;
-  await kv.put(key, String(next), { expirationTtl: ttlSeconds });
-  return next;
+  // KV allows ~1 write/sec per key and both calls here share one key per
+  // principal-bucket, so bursts can make get/put throw. Rate limiting is a soft
+  // abuse cap — fail OPEN (count 0) rather than turning allowed traffic into 500s.
+  try {
+    const current = parseInt((await kv.get(key)) || '0', 10);
+    const next = current + 1;
+    await kv.put(key, String(next), { expirationTtl: ttlSeconds });
+    return next;
+  } catch (err) {
+    console.error('Rate-limit KV error (failing open):', err?.message || err);
+    return 0;
+  }
 }
 
 /**

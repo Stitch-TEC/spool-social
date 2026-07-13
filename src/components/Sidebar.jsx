@@ -68,7 +68,9 @@ const Sidebar = ({
                 <button onClick={() => { onShowArchived(true); onClose(); }} className={navButtonClass(showArchived)}>
                   <div className="flex items-center gap-2"><Archive size={16} /> <span>Archived</span></div>
                 </button>
-                {isOperator && (
+                {/* Media is not operator-only: client members manage their own client's
+                    library (tenant-pinned server-side). */}
+                {onOpenMedia && (
                   <button onClick={() => { onOpenMedia(); onClose(); }} className={navButtonClass(false)}>
                     <div className="flex items-center gap-2"><ImageIcon size={16} /> <span>Media Library</span></div>
                   </button>

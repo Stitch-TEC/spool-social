@@ -8,7 +8,7 @@ import useEscapeKey from '../hooks/useEscapeKey';
 
 const AI_FIELD_MAX = 600;
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly, onMergeClient }) => {
+const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly, onMergeClient, clientIdFor }) => {
   useEscapeKey(onClose);
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
@@ -99,6 +99,9 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
       await setDoc(doc(db, 'clients', clientDocId), {
         uid,
         name: activeClient,
+        // The immutable tenant key — client members and review guests query branding
+        // by clientId, so a doc without it is invisible to everyone but the operator.
+        clientId: clientMap?.[activeClient]?.clientId || clientIdFor?.(activeClient) || '',
         logoUrl: (logoUrl || '').slice(0, 500000),
         brandColor,
         aiBrandVoice: cap(aiBrandVoice),

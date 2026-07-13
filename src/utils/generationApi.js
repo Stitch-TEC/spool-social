@@ -76,6 +76,31 @@ export async function uploadMedia(client, base64) {
   return postJSON('/api/media', { client, image: { base64 } });
 }
 
+/**
+ * Store a post-attachment image (data URL) in the content-addressed R2 pool and
+ * resolve to its hosted /media URL. Identical bytes always map to the same URL,
+ * so the same photo attached to many posts is stored once and never duplicates
+ * in the reuse picker.
+ */
+export async function uploadPostImage(base64) {
+  const { url } = await postJSON('/api/media', { image: { base64 } });
+  return url;
+}
+
+/**
+ * Best-effort swap of a base64 data URL for a small hosted /media URL. Non-data
+ * URLs pass through untouched; on any upload failure (offline, worker down,
+ * guest session) the original data URL is returned so saving never breaks.
+ */
+export async function ensureHostedImage(imageUrl) {
+  if (typeof imageUrl !== 'string' || !imageUrl.startsWith('data:image/')) return imageUrl;
+  try {
+    return await uploadPostImage(imageUrl);
+  } catch {
+    return imageUrl;
+  }
+}
+
 /** Add a video URL reference (YouTube / Vimeo / direct file) to a client's library. */
 export async function addVideoUrl(client, videoUrl) {
   return postJSON('/api/media', { client, videoUrl });
