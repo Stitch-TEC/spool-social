@@ -15,6 +15,7 @@
 * **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
 * **📝 Long-form content:** **Blog** and **Job Posting** channels with a Markdown editor, formatting toolbar, and live preview.
 * **🤖 AI throughout:** tone/length-aware drafting (Generate / Improve / Hashtags), per-client brand voice, **repurpose blog → social**, SEO meta descriptions, and brand-aware image generation with **vision alt-text**.
+* **💡 Ideas panel:** content ideas pulled from the client's own website pages and GitHub releases/commits (brokered through the suite's feedback-worker) — one click seeds the AI prompt with "Write about: …".
 * **🖼️ Media library:** a per-client asset panel — upload (auto-optimized) images, add video URLs (YouTube / Vimeo / file), reuse or delete — backed by R2.
 * **🔌 Content API + Claude skill:** push and manage drafts from any tool (see [SPOOL_DRAFTS_API.md](SPOOL_DRAFTS_API.md) and the `/draft-to-spool` skill).
 * **🔗 Client Approval Links:** Generate unique, shareable URLs for clients to review content without needing an account.
@@ -106,6 +107,34 @@ node scripts/register-key.mjs list --remote           # list registered apps
 ```
 
 After minting a new key, set it on Spool with `wrangler secret put STITCH_AI_KEY`.
+
+---
+
+## 🧷 Client context, brand & ideas from POM (the suite seam)
+
+The Worker also pulls per-client knowledge from the suite broker (**feedback-worker**,
+`feedback.stitchtec.dev`), authenticated with the **`CONTEXT_KEY`** secret — always
+**server-side**; the key never reaches the browser.
+
+* **Generation injection** (`POST /api/text` + `POST /api/generate`, and the automation cron):
+  `GET /client-profile` supplies the client's AI context, the one-line brand summary, the
+  **structured brand kit** (palette hexes + names, free-text theme, logo URL), the
+  **auto-refreshed recent-activity digest** (`recentActivity` — POM's `autoContext`, written by
+  the broker's weekly crawl of the client's site/repos), and the asset-library manifest. Text
+  prompts gain a `Brand style: <theme>` directive plus the context/recent-activity/assets lines;
+  image prompts render the exact palette hexes + theme (falling back to the lossy one-line brand
+  string on old brokers). All fetched site/repo text is framed as **untrusted reference data,
+  never instructions** (see `renderPom*` in [`src/generation/prompts.js`](src/generation/prompts.js)).
+* **`GET /api/ideas?client=<name-or-slug>`** (authed like generation; client members pinned to
+  their own slug): brokered read of feedback-worker `GET /client-signals` — the client's site
+  pages + repo releases/commits — returning `{ ok, slug, signals: { fetchedAt, cached, site,
+  repos } }`. Backs the editor's **Ideas panel**, whose "Draft from this" seeds the AI prompt.
+* **Fail-open / kill switch:** with `CONTEXT_KEY` absent, generation simply skips the injection
+  and `/api/ideas` answers `{ ok:false, error:'not_configured' }` — the Ideas panel quietly
+  disappears. A real upstream failure is a 502 (the panel hides on that too).
+* **Diagnostics:** `GET /api/seam-status` (public, presence only) and `GET /api/context-check`
+  (operator) — the latter now reports the brand theme, logo-URL presence, palette color count,
+  and the recent-activity refresh timestamp so the whole seam is observable from Spool's side.
 
 ---
 
