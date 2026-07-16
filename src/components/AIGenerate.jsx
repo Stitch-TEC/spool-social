@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb } from 'lucide-react';
-import { generateImage, generateText, fetchIdeas } from '../utils/generationApi';
+import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb, ChevronDown } from 'lucide-react';
+import { generateImage, generateText, fetchIdeas, fetchPage } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt } from '../utils/aiPrompt';
 import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '../constants';
 
@@ -15,7 +15,7 @@ const MAX_SITE_IDEAS = 5;
 // Module-level (per SPA session), NOT per component instance: every Editor open mounts a fresh
 // AIGenerate, and each cold instance would otherwise re-fetch the same client's signals — another
 // rate-bucket debit (shared with generation) and another cold-cache stall for identical data.
-const ideasCache = new Map(); // clientId -> flattened items (settled fetches only)
+const ideasCache = new Map(); // clientId -> { items, index } (settled fetches only)
 
 // Scraped text lands in a prompt seed — collapse ALL whitespace (incl. newlines) so a hostile
 // page title can't fake multi-line prompt structure when "Draft from this" drops it in the box.
@@ -107,6 +107,14 @@ const AIGenerate = ({
   // AI for 3 concrete angles from that page's content; clicking one seeds the prompt box. One page
   // at a time (each ask is a real generation debit), reset whenever the ideas list resets.
   const [angles, setAngles] = useState(null);
+  // "Browse all pages" picker: the full page index (url/title, from the pack) + the pages the user
+  // has pulled on demand. Preserves the auto-suggest MAGIC (the top cards stay) while letting the
+  // operator reach ANY page. `picked` items share the auto-card shape so they render identically.
+  const [pageIndex, setPageIndex] = useState([]); // [{ url, title? }]
+  const [picked, setPicked] = useState([]); // pulled pages, prepended to the card list
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [pickingUrl, setPickingUrl] = useState(''); // the index url currently being pulled
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
@@ -122,6 +130,7 @@ const AIGenerate = ({
   //     client's ideas stay visible and seedable under the new name.
   useEffect(() => {
     setAngles(null); // page angles belong to the current client's ideas list — never outlive it
+    setPicked([]); setPageIndex([]); setPickerOpen(false); setPickerQuery(''); setPickingUrl('');
     if (!open || !isText || !clientId) {
       setIdeas([]);
       setIdeasState('idle');
@@ -129,8 +138,9 @@ const AIGenerate = ({
     }
     const cached = ideasCache.get(clientId);
     if (cached) {
-      setIdeas(cached);
-      setIdeasState(cached.length ? 'ready' : 'hidden');
+      setIdeas(cached.items);
+      setPageIndex(cached.index || []);
+      setIdeasState(cached.items.length || (cached.index || []).length ? 'ready' : 'hidden');
       return;
     }
     let cancelled = false;
@@ -143,10 +153,13 @@ const AIGenerate = ({
           // fetch (possibly a slow cold broker collect) — discarding the result would re-pay it
           // on the next open. Only the STATE updates are gated on still being mounted.
           const items = flattenIdeas(data);
-          ideasCache.set(clientId, items);
+          const index = Array.isArray(data?.signals?.site?.index) ? data.signals.site.index.filter((e) => e && e.url) : [];
+          ideasCache.set(clientId, { items, index });
           if (cancelled) return;
           setIdeas(items);
-          setIdeasState(items.length ? 'ready' : 'hidden');
+          setPageIndex(index);
+          // Panel shows if there are auto cards OR any indexed page to browse.
+          setIdeasState(items.length || index.length ? 'ready' : 'hidden');
         })
         .catch((e) => {
           // Cache only the PERMANENT misses (seam off / never-rostered client) — those genuinely
@@ -156,7 +169,7 @@ const AIGenerate = ({
           // same reasoning as the success path.)
           const msg = String(e?.message || '');
           if (msg === 'not_configured' || msg === 'unknown_client') {
-            ideasCache.set(clientId, []);
+            ideasCache.set(clientId, { items: [], index: [] });
           }
           if (cancelled) return;
           setIdeas([]);
@@ -171,6 +184,7 @@ const AIGenerate = ({
   // The page text is scraped/untrusted, so the prompt frames it as data (the server-side
   // renderPom* rule, applied client-side too).
   const suggestAngles = async (item) => {
+    if (angles?.loading) return; // one angle generation at a time — each is a metered debit
     const forId = item.id;
     setAngles({ forId, loading: true, list: [] });
     try {
@@ -185,19 +199,67 @@ const AIGenerate = ({
         ].join('\n'),
         { clientId, maxTokens: 220 }
       );
-      const list = String(out || '')
-        .split('\n')
-        .map((l) => l.replace(/^[\s\d.)*•-]+/, '').trim())
-        .filter((l) => l.length > 8)
-        .slice(0, 3);
+      const list = [...new Set(
+        String(out || '')
+          .split('\n')
+          .map((l) => l.replace(/^[\s\d.)*•-]+/, '').trim())
+          .filter((l) => l.length > 8)
+      )].slice(0, 3);
       setAngles((a) => (a && a.forId === forId ? { forId, loading: false, list } : a));
     } catch (e) {
       setAngles((a) => (a && a.forId === forId ? { forId, loading: false, list: [], error: e.message || 'Could not fetch ideas.' } : a));
     }
   };
 
+  // Pull ONE page the operator picked from the full index — its content + media, on demand. Adds it
+  // to the top of the card list (deduped) so it reads exactly like an auto-suggested card, with the
+  // same Draft / Post-ideas actions. One pull at a time.
+  const pullPage = async (entry) => {
+    const u = entry.url;
+    if (!u || pickingUrl) return;
+    // Already showing this page (auto card or a prior pick)? Just close the picker — no re-fetch.
+    if ([...picked, ...ideas].some((it) => it.url === u)) { setPickerOpen(false); return; }
+    setPickingUrl(u);
+    try {
+      const data = await fetchPage(clientId, u);
+      const p = data.page || {};
+      const card = {
+        id: `picked:${u}`,
+        tag: 'Site',
+        title: flat(p.title) || flat(entry.title) || u,
+        description: flat(p.excerpt),
+        url: u,
+        image: Array.isArray(p.images) && /^https?:\/\//i.test(String(p.images[0] || '')) ? String(p.images[0]) : ''
+      };
+      setPicked((prev) => (prev.some((it) => it.url === u) ? prev : [card, ...prev]));
+      setPickerOpen(false);
+      setPickerQuery('');
+    } catch {
+      // leave the picker open; the row shows a transient error via pickingUrl clearing
+    } finally {
+      setPickingUrl('');
+    }
+  };
+
   const label = isText ? 'AI draft' : 'Generate image';
   const hasDraft = currentText.trim().length > 0;
+
+  // The rendered card list = pages the operator pulled (picked) first, then the auto-suggested
+  // ones, deduped by URL. Preserves the auto-suggest magic while surfacing on-demand picks on top.
+  const cards = (() => {
+    const seen = new Set();
+    return [...picked, ...ideas].filter((it) => {
+      const k = it.url || it.id;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  })();
+  const shownUrls = new Set(cards.map((c) => c.url).filter(Boolean));
+  const pickable = pageIndex.filter((e) => e.url && !shownUrls.has(e.url));
+  const pq = pickerQuery.trim().toLowerCase();
+  const pickableFiltered = pq ? pickable.filter((e) => `${e.title || ''} ${e.url}`.toLowerCase().includes(pq)) : pickable;
+  const anySiteCard = cards.some((c) => c.tag === 'Site');
 
   const selectClass =
     'bg-white border border-indigo-200 rounded-lg text-xs font-medium px-2 py-1.5 focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60';
@@ -396,19 +458,22 @@ const AIGenerate = ({
           <Loader2 size={10} className="animate-spin" /> Looking for content from this client&rsquo;s site…
         </div>
       )}
-      {ideasState === 'ready' && ideas.length > 0 && (
+      {ideasState === 'ready' && (cards.length > 0 || pageIndex.length > 0) && (
         <div className="border-t border-indigo-100 pt-2">
           <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
             <Lightbulb size={11} className="text-amber-500" />
-            Content from {clientName ? `${clientName}’s` : 'the client’s'} site
+            {anySiteCard
+              ? <>Content from {clientName ? `${clientName}’s` : 'the client’s'} site</>
+              : <>Content ideas</>}
           </div>
-          {!ideas.some((i) => i.tag === 'Site') && (
+          {cards.length === 0 && (
             <p className="text-[11px] text-slate-400 mb-1.5">
-              No site pages pulled yet — add this client&rsquo;s site URL in POM (Edit client), then refresh their context.
+              Pick a page below to pull its content — or add this client&rsquo;s site URL in POM and refresh their context for suggestions.
             </p>
           )}
+          {cards.length > 0 && (
           <ul className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-            {ideas.map((item) => (
+            {cards.map((item) => (
               <li key={item.id} className="bg-white border border-indigo-100 rounded-lg p-2">
                 <div className="flex items-start gap-2">
                   {item.image ? (
@@ -453,7 +518,7 @@ const AIGenerate = ({
                         <button
                           type="button"
                           onClick={() => suggestAngles(item)}
-                          disabled={loading || (angles?.forId === item.id && angles.loading)}
+                          disabled={loading || Boolean(angles?.loading)}
                           title="Ask the AI for 3 post angles based on this page"
                           className="text-violet-600 text-[11px] font-bold hover:underline disabled:opacity-40"
                         >
@@ -477,9 +542,9 @@ const AIGenerate = ({
                 {angles?.forId === item.id && !angles.loading && (
                   <div className="mt-1.5 ml-[52px] flex flex-col gap-1">
                     {angles.error && <p className="text-[11px] text-red-500">{angles.error}</p>}
-                    {angles.list.map((a) => (
+                    {angles.list.map((a, i) => (
                       <button
-                        key={a}
+                        key={`${angles.forId}:${i}`}
                         type="button"
                         onClick={() => setPrompt(item.url ? `${a} (source: ${item.url})` : a)}
                         disabled={loading}
@@ -497,6 +562,62 @@ const AIGenerate = ({
               </li>
             ))}
           </ul>
+          )}
+
+          {/* Browse-all-pages picker — the whole site index; pick any page to pull it on demand.
+              Keeps the auto-suggested cards above; this is the "I want THIS page" escape hatch. */}
+          {pageIndex.length > 0 && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setPickerOpen((v) => !v)}
+                className="flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-700"
+              >
+                <ChevronDown size={12} className={`transition-transform ${pickerOpen ? 'rotate-180' : ''}`} />
+                Browse all {pageIndex.length} page{pageIndex.length === 1 ? '' : 's'}
+              </button>
+              {pickerOpen && (
+                <div className="mt-1.5">
+                  <input
+                    type="text"
+                    value={pickerQuery}
+                    onChange={(e) => setPickerQuery(e.target.value)}
+                    placeholder="Filter pages…"
+                    className="w-full bg-white border border-indigo-100 rounded-lg text-xs px-2 py-1.5 mb-1.5 focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                  />
+                  <ul className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                    {pickableFiltered.length === 0 && (
+                      <li className="text-[11px] text-slate-400 px-1 py-1">
+                        {pickable.length === 0 ? 'Every indexed page is already shown above.' : 'No pages match that filter.'}
+                      </li>
+                    )}
+                    {pickableFiltered.slice(0, 100).map((e) => (
+                      <li key={e.url}>
+                        <button
+                          type="button"
+                          onClick={() => pullPage(e)}
+                          disabled={Boolean(pickingUrl)}
+                          title={e.url}
+                          className="w-full text-left flex items-center gap-2 bg-white border border-slate-100 rounded-lg px-2 py-1.5 hover:border-indigo-300 disabled:opacity-50"
+                        >
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate text-xs font-medium text-slate-700">{e.title || e.url}</span>
+                            <span className="block truncate text-[10px] text-slate-400">{e.url}</span>
+                          </span>
+                          <span className="shrink-0 text-[11px] font-bold text-indigo-600">
+                            {pickingUrl === e.url ? 'Pulling…' : 'Pull'}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                    {pickableFiltered.length > 100 && (
+                      <li className="text-[10px] text-slate-400 px-1">Showing first 100 — filter to narrow.</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
