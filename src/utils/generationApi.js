@@ -63,6 +63,18 @@ export async function fetchIdeas(client) {
   return data;
 }
 
+/**
+ * Pull ONE selected page's content + media on demand (the Ideas picker's "I want this page").
+ * Brokered server-side; the broker domain-pins the URL to the client's own site. Resolves to
+ * { slug, page: { url, title, excerpt, images } }. THROWS on any miss so the picker can surface it.
+ */
+export async function fetchPage(client, pageUrl) {
+  const res = await fetch(`${API_BASE}/api/page?client=${encodeURIComponent(client)}&url=${encodeURIComponent(pageUrl)}`, { headers: await authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
 /** List the signed-in user's reusable images (the media pool). */
 export async function listMedia() {
   const res = await fetch(`${API_BASE}/api/media`, { headers: await authHeaders() });

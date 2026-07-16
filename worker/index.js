@@ -15,7 +15,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage } from './suiteContext.js';
 import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
@@ -370,6 +370,46 @@ export default {
       // Operators and the internal key see everything.
       const signals = ideasCaller && !ideasCaller.isOperator ? { ...out.signals, repos: [] } : out.signals;
       return json({ ok: true, slug, signals }, 200, cors);
+    }
+
+    // --- Pull ONE selected page on demand (authed) — backs the Ideas panel's page picker. ---
+    // Same auth stack + tenant pinning as /api/ideas; the broker domain-pins the URL to the
+    // client's own site, so this can't be turned into an open fetch proxy. The CONTEXT_KEY
+    // round-trip happens broker-side.
+    if (url.pathname === '/api/page') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      let pageCaller = null;
+      if (auth.mode !== 'apikey') {
+        pageCaller = await resolveShareCaller(auth, env);
+        if (!pageCaller) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      const requested = slugifyClient(url.searchParams.get('client') || '');
+      let slug = pageCaller && !pageCaller.isOperator ? slugifyClient(pageCaller.clientId) : requested;
+      if (!slug) return json({ error: 'client is required' }, 400, cors);
+      if (!pageCaller || pageCaller.isOperator) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === slug)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slug);
+          if (byName) slug = byName.slug;
+        }
+      }
+      const target = url.searchParams.get('url') || '';
+      if (!target) return json({ error: 'url is required' }, 400, cors);
+      const out = await fetchClientPage(env, slug, target);
+      if (!out.ok) {
+        if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+        if (out.reason === 'off_site') return json({ ok: false, error: 'off_site' }, 200, cors);
+        if (out.reason === 'not_found') return json({ ok: false, error: 'unknown_client' }, 200, cors);
+        console.error(`[page] ${slug}: page fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
+        return json({ ok: false, error: 'upstream_failed' }, 502, cors);
+      }
+      return json({ ok: true, slug, page: out.page }, 200, cors);
     }
 
     // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---

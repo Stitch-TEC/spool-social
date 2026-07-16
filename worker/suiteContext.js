@@ -118,8 +118,45 @@ export async function fetchClientSignals(env, slug) {
       signals: {
         fetchedAt: typeof d.fetchedAt === 'string' ? d.fetchedAt : '',
         cached: !!d.cached,
-        site: d.site && typeof d.site === 'object' && Array.isArray(d.site.pages) ? d.site : { pages: [] },
+        // `site` carries the full page INDEX (url/title only, under site.index) — the "browse all
+        // pages" picker menu — passed through verbatim from the broker. Optional on old brokers
+        // (absent → the picker just shows nothing).
+        site: d.site && typeof d.site === 'object' && Array.isArray(d.site.pages)
+          ? { ...d.site, index: Array.isArray(d.site.index) ? d.site.index : [] }
+          : { pages: [], index: [] },
         repos: Array.isArray(d.repos) ? d.repos : [],
+      },
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
+// Pull ONE selected page on demand (broker GET /client-page, domain-pinned to the client's own
+// site). Backs Spool's GET /api/page — the picker's "I want this page". Returns { ok, page } or a
+// typed failure. CONTEXT_KEY never leaves this worker.
+export async function fetchClientPage(env, slug, url) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug || !url) return { ok: false, reason: 'bad_request' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/client-page?slug=${encodeURIComponent(slug)}&url=${encodeURIComponent(url)}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (res.status === 403) return { ok: false, reason: 'off_site' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok || !d.page) return { ok: false, reason: 'bad_payload' };
+    const p = d.page;
+    return {
+      ok: true,
+      page: {
+        url: typeof p.url === 'string' ? p.url : url,
+        title: typeof p.title === 'string' ? p.title : '',
+        excerpt: typeof p.excerpt === 'string' ? p.excerpt : '',
+        images: Array.isArray(p.images) ? p.images.filter((u) => typeof u === 'string') : [],
       },
     };
   } catch (err) {
