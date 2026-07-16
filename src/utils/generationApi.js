@@ -49,6 +49,20 @@ export async function generateText(prompt, opts = {}) {
   return text;
 }
 
+/**
+ * Content-idea signals for a client — site pages + repo releases/commits, brokered server-side
+ * (Worker → feedback-worker /client-signals; the CONTEXT_KEY never reaches the browser). Resolves
+ * to { slug, signals: { fetchedAt, cached, site: { pages }, repos } }. THROWS on any miss —
+ * including the seam being unconfigured ({ ok:false, error:'not_configured' }) — so the Ideas
+ * panel can treat every failure the same way: quietly disappear.
+ */
+export async function fetchIdeas(client) {
+  const res = await fetch(`${API_BASE}/api/ideas?client=${encodeURIComponent(client)}`, { headers: await authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
 /** List the signed-in user's reusable images (the media pool). */
 export async function listMedia() {
   const res = await fetch(`${API_BASE}/api/media`, { headers: await authHeaders() });

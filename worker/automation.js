@@ -83,7 +83,10 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   if (wantText) {
     const { system, maxTokens } = buildTextContext({
       platform, tone: auto.tone, length: auto.length,
-      clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets
+      clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets,
+      // Structured brand theme + auto-refreshed recent-activity digest (same seam, newer fields —
+      // absent on old brokers, and the builder renders nothing for them: fail-open unchanged).
+      pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit
     });
     const out = await generateText(env, seed, { system, maxTokens, clientId: auto.clientId });
     content = String(out || '').trim().slice(0, max);
@@ -93,7 +96,9 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   if (wantImage) {
     const imgPrompt = buildImagePrompt({
       prompt: seed, style: auto.imageStyle, platform,
-      clientName: auto.client, clientSettings, pomBrand: profile?.brand
+      // The structured kit (palette hexes + theme) wins inside the builder; the one-line
+      // pomBrand string stays as the fallback for old brokers that send no brandKit.
+      clientName: auto.client, clientSettings, pomBrand: profile?.brand, pomBrandKit: profile?.brandKit
     });
     try {
       imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId: auto.clientId })) || '';

@@ -2,6 +2,7 @@
 //
 //   POST /api/generate  { prompt }            -> { url, key }   (image to R2)
 //   POST /api/text      { prompt }            -> { text }
+//   GET  /api/ideas?client=X                   -> { ok, slug, signals }  (site/repo idea signals)
 //   GET  /media/<key>                          -> the stored image
 //   GET  /api/health                           -> { ok: true }
 //   *                                          -> static assets (the Vite SPA)
@@ -14,8 +15,8 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster } from './suiteContext.js';
-import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart } from '../src/generation/prompts.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals } from './suiteContext.js';
+import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
 // Per-platform character caps, derived from the shared PLATFORM_META so the
@@ -264,6 +265,7 @@ export default {
       const slug = (url.searchParams.get('slug') || '').trim().toLowerCase();
       if (!slug) return json({ error: 'slug is required' }, 400, cors);
       const probe = await probeClientProfile(env, slug);
+      const probeKit = probe.ok ? probe.profile.brandKit : null;
       return json({
         ok: true,
         slug,
@@ -277,6 +279,16 @@ export default {
               contextChars: (probe.profile.aiContext || '').length,
               hasBrand: !!probe.profile.brand,
               brand: probe.profile.brand,
+              // Structured-brand + auto-context observability (presence/counts, no secret):
+              // theme text + logoUrl presence + palette size from the structured kit, and
+              // whether/when the broker-side auto-context digest last refreshed — so an
+              // operator can see the whole seam is live from Spool's side.
+              theme: typeof probeKit?.theme === 'string' ? probeKit.theme : '',
+              hasLogoUrl: !!probeKit?.logoUrl,
+              colors: Array.isArray(probeKit?.colors) ? probeKit.colors.length : 0,
+              recentActivity: probe.profile.recentActivity
+                ? { updatedAt: probe.profile.recentActivity.updatedAt || '' }
+                : null,
             }
           : null,
       }, 200, cors);
@@ -301,6 +313,63 @@ export default {
       }
       const clients = await fetchClientRoster(env);
       return json({ ok: true, clients }, 200, cors);
+    }
+
+    // --- Content ideas from the client's own sources (authed) — backs the editor's Ideas panel. ---
+    // Brokered read of feedback-worker /client-signals (site pages + repo releases/commits, crawled
+    // and cached broker-side): the CONTEXT_KEY round-trip happens HERE so the secret never reaches
+    // the SPA. Same auth stack as generation (authenticate + rate limit + provisioned-caller gate);
+    // a client member is tenant-pinned to their OWN slug, an operator/internal key picks any client
+    // via ?client= (display name or slug — canonicalized by slugifyClient, the suite join key).
+    // Fail-open posture for the UI: `ok:false not_configured` (200) when the seam key is absent so
+    // the panel simply hides; a real upstream failure is an honest 502 the panel also hides on.
+    if (url.pathname === '/api/ideas') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      // Rate-limit like every other authed route — a cache miss makes feedback-worker do live
+      // site/GitHub fetches, so an authed caller mustn't be able to loop it and hammer the broker.
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      // Provisioned users only (same reasoning as generation: ALLOWED_EMAILS is empty, so
+      // authenticate() alone would admit any signed-in Google account to another client's signals).
+      let ideasCaller = null;
+      if (auth.mode !== 'apikey') {
+        ideasCaller = await resolveShareCaller(auth, env);
+        if (!ideasCaller) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      const requested = slugifyClient(url.searchParams.get('client') || '');
+      let slug = ideasCaller && !ideasCaller.isOperator ? slugifyClient(ideasCaller.clientId) : requested;
+      if (!slug) return json({ error: 'client is required' }, 400, cors);
+      // Canonicalize an operator/internal request against the ROSTER: the Editor's client field is
+      // free text, so slugifyClient can mint a slug the roster never issued (drifted display name
+      // vs a hand-authored short slug) — the broker then 404s and the panel dies silently for
+      // exactly those clients. A name→slug roster match repairs it; roster unreachable = keep the
+      // requested value (fail-open, same posture as generation's context injection).
+      if (!ideasCaller || ideasCaller.isOperator) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === slug)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slug);
+          if (byName) slug = byName.slug;
+        }
+      }
+      const out = await fetchClientSignals(env, slug);
+      if (!out.ok) {
+        if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+        // Unknown slug is NORMAL here (free-text client names that never joined the roster) —
+        // quiet 200 so the panel hides without burning an error-log line per keystroke-settled name.
+        if (out.reason === 'not_found') return json({ ok: false, error: 'unknown_client' }, 200, cors);
+        // Presence-safe server-side detail (via `wrangler tail`); the caller only learns "upstream".
+        console.error(`[ideas] ${slug}: signals fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
+        return json({ ok: false, error: 'upstream_failed' }, 502, cors);
+      }
+      // Client-role members get SITE signals only: repo items carry the agency's commit messages
+      // and release notes — engineering prose that was never part of the client-facing surface.
+      // Operators and the internal key see everything.
+      const signals = ideasCaller && !ideasCaller.isOperator ? { ...out.signals, repos: [] } : out.signals;
+      return json({ ok: true, slug, signals }, 200, cors);
     }
 
     // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---
@@ -420,11 +489,17 @@ export default {
       try {
         if (url.pathname === '/api/text') {
           const image = body?.imageUrl ? await resolveImage(body.imageUrl, env) : undefined;
-          // Append the client context + asset manifest to the caller-built system instruction —
-          // the shared renderers keep the framing identical to buildTextContext's own output.
+          // Append the brand theme + client context + recent activity + asset manifest to the
+          // caller-built system instruction — the shared renderers keep the framing (and the
+          // directive-before-untrusted-data ordering) identical to buildTextContext's own output.
           let system = body?.system ? String(body.system).slice(0, 4000) : undefined;
           if (profile) {
-            const extras = [renderPomContextLine(profile.aiContext), renderPomAssetsLine(profile.assets)]
+            const extras = [
+              renderPomBrandStyleLine(profile.brandKit),
+              renderPomContextLine(profile.aiContext),
+              renderPomRecentLine(profile.recentActivity),
+              renderPomAssetsLine(profile.assets),
+            ]
               .filter(Boolean)
               .join('\n');
             if (extras) system = system ? `${system}\n${extras}` : extras;
@@ -443,8 +518,10 @@ export default {
         }
 
         // Image: generate -> store in R2 -> return a URL. The POM brand palette is appended the
-        // same way buildImagePrompt does for automation drafts (space-joined sentence).
-        const brandPart = profile ? renderPomBrandPart(profile.brand) : '';
+        // same way buildImagePrompt does for automation drafts (space-joined sentence): the
+        // structured kit (exact palette hexes + theme) when the broker sent one, else the lossy
+        // one-line `brand` string fallback.
+        const brandPart = profile ? (renderPomBrandKitPart(profile.brandKit) || renderPomBrandPart(profile.brand)) : '';
         const imgPrompt = brandPart ? `${prompt} ${brandPart}` : prompt;
         const { b64, mime } = await generateImage(env, imgPrompt, { clientId: genClientId });
         const owner = auth.mode === 'firebase' ? auth.principal : 'internal';

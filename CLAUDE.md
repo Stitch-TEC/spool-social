@@ -28,7 +28,8 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
-  `GEMINI_API_KEY`, `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`. Never commit values.
+  `GEMINI_API_KEY`, `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
+  (the POM context/ideas seam — must match feedback-worker's). Never commit values.
 - Two cron triggers run in the Worker (`wrangler.toml [triggers]`): nightly R2 orphan GC (`0 4 * * *`)
   and due-automation draft generation (`*/15 * * * *`).
 
@@ -47,6 +48,13 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   `feedback-worker/src/clients.seed.json`, served by feedback-worker `GET /clients`. Spool PULLS it
   (`src/lib/clientsClient.js`) — do NOT mirror or fork the roster.
 - ONE shared AI gateway (`ai.stitchtec.dev`, Claude-first, per-app key). Tier via `SPOOL_AI_TIER`.
+- **POM context/brand/ideas seam** (all server-side via `CONTEXT_KEY` → feedback-worker; the key
+  never reaches the browser): generation injects the client profile (aiContext, structured
+  `brandKit` palette/theme, auto-refreshed `recentActivity` digest, asset manifest) into prompts;
+  `GET /api/ideas?client=` brokers `/client-signals` (site pages + repo releases/commits) for the
+  editor's Ideas panel. Fail-OPEN: no `CONTEXT_KEY` = no injection + `{ok:false,
+  error:'not_configured'}` from /api/ideas (panel hides). ALL fetched site/repo text is rendered
+  as untrusted data by the `renderPom*` helpers in `src/generation/prompts.js` — keep that framing.
 - Firestore is multi-tenant by `clientId`; rules enforce per-client isolation server-side. Keep DB
   changes ADDITIVE. RBAC / client-teammate logins are built but gated — see `RBAC_DEPLOY_RUNBOOK.md`.
 

@@ -27,6 +27,18 @@ export async function fetchClientProfile(env, slug, tier = 'standard') {
       name: d.name || '',
       aiContext: d.aiContext || '',
       brand: d.brand || '',
+      // The STRUCTURED brand kit ({ colors:[{hex,name?}], fonts:[], theme?, logoUrl?, … }) alongside
+      // the lossy one-line `brand` summary above — the image builder renders palette hexes/theme
+      // from it directly instead of round-tripping through prose. null on old brokers; consumers
+      // must keep the `brand` string fallback.
+      brandKit: d.brandKit && typeof d.brandKit === 'object' ? d.brandKit : null,
+      // Auto-refreshed "recent activity" digest (POM clients/{slug}.autoContext, written by the
+      // broker's cron/refresh — see feedback-worker). { text, updatedAt } or null; standard/hard
+      // tiers only, same policy as `assets`. Rendered as UNTRUSTED reference data in prompts.
+      recentActivity:
+        d.recentActivity && typeof d.recentActivity === 'object' && typeof d.recentActivity.text === 'string'
+          ? { text: d.recentActivity.text, updatedAt: d.recentActivity.updatedAt || '' }
+          : null,
       // Optional asset-library manifest (standard/hard tiers only): { count, images, videos,
       // recent:[{name,type,provider?}] } — counts + filenames, never blobs. Absent on old
       // brokers / cheap tier / any broker-side miss; consumers must treat it as optional.
@@ -59,7 +71,56 @@ export async function probeClientProfile(env, slug) {
     return {
       ok: true,
       status: 200,
-      profile: { name: d.name || '', aiContext: d.aiContext || '', brand: d.brand || '' },
+      profile: {
+        name: d.name || '',
+        aiContext: d.aiContext || '',
+        brand: d.brand || '',
+        // Structured extras so /api/context-check can report theme/logo/palette/auto-context
+        // presence — same optional-on-old-brokers posture as fetchClientProfile above.
+        brandKit: d.brandKit && typeof d.brandKit === 'object' ? d.brandKit : null,
+        recentActivity:
+          d.recentActivity && typeof d.recentActivity === 'object' && typeof d.recentActivity.text === 'string'
+            ? { text: d.recentActivity.text, updatedAt: d.recentActivity.updatedAt || '' }
+            : null,
+      },
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
+// Content-idea signals for a client — site pages + repo releases/commits collected by the broker's
+// GET /client-signals (it crawls the client's siteUrls/repos server-side; results are KV-cached
+// broker-side for ~6h). Backs Spool's GET /api/ideas. Unlike fetchClientProfile this returns a
+// TYPED failure instead of null so the route can distinguish "seam not configured" (feature hidden,
+// ok:false) from a real upstream error (502). 10s timeout — a cache miss does live site/GitHub
+// fetches broker-side, so it legitimately runs longer than the profile's 5s. CONTEXT_KEY never
+// leaves this worker.
+export async function fetchClientSignals(env, slug) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug) return { ok: false, reason: 'slug_required' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/client-signals?slug=${encodeURIComponent(slug)}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    // 404 = the broker roster simply doesn't know this slug — a NORMAL outcome in Spool (free-text
+    // client names), distinct from a real upstream failure so the route can stay quiet about it.
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok) return { ok: false, reason: 'bad_payload' };
+    return {
+      ok: true,
+      // Normalized to the wire shape /api/ideas re-emits — coerce defensively so a mis-shaped
+      // broker payload degrades to empty lists rather than throwing in the route.
+      signals: {
+        fetchedAt: typeof d.fetchedAt === 'string' ? d.fetchedAt : '',
+        cached: !!d.cached,
+        site: d.site && typeof d.site === 'object' && Array.isArray(d.site.pages) ? d.site : { pages: [] },
+        repos: Array.isArray(d.repos) ? d.repos : [],
+      },
     };
   } catch (err) {
     return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
