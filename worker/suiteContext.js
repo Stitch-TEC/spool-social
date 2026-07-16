@@ -105,6 +105,9 @@ export async function fetchClientSignals(env, slug) {
       headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
       signal: AbortSignal.timeout(10000),
     });
+    // 404 = the broker roster simply doesn't know this slug — a NORMAL outcome in Spool (free-text
+    // client names), distinct from a real upstream failure so the route can stay quiet about it.
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
     if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
     const d = await res.json();
     if (!d || !d.ok) return { ok: false, reason: 'bad_payload' };

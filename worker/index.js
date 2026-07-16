@@ -341,16 +341,35 @@ export default {
         if (!ideasCaller) return json({ error: 'Not authorized' }, 403, cors);
       }
       const requested = slugifyClient(url.searchParams.get('client') || '');
-      const slug = ideasCaller && !ideasCaller.isOperator ? slugifyClient(ideasCaller.clientId) : requested;
+      let slug = ideasCaller && !ideasCaller.isOperator ? slugifyClient(ideasCaller.clientId) : requested;
       if (!slug) return json({ error: 'client is required' }, 400, cors);
+      // Canonicalize an operator/internal request against the ROSTER: the Editor's client field is
+      // free text, so slugifyClient can mint a slug the roster never issued (drifted display name
+      // vs a hand-authored short slug) — the broker then 404s and the panel dies silently for
+      // exactly those clients. A name→slug roster match repairs it; roster unreachable = keep the
+      // requested value (fail-open, same posture as generation's context injection).
+      if (!ideasCaller || ideasCaller.isOperator) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === slug)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slug);
+          if (byName) slug = byName.slug;
+        }
+      }
       const out = await fetchClientSignals(env, slug);
       if (!out.ok) {
         if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+        // Unknown slug is NORMAL here (free-text client names that never joined the roster) —
+        // quiet 200 so the panel hides without burning an error-log line per keystroke-settled name.
+        if (out.reason === 'not_found') return json({ ok: false, error: 'unknown_client' }, 200, cors);
         // Presence-safe server-side detail (via `wrangler tail`); the caller only learns "upstream".
         console.error(`[ideas] ${slug}: signals fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
         return json({ ok: false, error: 'upstream_failed' }, 502, cors);
       }
-      return json({ ok: true, slug, signals: out.signals }, 200, cors);
+      // Client-role members get SITE signals only: repo items carry the agency's commit messages
+      // and release notes — engineering prose that was never part of the client-facing surface.
+      // Operators and the internal key see everything.
+      const signals = ideasCaller && !ideasCaller.isOperator ? { ...out.signals, repos: [] } : out.signals;
+      return json({ ok: true, slug, signals }, 200, cors);
     }
 
     // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---

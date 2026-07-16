@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb } from 'lucide-react';
 import { generateImage, generateText, fetchIdeas } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt } from '../utils/aiPrompt';
@@ -6,36 +6,51 @@ import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '..
 
 // --- Ideas panel helpers (pure — the /api/ideas payload → a short prompt-seed list) -----------
 // Site pages first (the client's own freshest published content), then repo releases/commits.
-// Capped so the panel stays a nudge, not a feed.
+// Capped so the panel stays a nudge, not a feed — and BALANCED: sites can contribute up to 10
+// pages, so an unsplit cap of 8 would mean repo activity never surfaces for any client with a
+// busy site. Sites get first claim on 5 slots; repos fill the rest.
 const MAX_IDEAS = 8;
+const MAX_SITE_IDEAS = 5;
+
+// Module-level (per SPA session), NOT per component instance: every Editor open mounts a fresh
+// AIGenerate, and each cold instance would otherwise re-fetch the same client's signals — another
+// rate-bucket debit (shared with generation) and another cold-cache stall for identical data.
+const ideasCache = new Map(); // clientId -> flattened items (settled fetches only)
+
+// Scraped text lands in a prompt seed — collapse ALL whitespace (incl. newlines) so a hostile
+// page title can't fake multi-line prompt structure when "Draft from this" drops it in the box.
+const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 
 function flattenIdeas(data) {
-  const items = [];
+  const siteItems = [];
   for (const p of data?.signals?.site?.pages || []) {
-    const title = String(p?.title || '').trim() || String(p?.url || '').trim();
+    const title = flat(p?.title) || flat(p?.url);
     if (!title) continue;
-    items.push({
+    siteItems.push({
       id: `page:${p?.url || title}`,
       tag: 'Site',
       title,
-      description: String(p?.description || '').trim(),
-      url: String(p?.url || '').trim()
+      description: flat(p?.description),
+      url: flat(p?.url)
     });
   }
+  const repoItems = [];
   for (const r of data?.signals?.repos || []) {
     for (const it of r?.items || []) {
-      const title = String(it?.title || '').trim();
+      const title = flat(it?.title);
       if (!title) continue;
-      items.push({
+      repoItems.push({
         id: `${r?.repo || 'repo'}:${it?.url || title}`,
         tag: it?.kind === 'release' ? 'Release' : 'Commit',
         title,
-        description: String(r?.description || '').trim(),
-        url: String(it?.url || '').trim()
+        description: flat(r?.description),
+        url: flat(it?.url)
       });
     }
   }
-  return items.slice(0, MAX_IDEAS);
+  // Sites first (capped so repos always get a look-in when both exist), repos fill to the total.
+  const items = siteItems.slice(0, repoItems.length ? MAX_SITE_IDEAS : MAX_IDEAS);
+  return items.concat(repoItems.slice(0, MAX_IDEAS - items.length));
 }
 
 // The exact seed "Draft from this" drops into the prompt box.
@@ -83,10 +98,6 @@ const AIGenerate = ({
   // error, empty signals — so the feature simply doesn't exist unless it has something to offer.
   const [ideas, setIdeas] = useState([]);
   const [ideasState, setIdeasState] = useState('idle'); // idle | loading | ready | hidden
-  // clientId → flattened items, SETTLED fetches only (success or a definitive miss). A plain
-  // "last id fetched" ref can't work here: it would mark the id claimed before the fetch settles,
-  // so a close-during-flight reopen finds the guard tripped and the panel stuck on 'loading'.
-  const ideasCacheRef = useRef(new Map());
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
@@ -106,7 +117,7 @@ const AIGenerate = ({
       setIdeasState('idle');
       return;
     }
-    const cached = ideasCacheRef.current.get(clientId);
+    const cached = ideasCache.get(clientId);
     if (cached) {
       setIdeas(cached);
       setIdeasState(cached.length ? 'ready' : 'hidden');
@@ -118,16 +129,26 @@ const AIGenerate = ({
       setIdeasState('loading');
       fetchIdeas(clientId)
         .then((data) => {
-          if (cancelled) return;
+          // Cache BEFORE the cancelled check: a panel closed mid-flight already paid for this
+          // fetch (possibly a slow cold broker collect) — discarding the result would re-pay it
+          // on the next open. Only the STATE updates are gated on still being mounted.
           const items = flattenIdeas(data);
-          ideasCacheRef.current.set(clientId, items);
+          ideasCache.set(clientId, items);
+          if (cancelled) return;
           setIdeas(items);
           setIdeasState(items.length ? 'ready' : 'hidden');
         })
-        .catch(() => {
+        .catch((e) => {
+          // Cache only the PERMANENT misses (seam off / never-rostered client) — those genuinely
+          // shouldn't be re-hit on every reopen. A transient failure (rate-limit 429, network
+          // blip, broker hiccup) stays UNcached so the next open retries instead of the panel
+          // playing dead for the rest of the editor session. (Cached before the cancelled check,
+          // same reasoning as the success path.)
+          const msg = String(e?.message || '');
+          if (msg === 'not_configured' || msg === 'unknown_client') {
+            ideasCache.set(clientId, []);
+          }
           if (cancelled) return;
-          // Cache the miss too — a broken/unconfigured seam shouldn't be re-hit on every reopen.
-          ideasCacheRef.current.set(clientId, []);
           setIdeas([]);
           setIdeasState('hidden');
         });

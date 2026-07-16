@@ -92,10 +92,16 @@ describe('renderPomBrandKitPart', () => {
     expect(part).toBe('Brand palette to favor where appropriate: #abc123.');
   });
 
-  it('returns "" when the kit has neither colors nor a theme (so callers fall back to the string)', () => {
+  it('renders fonts alongside the palette (the string summary carries them — the kit must too)', () => {
+    const part = renderPomBrandKitPart({ colors: [{ hex: '#112233' }], fonts: ['Inter', 'Lora'] });
+    expect(part).toBe('Brand palette to favor where appropriate: #112233. Brand fonts: Inter; Lora.');
+    expect(renderPomBrandKitPart({ colors: [], fonts: ['Inter'] })).toBe('Brand fonts: Inter.');
+  });
+
+  it('returns "" when the kit has no colors, fonts, or theme (so callers fall back to the string)', () => {
     expect(renderPomBrandKitPart(null)).toBe('');
     expect(renderPomBrandKitPart({})).toBe('');
-    expect(renderPomBrandKitPart({ colors: [], fonts: ['Inter'], logoUrl: 'https://x/logo.png' })).toBe('');
+    expect(renderPomBrandKitPart({ colors: [], fonts: [], logoUrl: 'https://x/logo.png' })).toBe('');
   });
 });
 
@@ -143,8 +149,13 @@ describe('buildImagePrompt with the structured brand kit', () => {
   it('falls back to the pomBrand string when brandKit is absent or renders nothing', () => {
     const absent = buildImagePrompt({ ...base, pomBrand: 'Brand colors: #445566. Fonts: Inter' });
     expect(absent).toContain('Brand palette to favor where appropriate: Brand colors: #445566. Fonts: Inter.');
-    const emptyKit = buildImagePrompt({ ...base, pomBrand: 'Brand colors: #445566', pomBrandKit: { fonts: ['Inter'] } });
+    // A kit with no colors/fonts/theme renders nothing — the lossy string still wins. (A
+    // fonts-only kit now renders "Brand fonts: …" from the kit — covered above.)
+    const emptyKit = buildImagePrompt({ ...base, pomBrand: 'Brand colors: #445566', pomBrandKit: { logoUrl: 'https://x/logo.png' } });
     expect(emptyKit).toContain('Brand palette to favor where appropriate: Brand colors: #445566.');
+    const fontsOnly = buildImagePrompt({ ...base, pomBrand: 'Brand colors: #445566', pomBrandKit: { fonts: ['Inter'] } });
+    expect(fontsOnly).toContain('Brand fonts: Inter.');
+    expect(fontsOnly).not.toContain('#445566');
   });
 
   it('is unchanged when neither brand field is provided (back-compat)', () => {

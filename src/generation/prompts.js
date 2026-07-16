@@ -135,14 +135,18 @@ export function renderPomRecentLine(recent) {
 // (operator-authored in POM, ≤200 chars — e.g. "modern, industrial, dark"). Unlike the fetched
 // context/activity above this IS an instruction to follow, so no data-only framing. '' when absent.
 export function renderPomBrandStyleLine(brandKit) {
-  const theme = brandKit && typeof brandKit === 'object' && typeof brandKit.theme === 'string' ? clean(brandKit.theme) : '';
+  // POM caps theme at 200 chars on write, but the broker passes brandKit through untouched — cap
+  // again here so a mis-authored doc can't balloon the system prompt.
+  const theme = brandKit && typeof brandKit === 'object' && typeof brandKit.theme === 'string' ? clean(brandKit.theme).slice(0, 200) : '';
   return theme ? `Brand style: ${theme}` : '';
 }
 
 // Richer image-prompt brand part rendered from the STRUCTURED brand kit ({ colors:[{hex,name?}],
-// theme?, … }) — palette hexes keep generated imagery exactly on-brand where the lossy one-line
-// `brand` summary (renderPomBrandPart) can only gesture at it. Returns '' when the kit has neither
-// colors nor a theme, so callers can fall back to the string renderer (old brokers send no kit).
+// fonts:[], theme?, … }) — palette hexes keep generated imagery exactly on-brand where the lossy
+// one-line `brand` summary (renderPomBrandPart) can only gesture at it. Fonts render too: the
+// string summary this supersedes carries them, so dropping them here would be a silent regression
+// for kits that have both colors and fonts. Returns '' when the kit has no colors, fonts, or
+// theme, so callers can fall back to the string renderer (old brokers send no kit).
 export function renderPomBrandKitPart(brandKit) {
   const k = brandKit && typeof brandKit === 'object' ? brandKit : null;
   if (!k) return '';
@@ -151,15 +155,18 @@ export function renderPomBrandKitPart(brandKit) {
   const colors = (Array.isArray(k.colors) ? k.colors : [])
     .map((c) => {
       if (!c || typeof c !== 'object') return '';
-      const hex = clean(c.hex);
+      const hex = clean(c.hex).slice(0, 40);
       if (!hex) return '';
-      const name = clean(c.name);
+      const name = clean(c.name).slice(0, 40);
       return name ? `${hex} (${name})` : hex;
     })
-    .filter(Boolean);
-  const theme = typeof k.theme === 'string' ? clean(k.theme) : '';
+    .filter(Boolean)
+    .slice(0, 12); // POM caps at 12 on write — re-cap here so a rogue doc can't flood the prompt
+  const fonts = (Array.isArray(k.fonts) ? k.fonts : []).map((f) => clean(f).slice(0, 60)).filter(Boolean).slice(0, 8);
+  const theme = typeof k.theme === 'string' ? clean(k.theme).slice(0, 200) : '';
   const parts = [];
   if (colors.length) parts.push(`Brand palette to favor where appropriate: ${colors.join(', ')}.`);
+  if (fonts.length) parts.push(`Brand fonts: ${fonts.join('; ')}.`);
   if (theme) parts.push(`Brand style/theme: ${theme}.`);
   return parts.join(' ');
 }
