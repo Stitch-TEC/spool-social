@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb, ChevronDown } from 'lucide-react';
 import { generateImage, generateText, fetchIdeas, fetchPage } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt } from '../utils/aiPrompt';
@@ -20,6 +20,17 @@ const ideasCache = new Map(); // clientId -> { items, index } (settled fetches o
 // Scraped text lands in a prompt seed — collapse ALL whitespace (incl. newlines) so a hostile
 // page title can't fake multi-line prompt structure when "Draft from this" drops it in the box.
 const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+// Canonical URL key (host-lowered, trailing slash + fragment dropped) so an as-authored sitemap
+// URL and a resolved page URL for the SAME page dedupe together — matching the broker's canonUrl.
+const canonUrl = (x) => {
+  try {
+    const y = new URL(x);
+    return `${y.protocol}//${y.host.toLowerCase()}${y.pathname.replace(/\/+$/, '')}${y.search}`;
+  } catch {
+    return String(x || '').trim().toLowerCase();
+  }
+};
 
 function flattenIdeas(data) {
   const siteItems = [];
@@ -115,6 +126,10 @@ const AIGenerate = ({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState('');
   const [pickingUrl, setPickingUrl] = useState(''); // the index url currently being pulled
+  const [pickError, setPickError] = useState(null); // { url, msg } — per-row pull failure feedback
+  // The client this panel is currently bound to — a pull that resolves AFTER a client switch must
+  // not paint the previous client's page here (mirrors POM's slugRef / the ideas `cancelled` flag).
+  const clientIdRef = useRef(clientId);
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
@@ -130,7 +145,8 @@ const AIGenerate = ({
   //     client's ideas stay visible and seedable under the new name.
   useEffect(() => {
     setAngles(null); // page angles belong to the current client's ideas list — never outlive it
-    setPicked([]); setPageIndex([]); setPickerOpen(false); setPickerQuery(''); setPickingUrl('');
+    clientIdRef.current = clientId;
+    setPicked([]); setPageIndex([]); setPickerOpen(false); setPickerQuery(''); setPickingUrl(''); setPickError(null);
     if (!open || !isText || !clientId) {
       setIdeas([]);
       setIdeasState('idle');
@@ -217,11 +233,14 @@ const AIGenerate = ({
   const pullPage = async (entry) => {
     const u = entry.url;
     if (!u || pickingUrl) return;
-    // Already showing this page (auto card or a prior pick)? Just close the picker — no re-fetch.
-    if ([...picked, ...ideas].some((it) => it.url === u)) { setPickerOpen(false); return; }
+    const forClient = clientId;
+    // Already showing this page (auto card or a prior pick, matched canonically)? Just close.
+    if ([...picked, ...ideas].some((it) => canonUrl(it.url) === canonUrl(u))) { setPickerOpen(false); return; }
     setPickingUrl(u);
+    setPickError(null);
     try {
       const data = await fetchPage(clientId, u);
+      if (clientIdRef.current !== forClient) return; // switched clients mid-pull — drop the result
       const p = data.page || {};
       const card = {
         id: `picked:${u}`,
@@ -231,13 +250,16 @@ const AIGenerate = ({
         url: u,
         image: Array.isArray(p.images) && /^https?:\/\//i.test(String(p.images[0] || '')) ? String(p.images[0]) : ''
       };
-      setPicked((prev) => (prev.some((it) => it.url === u) ? prev : [card, ...prev]));
+      setPicked((prev) => (prev.some((it) => canonUrl(it.url) === canonUrl(u)) ? prev : [card, ...prev]));
       setPickerOpen(false);
       setPickerQuery('');
-    } catch {
-      // leave the picker open; the row shows a transient error via pickingUrl clearing
+    } catch (e) {
+      if (clientIdRef.current !== forClient) return;
+      const msg = String(e?.message || '');
+      // A domain-pin refusal (off_site) or a real read failure — tell the operator on that row.
+      setPickError({ url: u, msg: msg === 'off_site' ? 'That link leaves the client’s site.' : 'Couldn’t read that page — try another.' });
     } finally {
-      setPickingUrl('');
+      if (clientIdRef.current === forClient) setPickingUrl('');
     }
   };
 
@@ -255,8 +277,8 @@ const AIGenerate = ({
       return true;
     });
   })();
-  const shownUrls = new Set(cards.map((c) => c.url).filter(Boolean));
-  const pickable = pageIndex.filter((e) => e.url && !shownUrls.has(e.url));
+  const shownUrls = new Set(cards.map((c) => canonUrl(c.url)).filter(Boolean));
+  const pickable = pageIndex.filter((e) => e.url && !shownUrls.has(canonUrl(e.url)));
   const pq = pickerQuery.trim().toLowerCase();
   const pickableFiltered = pq ? pickable.filter((e) => `${e.title || ''} ${e.url}`.toLowerCase().includes(pq)) : pickable;
   const anySiteCard = cards.some((c) => c.tag === 'Site');
@@ -608,6 +630,9 @@ const AIGenerate = ({
                             {pickingUrl === e.url ? 'Pulling…' : 'Pull'}
                           </span>
                         </button>
+                        {pickError && pickError.url === e.url && (
+                          <p className="text-[10.5px] text-red-500 px-2 pt-0.5">{pickError.msg}</p>
+                        )}
                       </li>
                     ))}
                     {pickableFiltered.length > 100 && (

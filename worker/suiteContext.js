@@ -118,11 +118,12 @@ export async function fetchClientSignals(env, slug) {
       signals: {
         fetchedAt: typeof d.fetchedAt === 'string' ? d.fetchedAt : '',
         cached: !!d.cached,
-        site: d.site && typeof d.site === 'object' && Array.isArray(d.site.pages) ? d.site : { pages: [] },
-        // Full page INDEX (url/title only) — the "browse all pages" picker menu. Optional on old
-        // brokers; the picker just shows fewer/none. Lives under site so the /api/ideas passthrough
-        // and the panel both find it in one place.
-        index: d.site && Array.isArray(d.site.index) ? d.site.index : [],
+        // `site` carries the full page INDEX (url/title only, under site.index) — the "browse all
+        // pages" picker menu — passed through verbatim from the broker. Optional on old brokers
+        // (absent → the picker just shows nothing).
+        site: d.site && typeof d.site === 'object' && Array.isArray(d.site.pages)
+          ? { ...d.site, index: Array.isArray(d.site.index) ? d.site.index : [] }
+          : { pages: [], index: [] },
         repos: Array.isArray(d.repos) ? d.repos : [],
       },
     };
