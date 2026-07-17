@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "firebase": "^12.7.0",
-    "html2canvas": "^1.4.1",
+    "html2canvas-pro": "^1.6.7",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

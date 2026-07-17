@@ -202,7 +202,7 @@ const App = () => {
       // in R2, so a reused photo keeps one URL). Also opportunistically migrates
       // legacy data-URL posts whenever they're re-saved. Falls back to the data URL
       // if the upload fails, so saving never blocks on the media API.
-      let imageUrl = await ensureHostedImage(formData.imageUrl || '');
+      let imageUrl = await ensureHostedImage(formData.imageUrl || '', isClientMember ? myClientId : clientIdFor(client));
       // The Firestore fallback has a hard budget. Truncating base64 mid-stream would
       // store a CORRUPTED image with a success toast — drop it honestly instead.
       if (imageUrl.startsWith('data:') && imageUrl.length > 500000) {

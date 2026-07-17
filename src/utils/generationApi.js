@@ -75,9 +75,12 @@ export async function fetchPage(client, pageUrl) {
   return data;
 }
 
-/** List the signed-in user's reusable images (the media pool). */
-export async function listMedia() {
-  const res = await fetch(`${API_BASE}/api/media`, { headers: await authHeaders() });
+/** List the reusable generated/uploaded images (the media pool). When `forClient` (a suite slug) is
+ *  given, the operator's cross-client pool is scoped to just that client's images — so the picker
+ *  shows only what belongs to the client you're working on, not every client's generated media. */
+export async function listMedia(forClient = '') {
+  const qs = forClient ? `?forClient=${encodeURIComponent(forClient)}` : '';
+  const res = await fetch(`${API_BASE}/api/media${qs}`, { headers: await authHeaders() });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `Request failed (${res.status})`);
@@ -108,8 +111,8 @@ export async function uploadMedia(client, base64) {
  * so the same photo attached to many posts is stored once and never duplicates
  * in the reuse picker.
  */
-export async function uploadPostImage(base64) {
-  const { url } = await postJSON('/api/media', { image: { base64 } });
+export async function uploadPostImage(base64, forClient = '') {
+  const { url } = await postJSON('/api/media', { image: { base64 }, ...(forClient ? { forClient } : {}) });
   return url;
 }
 
@@ -117,11 +120,13 @@ export async function uploadPostImage(base64) {
  * Best-effort swap of a base64 data URL for a small hosted /media URL. Non-data
  * URLs pass through untouched; on any upload failure (offline, worker down,
  * guest session) the original data URL is returned so saving never breaks.
+ * `forClient` (a suite slug) tags the pooled image with the client it belongs to,
+ * so the reuse picker can scope "Generated images" per client.
  */
-export async function ensureHostedImage(imageUrl) {
+export async function ensureHostedImage(imageUrl, forClient = '') {
   if (typeof imageUrl !== 'string' || !imageUrl.startsWith('data:image/')) return imageUrl;
   try {
-    return await uploadPostImage(imageUrl);
+    return await uploadPostImage(imageUrl, forClient);
   } catch {
     return imageUrl;
   }

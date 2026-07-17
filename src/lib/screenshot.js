@@ -2,8 +2,13 @@
 // current page, always downscaled + JPEG-compressed to a small data URL so a ticket never carries a
 // heavy blob. The broker (feedback.stitchtec.dev) stores it in R2 and serves it operator-gated.
 //
-// html2canvas is imported DYNAMICALLY (only when the operator clicks "Capture page") so it stays
-// out of the initial bundle — the paste/drop/file path has zero library cost.
+// The capture library is imported DYNAMICALLY (only when the operator clicks "Capture page") so it
+// stays out of the initial bundle — the paste/drop/file path has zero library cost.
+//
+// We use html2canvas-PRO (a drop-in, API-compatible fork) rather than html2canvas because Spool is
+// on Tailwind 4, whose palette emits modern `oklch()` colors. Stock html2canvas throws
+// "Attempting to parse an unsupported color function 'oklch'" on those; the pro fork parses
+// oklch/oklab/lab/lch/color() natively, so "Capture this page" works on Tailwind-4 surfaces.
 
 const MAX_DIM = 1280;      // longest edge; a feedback screenshot doesn't need retina
 const QUALITY = 0.72;      // starting JPEG quality
@@ -80,7 +85,7 @@ export async function shotFromDataTransfer(dt) {
 // One-click capture of the current page (html2canvas, dynamically imported). Returns a compressed
 // JPEG data URL. Best-effort: cross-origin images may be blank, but the layout/text captures.
 export async function capturePageShot() {
-  const { default: html2canvas } = await import('html2canvas');
+  const { default: html2canvas } = await import('html2canvas-pro');
   const canvas = await html2canvas(document.body, {
     logging: false,
     useCORS: true,

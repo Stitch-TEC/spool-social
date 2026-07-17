@@ -39,7 +39,9 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
 
   useEffect(() => {
     let live = true;
-    listMedia()
+    // Scope the generated pool to the client being worked on (when one is resolved) so it shows only
+    // that client's generated images, not every client's — the cross-client privacy fix.
+    listMedia(clientKey)
       .then(m => { if (live) setItems(m); })
       .catch(err => {
         if (!live) return;
@@ -48,7 +50,7 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
         showToast?.(msg, 'error');
       });
     return () => { live = false; };
-  }, [reloadKey, showToast]);
+  }, [reloadKey, showToast, clientKey]);
 
   // Curated client library — only when the editor resolved a client slug. Videos are filtered
   // out (not insertable as an image); a fetch failure stays inline and non-blocking.
@@ -154,10 +156,13 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
             </section>
           )}
 
-          {/* Generated / uploaded pool — the reuse cache. */}
+          {/* Generated / uploaded pool — the reuse cache. Scoped to the current client when one is
+              resolved (so it isn't every client's images); the whole pool when no client is picked. */}
           <section aria-label="Generated images">
             {(clientKey || sections.used.length > 0) && (
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Generated images</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                {clientKey ? `Generated for ${clientName || clientKey}` : 'Generated images'}
+              </h3>
             )}
             {error ? (
               <div className="flex flex-col items-center justify-center h-40 text-slate-500 text-sm">
@@ -172,8 +177,9 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
                 <Loader2 className="animate-spin mr-2" size={20} /> Loading…
               </div>
             ) : items.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-40 text-slate-400 text-sm">
-                <ImageOff size={28} className="mb-2" /> No images yet — generate one first.
+              <div className="flex flex-col items-center justify-center h-40 text-slate-400 text-sm text-center px-4">
+                <ImageOff size={28} className="mb-2" />
+                {clientKey ? `No generated images for ${clientName || clientKey} yet — generate one first.` : 'No images yet — generate one first.'}
               </div>
             ) : sections.generated.length === 0 ? (
               <p className="text-xs text-slate-400">All generated images are shown above.</p>

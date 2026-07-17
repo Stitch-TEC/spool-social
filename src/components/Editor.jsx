@@ -149,7 +149,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     try {
       const processedImage = await processImageFile(file);
       setFormData(prev => ({ ...prev, imageUrl: processedImage }));
-      const hosted = await ensureHostedImage(processedImage);
+      // Tag the pooled upload with the post's client so it stays scoped to that client in the picker.
+      const hosted = await ensureHostedImage(processedImage, genClientId(formData.client));
       if (hosted !== processedImage) {
         // Only swap if the user hasn't replaced/removed the image meanwhile.
         setFormData(prev => (prev.imageUrl === processedImage ? { ...prev, imageUrl: hosted } : prev));

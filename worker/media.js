@@ -27,7 +27,7 @@ export function mediaUrl(origin, key) {
   return `${origin}/media/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-export async function storeImage(env, origin, bytes, mime, owner) {
+export async function storeImage(env, origin, bytes, mime, owner, clientId) {
   const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'bin';
   // Content-addressed key: identical bytes hash to the same key, so the same image
   // is stored ONCE and every caller (this API, the editor, the automation runner)
@@ -39,7 +39,28 @@ export async function storeImage(env, origin, bytes, mime, owner) {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const hash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
   const key = `generated/${owner}/${hash}.${ext}`;
-  await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
+  // Tag the pooled image with the client(s) it was generated/attached for (suite slugs) so the
+  // in-editor picker can scope "Generated images" to the client you're working on instead of
+  // leaking every client's images into one pool. The R2 KEY is unchanged (still content-addressed,
+  // GC + delete-auth untouched); this is metadata only.
+  //
+  // Because the key is the CONTENT hash, the same bytes can be stored for more than one client (a
+  // shared stock photo) AND re-stored later with no client (a no-client-selected re-upload). R2's
+  // put() REPLACES metadata, so a single-valued tag would be last-writer-wins — a no-slug re-store
+  // would WIPE the tag and the image would vanish from a client's scoped picker. So we keep a MERGED
+  // SET of clientIds and never unset: read the existing tags, union the new slug in, write the set.
+  const slug = String(clientId || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64);
+  let ids = [];
+  try {
+    const existing = await env.MEDIA.head(key); // metadata only (no body) — cheap
+    const prior = existing?.customMetadata?.clientIds || existing?.customMetadata?.clientId || '';
+    ids = prior.split(',').map((s) => s.trim()).filter(Boolean);
+  } catch { /* first store / head miss — no prior tags */ }
+  if (slug && !ids.includes(slug)) ids.push(slug);
+  ids = ids.slice(0, 20); // bound the metadata size; a shared image spanning >20 clients is unreal
+  const opts = { httpMetadata: { contentType: mime } };
+  if (ids.length) opts.customMetadata = { clientIds: ids.join(',') };
+  await env.MEDIA.put(key, bytes, opts);
   return { url: mediaUrl(origin, key), key };
 }
 
@@ -50,13 +71,13 @@ export async function resolveDraftImage(env, origin, img) {
   if (!img) return null;
   if (img.prompt) {
     const { b64, mime } = await generateImage(env, String(img.prompt).slice(0, MAX_IMG_PROMPT), { clientId: img.clientId });
-    return (await storeImage(env, origin, b64ToBytes(b64), mime, 'internal')).url;
+    return (await storeImage(env, origin, b64ToBytes(b64), mime, 'internal', img.clientId)).url;
   }
   if (img.base64) {
     const m = String(img.base64).match(/^data:([^;]+);base64,(.+)$/);
     const mime = m ? m[1] : (img.mime || 'image/png');
     const data = m ? m[2] : String(img.base64);
-    return (await storeImage(env, origin, b64ToBytes(data), mime, 'internal')).url;
+    return (await storeImage(env, origin, b64ToBytes(data), mime, 'internal', img.clientId)).url;
   }
   if (typeof img.url === 'string') return img.url.slice(0, 2000);
   return null;

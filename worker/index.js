@@ -565,7 +565,7 @@ export default {
         const imgPrompt = brandPart ? `${prompt} ${brandPart}` : prompt;
         const { b64, mime } = await generateImage(env, imgPrompt, { clientId: genClientId });
         const owner = auth.mode === 'firebase' ? auth.principal : 'internal';
-        const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner);
+        const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner, genClientId);
         return json({ url: stored.url, key: stored.key }, 200, cors);
       } catch (err) {
         // A quota denial is a POLICY outcome the user must see (raise the quota in POM) — pass its
@@ -637,7 +637,11 @@ export default {
           catch { return json({ error: 'Invalid base64 image' }, 400, cors); }
           if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
           const poolOwner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
-          const stored = await storeImage(env, url.origin, bytes, mime, poolOwner);
+          // `forClient` (distinct from `client`) tags the pooled attachment with the client it belongs
+          // to — for the picker's per-client scoping — WITHOUT routing it into the curated library or
+          // counting it against the per-client cap. A member is pinned to their own slug.
+          const forClient = memberSlug || slugifyClient(body?.forClient || '');
+          const stored = await storeImage(env, url.origin, bytes, mime, poolOwner, forClient);
           return json({ key: stored.key, type: 'image', url: stored.url }, 201, cors);
         }
 
@@ -700,13 +704,26 @@ export default {
         if (auth.mode === 'apikey') prefixes = ['generated/'];
         else if (auth.principal === env.OWNER_UID) prefixes = [`generated/${auth.principal}/`, 'generated/internal/'];
         else prefixes = [`generated/${auth.principal}/`];
-        const paginate = auth.mode === 'apikey';
+        // `?forClient=<slug>` scopes the OPERATOR's cross-client pool to images tagged with that client
+        // (customMetadata written by storeImage) so the picker shows ONLY the client you're working on
+        // — not every client's images. A member's pool is already a single tenant (their uid prefix
+        // holds only their own client's images), so we DON'T filter them — that would wrongly hide
+        // their legacy untagged images. This is a VIEW filter on top of the unchanged uid-prefix
+        // authorization boundary; untagged legacy images never match, the privacy-safe default.
+        const forClient = memberSlug ? '' : slugifyClient(url.searchParams.get('forClient') || '');
+        const paginate = auth.mode === 'apikey' || !!forClient; // filtering needs the full walk, not just page 1
         const media = [];
         for (const prefix of prefixes) {
           let cursor;
           do {
-            const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
+            const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000, ...(forClient ? { include: ['customMetadata'] } : {}) });
             for (const o of listed.objects) {
+              if (forClient) {
+                // storeImage tags a merged SET of clientIds (comma-joined); accept the legacy
+                // single `clientId` field too. Untagged legacy objects match nothing → excluded.
+                const ids = (o.customMetadata?.clientIds || o.customMetadata?.clientId || '').split(',');
+                if (!ids.includes(forClient)) continue;
+              }
               media.push({ key: o.key, type: 'image', url: mediaUrl(url.origin, o.key), size: o.size, uploaded: o.uploaded });
             }
             cursor = paginate && listed.truncated ? listed.cursor : undefined;
