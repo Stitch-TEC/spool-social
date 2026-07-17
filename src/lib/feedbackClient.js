@@ -34,7 +34,9 @@ export function buildFeedbackPayload({ app, category, message, user = 'anonymous
   };
 }
 
-// POST to the Worker. Throws on non-2xx so callers can surface an error.
+// POST to the Worker. Throws on non-2xx so callers can surface an error. Resolves to the parsed JSON
+// body (e.g. `{ ok, screenshotStored }`) so a caller can honestly reflect whether an attached image
+// actually stuck; falls back to `{ ok: true }` if the body isn't JSON.
 export async function submitFeedback(payload) {
   const res = await fetch(FEEDBACK_URL, {
     method: 'POST',
@@ -42,7 +44,7 @@ export async function submitFeedback(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`feedback request failed: ${res.status}`);
-  return res;
+  return res.json().catch(() => ({ ok: true }));
 }
 
 // Client-side cooldown (cosmetic — the Worker KV rate limit is the real control). Check before submit,

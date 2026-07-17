@@ -60,6 +60,14 @@ export async function imageFileToShot(file) {
   return canvasToCappedJpeg(img, w, h);
 }
 
+// True iff a paste/drop DataTransfer actually carries an IMAGE file — so handlers only intercept
+// (preventDefault) real image drops, letting text/link drops fall through to the textarea.
+export function dataTransferHasImage(dt) {
+  if (!dt) return false;
+  if (Array.from(dt.files || []).some((f) => /^image\//.test(f.type))) return true;
+  return Array.from(dt.items || []).some((it) => it.kind === 'file' && /^image\//.test(it.type || ''));
+}
+
 // Pull the first image off a paste/drop event's items → a compressed shot, or null if none.
 export async function shotFromDataTransfer(dt) {
   if (!dt) return null;
@@ -77,6 +85,8 @@ export async function capturePageShot() {
     logging: false,
     useCORS: true,
     backgroundColor: '#ffffff',
+    // Don't bake the open feedback panel / its launcher into the shot of the page being reported.
+    ignoreElements: (el) => typeof el.closest === 'function' && !!el.closest('[data-feedback-widget]'),
     scale: 1,
     windowWidth: document.documentElement.clientWidth,
     windowHeight: document.documentElement.clientHeight,

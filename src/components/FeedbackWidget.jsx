@@ -3,7 +3,11 @@ import { MessageSquare, X, Send, Loader2 } from 'lucide-react';
 import { CURRENT_APP_ID, STITCH_APPS } from '../stitch-apps';
 import CharCountCircle from './CharCountCircle';
 import { buildFeedbackPayload, submitFeedback } from '../lib/feedbackClient';
-import { imageFileToShot, shotFromDataTransfer, capturePageShot } from '../lib/screenshot';
+import { imageFileToShot, shotFromDataTransfer, capturePageShot, dataTransferHasImage } from '../lib/screenshot';
+
+// Keep in lockstep with the broker's SCREENSHOT_MAX_B64 — reject an oversized shot in the browser
+// instead of wasting a round-trip that the worker would only drop.
+const MAX_SHOT_B64 = 900_000;
 
 // Suite Feedback Widget (SUITE-ARCHITECTURE.md §4). Floating
 // bottom-right button → modal that posts the canonical feedback payload to the
@@ -27,24 +31,36 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
   const [shotBusy, setShotBusy] = useState('');
   const fileRef = useRef(null);
   const takeShot = async (fn, busy) => {
+    if (shotBusy) return; // one capture at a time — ignore a second paste/drop mid-flight
     setShotBusy(busy);
-    try { const u = await fn(); if (u) setShot(u); }
+    try {
+      const u = await fn();
+      if (!u) return;
+      if (u.length > MAX_SHOT_B64) { showToast?.('That image is too large to attach — try a smaller crop', 'error'); return; }
+      setShot(u);
+    }
     catch (err) { showToast?.(err?.message || 'Could not add that image', 'error'); }
     finally { setShotBusy(''); }
   };
+  // Only intercept a paste/drop that actually carries an image — a text/link drop must fall through
+  // to the textarea.
   const onPaste = (e) => {
-    if (e.clipboardData && Array.from(e.clipboardData.items || []).some((it) => it.kind === 'file')) takeShot(() => shotFromDataTransfer(e.clipboardData), 'paste');
+    if (dataTransferHasImage(e.clipboardData)) takeShot(() => shotFromDataTransfer(e.clipboardData), 'paste');
   };
   const onDrop = (e) => {
-    if (e.dataTransfer && (e.dataTransfer.files?.length || e.dataTransfer.items?.length)) { e.preventDefault(); takeShot(() => shotFromDataTransfer(e.dataTransfer), 'drop'); }
+    if (dataTransferHasImage(e.dataTransfer)) { e.preventDefault(); takeShot(() => shotFromDataTransfer(e.dataTransfer), 'drop'); }
   };
+  // Close resets the optional screenshot so a stale shot never lingers into the next open. Never
+  // closes mid-submit (so a typed message isn't lost).
+  const close = () => { if (sending) return; setShot(''); setOpen(false); };
 
   // Close on Escape (but never while a submit is in flight, so we don't lose
   // the typed message). Outside-click is intentionally NOT used here — a modal
   // backdrop click is the explicit dismiss affordance.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => { if (e.key === 'Escape' && !sending) setOpen(false); };
+    // Inline (not `close`) so the effect doesn't depend on that function's identity — same result.
+    const onKey = (e) => { if (e.key === 'Escape' && !sending) { setShot(''); setOpen(false); } };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, sending]);
@@ -77,12 +93,14 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
 
     setSending(true);
     try {
-      await submitFeedback(payload);
+      const res = await submitFeedback(payload);
       // Success — reset and close. Keep the chosen category sticky for re-use.
       setMessage('');
       setShot('');
       setOpen(false);
-      showToast?.('Thanks — feedback sent');
+      // Be honest if the image didn't stick (too large / storage not configured yet).
+      if (shot && res && res.screenshotStored === false) showToast?.('Feedback sent — the screenshot couldn’t be attached', 'error');
+      else showToast?.('Thanks — feedback sent');
     } catch (err) {
       console.error('Feedback submit failed:', err);
       // Keep the modal open and the typed message intact so it isn't lost.
@@ -103,6 +121,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
       {/* Floating trigger */}
       {!open && (
         <button
+          data-feedback-widget
           onClick={() => setOpen(true)}
           title="Send feedback"
           aria-label="Send feedback"
@@ -116,11 +135,12 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
       {/* Modal */}
       {open && (
         <div
+          data-feedback-widget
           className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-slate-900/40 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Send feedback"
-          onMouseDown={(e) => { if (e.target === e.currentTarget && !sending) setOpen(false); }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
         >
           <div className="w-full max-w-md bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -128,7 +148,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
                 <MessageSquare size={18} className="text-indigo-600" /> Send feedback
               </h2>
               <button
-                onClick={() => { if (!sending) setOpen(false); }}
+                onClick={close}
                 aria-label="Close"
                 title="Close"
                 className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
@@ -202,14 +222,14 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
               <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => { if (!sending) setOpen(false); }}
+                  onClick={close}
                   className="px-4 py-2 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={sending || !message.trim()}
+                  disabled={sending || !message.trim() || !!shotBusy}
                   className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
