@@ -3,6 +3,7 @@ import { MessageSquare, X, Send, Loader2 } from 'lucide-react';
 import { CURRENT_APP_ID, STITCH_APPS } from '../stitch-apps';
 import CharCountCircle from './CharCountCircle';
 import { buildFeedbackPayload, submitFeedback } from '../lib/feedbackClient';
+import { imageFileToShot, shotFromDataTransfer, capturePageShot } from '../lib/screenshot';
 
 // Suite Feedback Widget (SUITE-ARCHITECTURE.md §4). Floating
 // bottom-right button → modal that posts the canonical feedback payload to the
@@ -21,6 +22,22 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const textareaRef = useRef(null);
+  // One optional screenshot (paste / drop / file-pick / one-click page capture).
+  const [shot, setShot] = useState('');
+  const [shotBusy, setShotBusy] = useState('');
+  const fileRef = useRef(null);
+  const takeShot = async (fn, busy) => {
+    setShotBusy(busy);
+    try { const u = await fn(); if (u) setShot(u); }
+    catch (err) { showToast?.(err?.message || 'Could not add that image', 'error'); }
+    finally { setShotBusy(''); }
+  };
+  const onPaste = (e) => {
+    if (e.clipboardData && Array.from(e.clipboardData.items || []).some((it) => it.kind === 'file')) takeShot(() => shotFromDataTransfer(e.clipboardData), 'paste');
+  };
+  const onDrop = (e) => {
+    if (e.dataTransfer && (e.dataTransfer.files?.length || e.dataTransfer.items?.length)) { e.preventDefault(); takeShot(() => shotFromDataTransfer(e.dataTransfer), 'drop'); }
+  };
 
   // Close on Escape (but never while a submit is in flight, so we don't lose
   // the typed message). Outside-click is intentionally NOT used here — a modal
@@ -49,6 +66,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
       message: text,
       user: user?.email || 'anonymous',
       appVersion: APP_VERSION,
+      screenshot: shot,
       extra: {
         appName: APP_NAME,
         view: view || null,
@@ -62,6 +80,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
       await submitFeedback(payload);
       // Success — reset and close. Keep the chosen category sticky for re-use.
       setMessage('');
+      setShot('');
       setOpen(false);
       showToast?.('Thanks — feedback sent');
     } catch (err) {
@@ -118,7 +137,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-5 space-y-4">
+            <form onSubmit={handleSubmit} onPaste={onPaste} onDrop={onDrop} onDragOver={(e) => e.preventDefault()} className="p-5 space-y-4">
               {/* Category */}
               <div className="flex bg-slate-100 p-1 rounded-lg">
                 {categories.map(c => (
@@ -150,6 +169,23 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
                     <CharCountCircle current={message.length} max={MAX_MESSAGE} />
                   </div>
                 </div>
+              </div>
+
+              {/* Optional one screenshot — paste, drop, file-pick, or one-click capture. */}
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-1">Screenshot <span className="normal-case font-normal">(optional)</span></label>
+                {shot ? (
+                  <div className="relative inline-block">
+                    <img src={shot} alt="Attached screenshot" className="max-h-36 rounded-lg border border-slate-200" />
+                    <button type="button" onClick={() => setShot('')} aria-label="Remove screenshot" className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-slate-800/80 text-white text-xs leading-none flex items-center justify-center hover:bg-red-600">✕</button>
+                  </div>
+                ) : (
+                  <div onClick={() => fileRef.current?.click()} className="flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border border-dashed border-slate-300 text-center cursor-pointer hover:border-indigo-400 transition-colors">
+                    <span className="text-[11px] text-slate-500">{shotBusy ? (shotBusy === 'capture' ? 'Capturing the page…' : 'Adding image…') : 'Paste, drop, or click to choose an image'}</span>
+                    <button type="button" disabled={!!shotBusy} onClick={(e) => { e.stopPropagation(); takeShot(capturePageShot, 'capture'); }} className="text-[11px] font-bold text-indigo-600 hover:underline disabled:opacity-50">📸 Capture this page</button>
+                  </div>
+                )}
+                <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) takeShot(() => imageFileToShot(f), 'file'); e.target.value = ''; }} />
               </div>
 
               {/* Read-only context preview — what gets attached */}

@@ -15,7 +15,7 @@ export const stripHtml = (s) => String(s || '').replace(/<[^>]*>?/gm, '');
 
 // Build the canonical feedback payload. Fills the auto-captured context uniformly; the caller passes the
 // semantic fields plus any app-specific extras (role, view, appName, clientId) via `extra`.
-export function buildFeedbackPayload({ app, category, message, user = 'anonymous', email = '', hp = '', appVersion = '', extra = {} }) {
+export function buildFeedbackPayload({ app, category, message, user = 'anonymous', email = '', hp = '', appVersion = '', screenshot = '', extra = {} }) {
   return {
     app,
     category,
@@ -29,6 +29,7 @@ export function buildFeedbackPayload({ app, category, message, user = 'anonymous
     userAgent: navigator.userAgent,
     viewport: `${window.innerWidth}x${window.innerHeight}`,
     ts: new Date().toISOString(),
+    ...(screenshot ? { screenshot } : {}),
     ...extra,
   };
 }
