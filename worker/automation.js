@@ -14,13 +14,42 @@
 // loop is capped per tick (MAX_GEN_PER_TICK).
 
 import { generateText } from './gemini.js';
-import { resolveDraftImage } from './media.js';
+import { resolveDraftImage, storeImage } from './media.js';
 import { checkRateLimit } from './ratelimit.js';
 import { buildTextContext, buildImagePrompt, contextTierForPlatform, PLATFORM_META } from '../src/generation/prompts.js';
 import { createPost, getClientSettings, listAutomations, updateAutomation } from './firestore.js';
-import { fetchClientProfile } from './suiteContext.js';
+import { fetchClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage } from './suiteContext.js';
 
 const MAX_SEED = 2000; // matches the generation API's MAX_PROMPT
+
+// Mirrors index.js `slugifyClient` / src/config/roles.js `slugifyClientId` EXACTLY (inline copy so
+// the Worker bundle stays self-contained; the algorithm is stable — if roles.js ever changes,
+// change all three). Used only for the roster name→slug repair below.
+const slugifyClient = (name) =>
+  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+
+// Re-host a page image from the client's own site into R2 (content-addressed) instead of
+// hot-linking it: a /media URL is what the SPA, pickers, and the reference-based GC understand,
+// and it survives the client's site redeploys. Only URLs the domain-pinned broker returned ever
+// reach here, so this is not an open fetch surface — but still require an image/* body and the
+// same 5MB cap as the upload route. Best-effort by design: ANY miss returns '' (a missing hero
+// image must never fail the run — same posture as the AI-image path's text salvage).
+async function rehostPageImage(env, origin, imgUrl, clientId) {
+  try {
+    const u = new URL(String(imgUrl));
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+    const res = await fetch(u.href, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return '';
+    const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!mime.startsWith('image/')) return '';
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!bytes.length || bytes.length > 5_000_000) return '';
+    return (await storeImage(env, origin, bytes, mime, 'internal', clientId)).url;
+  } catch (err) {
+    console.error('Automation page-image rehost failed:', err?.message || err);
+    return '';
+  }
+}
 
 // Thrown when the automation budget (its KV tier) is exhausted. The tick stops
 // rather than skipping one, so the budget is a true ceiling for the run.
@@ -51,6 +80,18 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   const wantImage = contentType.includes('image');
   const seed = String(auto.promptSeed || '').slice(0, MAX_SEED);
 
+  // Repair the tenant key against the canonical ROSTER before any keyed use (context seam,
+  // grounding fetches, quota attribution, the draft itself). Stored automations may carry a
+  // posts-derived phantom slug — Spool's known self-referential resolution bug — which the
+  // broker 404s on and the quota mirror never matches. Same name→slug repair as /api/ideas;
+  // roster unreachable/empty = keep the stored id (fail-open).
+  let clientId = auto.clientId;
+  const roster = await fetchClientRoster(env);
+  if (roster.length && !roster.some((c) => c.slug === clientId)) {
+    const byName = roster.find((c) => slugifyClient(c.name) === slugifyClient(auto.client));
+    if (byName) clientId = byName.slug;
+  }
+
   // Reserve the FULL budget this draft needs BEFORE any paid Gemini call, so a
   // budget hit throws cleanly up front (the cron retries next tick, nothing
   // wasted) instead of stranding completed text work mid-draft.
@@ -59,7 +100,12 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
 
   // Client branding/AI settings make the output on-brand. Missing is non-fatal.
   let settings = null;
-  try { settings = await getClientSettings(env, auto.clientId); }
+  try {
+    settings = await getClientSettings(env, clientId);
+    // Branding docs key clientId off posts, so a just-repaired slug may not match an older
+    // doc — fall back to the stored id rather than silently losing the brand voice.
+    if (!settings && clientId !== auto.clientId) settings = await getClientSettings(env, auto.clientId);
+  }
   catch (err) { console.error('Automation client lookup failed:', err?.message || err); }
   const clientSettings = settings || {};
 
@@ -68,15 +114,45 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   // Tier-based injection depth: long-form (blog/job) earns the FULL client context; social copy gets
   // the standard slice (the broker sizes it — policy lives there; the rule is the shared
   // contextTierForPlatform, also used by the interactive generation paths in index.js).
-  const profile = await fetchClientProfile(env, auto.clientId, contextTierForPlatform(platform));
+  const profile = await fetchClientProfile(env, clientId, contextTierForPlatform(platform));
   // Presence-safe observability (no secret/content) so `wrangler tail` shows whether the seam is feeding
   // this run — silent degradation was the one ops gap flagged in review.
   if (env.CONTEXT_KEY) {
     console.log(
       profile
-        ? `[suite-context] ${auto.clientId}: profile loaded (ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'}, assets=${profile.assets ? (profile.assets.count ?? 0) : 'n/a'})`
-        : `[suite-context] ${auto.clientId}: no profile — falling back to local settings`,
+        ? `[suite-context] ${clientId}: profile loaded (ctx=${(profile.aiContext || '').length} chars, brand=${profile.brand ? 'yes' : 'no'}, assets=${profile.assets ? (profile.assets.count ?? 0) : 'n/a'})`
+        : `[suite-context] ${clientId}: no profile — falling back to local settings`,
     );
+  }
+
+  // Site grounding: rotate over the client's real page index and pull ONE page fresh (title/
+  // excerpt/images — domain-pinned to the client's own site broker-side) so this run is anchored
+  // in what the site actually says, not just the static promptSeed. Every miss (seam
+  // unconfigured, unknown slug, empty index, dead page) degrades to the ungrounded generation —
+  // a grounding miss must never fail the run. `nextCursor` is RETURNED, not written here, so the
+  // advance persists in the caller's single updateAutomation alongside the schedule.
+  let groundedPage = null;
+  let nextCursor;
+  if (auto.grounding === 'site') {
+    const sig = await fetchClientSignals(env, clientId);
+    // Prefer the full page index (every URL on the site); fall back to the crawled-pages
+    // sample for old brokers that don't send an index yet.
+    const pages = sig.ok
+      ? (sig.signals.site.index.length ? sig.signals.site.index : sig.signals.site.pages)
+      : [];
+    if (pages.length) {
+      const cursor = Math.max(0, parseInt(auto.pageCursor, 10) || 0);
+      const pick = pages[cursor % pages.length];
+      if (typeof pick?.url === 'string' && pick.url) {
+        const out = await fetchClientPage(env, clientId, pick.url);
+        if (out.ok) groundedPage = out.page;
+      }
+      // Advance even on a page miss so one dead URL can't wedge the rotation on itself.
+      nextCursor = (cursor + 1) % pages.length;
+    }
+    if (env.CONTEXT_KEY) {
+      console.log(`[grounding] ${clientId}: ${groundedPage ? `page loaded (${groundedPage.url})` : 'no page — running ungrounded'}`);
+    }
   }
 
   let content = '';
@@ -86,9 +162,12 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets,
       // Structured brand theme + auto-refreshed recent-activity digest (same seam, newer fields —
       // absent on old brokers, and the builder renders nothing for them: fail-open unchanged).
-      pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit
+      pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit,
+      // The grounded page rides in as UNTRUSTED reference data (renderPomPageLine) — never
+      // appended to promptSeed, which is capped and injection-defended separately.
+      pomPage: groundedPage
     });
-    const out = await generateText(env, seed, { system, maxTokens, clientId: auto.clientId });
+    const out = await generateText(env, seed, { system, maxTokens, clientId });
     content = String(out || '').trim().slice(0, max);
   }
 
@@ -101,7 +180,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       clientName: auto.client, clientSettings, pomBrand: profile?.brand, pomBrandKit: profile?.brandKit
     });
     try {
-      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId: auto.clientId })) || '';
+      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId })) || '';
     } catch (err) {
       // Best-effort image: for text+image, persist the already-generated text
       // rather than discarding it. Image-only has nothing to salvage, so let
@@ -113,14 +192,29 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
     }
   }
 
+  // Site-grounded TEXT drafts attach the chosen page's own hero image (re-hosted into R2) —
+  // the site's real imagery beats a generic AI render for grounded copy. The 'image' /
+  // 'text+image' content types keep the AI-generation path above untouched, and a rehost
+  // miss just means a draft without an image.
+  if (auto.grounding === 'site' && contentType === 'text' && groundedPage?.images?.[0]) {
+    imageUrl = await rehostPageImage(env, origin, groundedPage.images[0], clientId);
+  }
+
   // An image-only automation still needs non-empty content (the post model / UI
   // require it) — fall back to the seed as a starting caption.
   if (!content) content = seed.trim().slice(0, max);
 
+  const suggest = auto.mode === 'suggest';
   const nowIso = new Date().toISOString();
   const postId = await createPost(env, {
     uid: env.OWNER_UID,
-    clientId: auto.clientId,            // <-- so the client sees it in review
+    // 'suggest' parks the draft operator-only: visibility is clientId-keyed (firestore.rules +
+    // the app's subscriptions both query on it), so an EMPTY clientId is invisible to client
+    // members and share guests while the operator's uid-scoped query still sees it.
+    // `forClientId` carries the real slug for the one-click promote in the app.
+    // 'auto' keeps the classic straight-to-review behavior.
+    clientId: suggest ? '' : clientId,
+    ...(suggest ? { forClientId: clientId } : {}),
     client: auto.client,
     content,
     title: '',
@@ -132,14 +226,16 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
     approvalStatus: 'pending',
     feedback: '',
     imageUrl,
-    tags: [],
+    tags: suggest ? ['suggested'] : [],
     scheduledDate: null,
     createdAt: nowIso,
     updatedAt: nowIso,
-    source: 'automation',
+    source: suggest ? 'suggestion' : 'automation',
     automationId: auto.id
   });
-  return { postId, content, imageUrl };
+  // pageCursor is undefined unless this run rotated the site index — callers only persist it
+  // when defined, so ungrounded automations never gain the field.
+  return { postId, content, imageUrl, pageCursor: nextCursor };
 }
 
 /**
@@ -174,12 +270,15 @@ export async function runDueAutomations(env, origin) {
     const intervalHours = Math.max(1, parseInt(auto.intervalHours, 10) || 24);
     const advancedIso = new Date(nowMs + intervalHours * 3_600_000).toISOString();
     try {
-      await generateForAutomation(env, origin, auto);
+      const result = await generateForAutomation(env, origin, auto);
       ran++;
       await updateAutomation(env, auto.id, {
         lastRunAt: nowIso, lastStatus: 'ok', lastError: '',
         runCount: (parseInt(auto.runCount, 10) || 0) + 1,
-        nextRunAt: advancedIso, updatedAt: nowIso
+        nextRunAt: advancedIso, updatedAt: nowIso,
+        // Site-grounding rotation advances atomically with the schedule (ONE write per run —
+        // a separate cursor write could strand rotation state if either write failed).
+        ...(result.pageCursor !== undefined ? { pageCursor: result.pageCursor } : {})
       });
     } catch (err) {
       if (err?.budgetExhausted) {

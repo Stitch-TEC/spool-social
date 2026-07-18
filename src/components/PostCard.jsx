@@ -1,19 +1,22 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
   const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+  // Parked automation suggestion (operator-only lane) — swaps the status row for the
+  // promote/dismiss pair. Handler presence doubles as the operator gate.
+  const isSuggestion = post.source === 'suggestion' && !!onPromoteSuggestion && !!onDismissSuggestion;
 
   const statusPill = isPosted ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
     : isScheduled ? 'bg-amber-100 text-amber-800 border-amber-200'
@@ -70,7 +73,9 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <div>
                 <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
                 <div className="flex items-center gap-2">
-                    {post.isTemplate
+                    {post.source === 'suggestion'
+                      ? <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded">Suggested</span>
+                      : post.isTemplate
                       ? <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Template</span>
                       : <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
@@ -126,7 +131,29 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           </div>
         )}
 
-        {!isReadOnly && !selectable && !onUseTemplate && (
+        {/* Suggestion card: parked automation output — the primary action is promoting it into
+            the client's review queue; Dismiss deletes (it never reached the client). Replaces
+            the status row: a suggestion has no workflow until it's promoted. */}
+        {!isReadOnly && !selectable && isSuggestion && (
+          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+            <button
+              onClick={(e) => { e.stopPropagation(); onDismissSuggestion(post); }}
+              className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full px-3 py-2 transition-colors"
+              title="Dismiss this suggestion (deletes it)" aria-label="Dismiss suggestion"
+            >
+              <X size={14} /> Dismiss
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onPromoteSuggestion(post); }}
+              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              title="Move this draft into the client's review queue" aria-label="Use this suggestion"
+            >
+              <CheckCircle size={14} /> Use this
+            </button>
+          </div>
+        )}
+
+        {!isReadOnly && !selectable && !onUseTemplate && !isSuggestion && (
           <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}

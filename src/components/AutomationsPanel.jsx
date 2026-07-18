@@ -21,6 +21,20 @@ const CONTENT_TYPES = [
   { id: 'text+image', label: 'Text + image' }
 ];
 
+// Content source: 'site' grounds each run in a real page of the client's site (the Worker
+// rotates through the site index); 'none' is the classic prompt-only generation.
+const GROUNDINGS = [
+  { id: 'none', label: 'General (prompt only)' },
+  { id: 'site', label: 'From site content' }
+];
+
+// Delivery: 'auto' drops each run straight into the client's review queue; 'suggest' parks it
+// as an operator-only suggestion (the Suggestions chip in the grid) to promote or dismiss.
+const MODES = [
+  { id: 'auto', label: 'Create drafts' },
+  { id: 'suggest', label: 'Suggest options' }
+];
+
 const PLATFORM_IDS = Object.keys(PLATFORMS);
 
 const fmtDate = (iso) => { try { return iso ? DATE_FORMATTERS.full.format(new Date(iso)) : '—'; } catch { return '—'; } };
@@ -49,6 +63,8 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
   const [tone, setTone] = useState('professional');
   const [length, setLength] = useState('medium');
   const [imageStyle, setImageStyle] = useState('photo');
+  const [grounding, setGrounding] = useState('none');
+  const [mode, setMode] = useState('auto');
   const [promptSeed, setPromptSeed] = useState('');
   const [intervalHours, setIntervalHours] = useState(PLATFORM_CADENCE.gmb.defaultHours);
 
@@ -87,7 +103,7 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
     setError(null);
     try {
       const { automation } = await apiCreate({
-        client, clientId, platform, contentType, tone, length, imageStyle,
+        client, clientId, platform, contentType, tone, length, imageStyle, grounding, mode,
         promptSeed: promptSeed.trim(),
         intervalHours: Number(intervalHours) || cadence.defaultHours
       });
@@ -186,6 +202,18 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
                   {LENGTH_PRESETS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
                 </select>
               </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">Source</label>
+                <select value={grounding} onChange={(e) => setGrounding(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white">
+                  {GROUNDINGS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1">Delivery</label>
+                <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white">
+                  {MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              </div>
               {wantsImage && (
                 <div>
                   <label className="block text-xs font-bold text-slate-500 mb-1">Image style</label>
@@ -241,7 +269,7 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
                           <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${p ? p.color + ' text-white' : 'bg-slate-200 text-slate-600'}`}>{p?.name || a.platform}</span>
                           {!a.enabled && <span className="text-[10px] font-bold uppercase text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">Paused</span>}
                         </p>
-                        <p className="text-xs text-slate-500 mt-0.5 truncate">{a.contentType.replace('+', ' + ')} · every {a.intervalHours}h · {a.tone}/{a.length}</p>
+                        <p className="text-xs text-slate-500 mt-0.5 truncate">{a.contentType.replace('+', ' + ')} · every {a.intervalHours}h · {a.tone}/{a.length}{a.grounding === 'site' && ' · site-grounded'}{a.mode === 'suggest' && ' · suggests'}</p>
                         <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
                           <Clock size={11} /> Next {a.enabled ? fmtDate(a.nextRunAt) : 'paused'}
                           <span className="text-slate-300">·</span>

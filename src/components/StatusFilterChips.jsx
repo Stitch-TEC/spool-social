@@ -9,9 +9,13 @@ const CHIPS = [
   { key: APPROVAL_STATUS.CHANGES_REQUESTED, label: 'Needs changes' },
 ];
 
-const StatusFilterChips = ({ value, onChange, counts }) => (
+// Not a post status — the operator-only parked-suggestions lane (automation 'suggest' mode).
+// The parent gates `showSuggestions` so clients never see the chip.
+const SUGGESTIONS_CHIP = { key: 'suggestions', label: 'Suggestions' };
+
+const StatusFilterChips = ({ value, onChange, counts, showSuggestions = false }) => (
   <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
-    {CHIPS.map(({ key, label }) => {
+    {(showSuggestions ? [...CHIPS, SUGGESTIONS_CHIP] : CHIPS).map(({ key, label }) => {
       const count = counts[key ?? 'all'] ?? 0;
       const active = value === key;
       return (
