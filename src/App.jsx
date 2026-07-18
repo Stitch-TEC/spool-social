@@ -14,7 +14,7 @@ import {
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT } from './constants';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
-import { ensureHostedImage } from './utils/generationApi';
+import { ensureHostedImage, pushToSender } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -491,6 +491,26 @@ const App = () => {
       showToast("Suggestion dismissed");
     } catch {
       showToast("Dismiss failed", "error");
+    }
+  }, [isReadOnly, isOperator, showToast]);
+
+  // Push a template/blog post into the client's Sender tenant as a campaign-ready email template.
+  // Server-side end to end (worker → broker → Sender); re-push UPDATES the same template
+  // (provenance-keyed), so the button is safely idempotent. Honest outcomes: a client without a
+  // Sender workspace gets a clear message, not a silent failure.
+  const handlePushToSender = useCallback(async (post) => {
+    if (isReadOnly || !isOperator) return;
+    showToast('Pushing to Sender…');
+    try {
+      const out = await pushToSender(post.id);
+      showToast(out.updated
+        ? 'Sender template updated — review it in Sender → Templates'
+        : 'Pushed to Sender — review it in Sender → Templates');
+    } catch (err) {
+      const msg = String(err?.message || '');
+      if (msg.includes('no_tenant_for_slug')) showToast('This client doesn’t have a Sender workspace yet', 'error');
+      else if (msg.includes('empty_content')) showToast('Nothing email-safe survived conversion — check the post content', 'error');
+      else showToast(msg || 'Push to Sender failed', 'error');
     }
   }, [isReadOnly, isOperator, showToast]);
 
@@ -1215,6 +1235,7 @@ const App = () => {
                     onResubmit={handleResubmitForReview}
                     onPromoteSuggestion={isOperator ? handlePromoteSuggestion : undefined}
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
+                    onPushToSender={isOperator ? handlePushToSender : undefined}
                     onCreate={() => setView('editor')}
                     selectable={!isReadOnly && !showTemplates && filterStatus !== 'suggestions' && selectionMode}
                     selectedIds={selectedIds}

@@ -1,13 +1,13 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X, Send
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, onPushToSender, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
@@ -96,6 +96,12 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ))}
+              {/* Push to Sender (operator-only via handler presence): templates + blog/long-form
+                  become a campaign-ready email template in the client's Sender tenant. Hidden on
+                  suggestions (no tenant yet — promote first). */}
+              {!isSuggestion && onPushToSender && (post.isTemplate || post.platform === 'blog') && (
+                <button onClick={(e) => { e.stopPropagation(); onPushToSender(post); }} title="Push to Sender (email template)" aria-label="Push to Sender (email template)" className="p-2 sm:p-1.5 text-slate-400 hover:text-violet-600 rounded-md"><Send size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              )}
               {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={16} className="sm:w-3.5 sm:h-3.5" /></button>

@@ -173,6 +173,24 @@ export async function fetchClientPage(env, slug, url) {
 // POM slug, never a free-text typo that joins to nothing. Returns [] on any miss (no key, network,
 // bad payload) so the picker degrades to empty rather than erroring. feedback-worker already filters
 // out 'internal' rows; the slug is returned verbatim and must NOT be re-slugified by the caller.
+// Push a Spool-authored template into the client's Sender tenant via the broker relay
+// (POST /sender/template — same CONTEXT_KEY seam; the broker alone holds SENDER_INTERNAL_KEY).
+// Returns { status, body } so the route can pass Sender's outcome through HONESTLY: 200 =
+// { templateId, builderUrl, updated }, 409 = the client has no Sender tenant yet, 503 = a seam
+// key is missing somewhere. Throws only on network failure — the caller maps that to 502.
+export async function pushSenderTemplate(env, { slug, name, html, preheader, spoolPostId }) {
+  if (!env || !env.CONTEXT_KEY) return { status: 503, body: { ok: false, error: 'not_configured' } };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  const res = await fetch(`${base}/sender/template`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
+    body: JSON.stringify({ slug, name, html, preheader, spoolPostId }),
+    signal: AbortSignal.timeout(15000), // broker adds its own 10s Sender timeout inside this
+  });
+  const body = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
+  return { status: res.status, body };
+}
+
 export async function fetchClientRoster(env) {
   if (!env || !env.CONTEXT_KEY) return [];
   const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;

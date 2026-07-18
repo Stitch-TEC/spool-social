@@ -15,7 +15,50 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, pushSenderTemplate } from './suiteContext.js';
+
+// ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
+// Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
+// Sender's sanitizer strips anything exotic and its renderEmailDocument scaffold styles bare tags,
+// so a simple fragment IS the correct target — a full md engine would add attack surface for zero
+// fidelity gain. Everything is HTML-escaped FIRST; links/images require http(s) or data:image
+// (Sender extracts data URIs to R2). Output is a FRAGMENT — never a full document (a doctype would
+// make Sender skip its 600px email scaffold).
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function mdInline(escaped) {
+  return escaped
+    // images before links (shared bracket syntax); URLs were escaped, so match &quot; boundaries
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/g, '<img src="$2" alt="$1">')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+}
+function postToEmailHtml(post) {
+  const content = String(post?.content || '').trim();
+  if (!content && !post?.title) return '';
+  const parts = [];
+  if (post.title) parts.push(`<h1>${escapeHtml(post.title)}</h1>`);
+  // Hero image: hosted /media URLs are already absolute; data URLs are fine (Sender re-hosts them).
+  const img = String(post.imageUrl || '');
+  if (/^(https?:\/\/|data:image\/)/.test(img)) {
+    parts.push(`<img src="${escapeHtml(img)}" alt="${escapeHtml(post.altText || '')}">`);
+  }
+  for (const block of escapeHtml(content).split(/\n{2,}/)) {
+    const b = block.trim();
+    if (!b) continue;
+    const h = b.match(/^(#{1,3})\s+(.+)$/s);
+    if (h) { parts.push(`<${h[1].length === 1 ? 'h1' : 'h2'}>${mdInline(h[2].trim())}</${h[1].length === 1 ? 'h1' : 'h2'}>`); continue; }
+    const lines = b.split('\n');
+    if (lines.length > 0 && lines.every((l) => /^\s*[-*]\s+/.test(l))) {
+      parts.push(`<ul>${lines.map((l) => `<li>${mdInline(l.replace(/^\s*[-*]\s+/, ''))}</li>`).join('')}</ul>`);
+      continue;
+    }
+    parts.push(`<p>${mdInline(b).replace(/\n/g, '<br>')}</p>`);
+  }
+  return parts.join('\n');
+}
 import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
@@ -750,6 +793,61 @@ export default {
 
     // --- Drafts management API (server-to-server: internal key) ---
     //   POST   /api/drafts       create
+    // --- Push a post to Sender as an email template (operator-only) ---
+    //   POST /api/sender-template  { postId } → { ok, templateId, builderUrl, updated }
+    // Server-side hop: this worker converts the post to an email-safe HTML FRAGMENT and calls the
+    // broker's /sender/template relay (CONTEXT_KEY); the broker alone holds SENDER_INTERNAL_KEY and
+    // forwards to Sender, which sanitizes + stores tenant-scoped. Re-push of the same post UPDATES
+    // the existing template (provenance = spoolPostId), never duplicates. Honest passthrough:
+    // 409 = the client has no Sender tenant yet; 503 = a seam key missing somewhere.
+    if (url.pathname === '/api/sender-template') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      // Human super-admins only — pushing content into a client's email tool is an operator act.
+      if (auth.mode !== 'firebase') return json({ error: 'Sign in as an operator' }, 403, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      const caller = await resolveShareCaller(auth, env);
+      if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+      const postId = String(body?.postId || '').trim();
+      if (!postId) return json({ error: 'postId is required' }, 400, cors);
+      const post = await getPost(env, postId);
+      if (!post) return json({ error: 'Post not found' }, 404, cors);
+      // A parked suggestion has no tenant — promote it first (the explicit gate stays load-bearing).
+      if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
+
+      // Resolve the ROSTER slug — never slugify a display name (the documented phantom-slug bug):
+      // trust a stamped clientId only if the roster issued it; else match the display name.
+      const roster = await fetchClientRoster(env);
+      const bySlug = roster.find((c) => c.slug === (post.clientId || ''));
+      const byName = roster.find((c) => (c.name || '').toLowerCase() === (post.client || '').toLowerCase());
+      const slug = (bySlug || byName)?.slug || '';
+      if (!slug) {
+        return json({ error: roster.length ? 'This post’s client isn’t on the suite roster' : 'Roster unavailable (CONTEXT_KEY seam not configured)' }, roster.length ? 404 : 503, cors);
+      }
+
+      const html = postToEmailHtml(post);
+      if (!html) return json({ error: 'Post has no content to convert' }, 400, cors);
+      const name = (post.title || `${post.client || slug} — ${post.platform || 'draft'}`).slice(0, 120);
+      try {
+        const out = await pushSenderTemplate(env, {
+          slug,
+          name,
+          html,
+          preheader: (post.metaDescription || '').slice(0, 200),
+          spoolPostId: postId,
+        });
+        return json(out.body, out.status, cors);
+      } catch (err) {
+        console.error('sender-template push failed:', err?.message || err);
+        return json({ ok: false, error: 'sender_unreachable' }, 502, cors);
+      }
+    }
+
     //   GET    /api/drafts       list (filters: ?client= &platform= &status=)
     //   GET    /api/drafts/:id    fetch one
     //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags, approvalStatus+feedback)
