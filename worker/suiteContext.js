@@ -156,6 +156,10 @@ export async function fetchClientPage(env, slug, url) {
         url: typeof p.url === 'string' ? p.url : url,
         title: typeof p.title === 'string' ? p.title : '',
         excerpt: typeof p.excerpt === 'string' ? p.excerpt : '',
+        // The broker's fuller page text (the excerpt is only a teaser) — this is what lets a
+        // grounded generation's ~1800-char budget actually fill. Optional on old brokers;
+        // consumers fall back to the excerpt.
+        text: typeof p.text === 'string' ? p.text : '',
         images: Array.isArray(p.images) ? p.images.filter((u) => typeof u === 'string') : [],
       },
     };

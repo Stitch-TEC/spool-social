@@ -1096,6 +1096,11 @@ export default {
             }).catch(() => {});
             return json({ ok: true, postId: result.postId }, 200, cors);
           } catch (err) {
+            // Even a failed preview advanced the rotation if it picked a page — persist
+            // (best-effort) so repeated "Run now" retries don't wedge on one broken page.
+            if (err?.pageCursor !== undefined) {
+              await updateAutomation(env, id, { pageCursor: err.pageCursor, updatedAt: new Date().toISOString() }).catch(() => {});
+            }
             if (err?.quotaExceeded || err?.budgetExhausted) return json({ error: err.message }, 429, cors);
             console.error('Automation run failed:', err?.message || err);
             return json({ error: 'Generation failed' }, 502, cors);
@@ -1232,6 +1237,14 @@ export default {
       const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      // Serve stored bytes as EXACTLY their stored type — R2 holds user/site-sourced content,
+      // and content-sniffing an inline same-origin response is how a disguised HTML/SVG body
+      // becomes stored XSS. New stores only accept raster types; the svg→attachment fallback
+      // neutralizes any legacy svg object without breaking <img> rendering of raster images.
+      headers.set('X-Content-Type-Options', 'nosniff');
+      if ((headers.get('Content-Type') || '').toLowerCase().includes('svg')) {
+        headers.set('Content-Disposition', 'attachment');
+      }
       // Conditional-request support: keys are content-addressed/immutable, so a
       // revalidating client gets a bodyless 304 instead of a full R2 read-through.
       headers.set('ETag', obj.httpEtag);

@@ -198,10 +198,12 @@ const App = () => {
       const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
       const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
 
-      // Editing a parked suggestion must NOT silently promote it: stamping a clientId is
+      // Saving a parked suggestion must NOT silently promote it: stamping a clientId is
       // exactly what makes a post client-visible, so keep it empty — promotion is the
-      // explicit "Use this" action on the suggestion card.
-      const isSuggestion = existingPost?.source === 'suggestion';
+      // explicit "Use this" action on the suggestion card. Checked on BOTH the stored doc
+      // and the incoming form data, so an id-stripped copy (duplicate) of a suggestion
+      // stays a suggestion instead of minting a live draft.
+      const isSuggestion = (existingPost ?? formData)?.source === 'suggestion';
 
       // Swap a bulky base64 data URL for a small hosted /media URL (content-addressed
       // in R2, so a reused photo keeps one URL). Also opportunistically migrates
@@ -230,12 +232,26 @@ const App = () => {
         tags,
         // Evergreen flag: templates live in the posts collection but are excluded
         // from the dated queue + the drafts API — surfaced only in the Templates view.
-        isTemplate: !!formData.isTemplate,
+        // Forced off for suggestions: a suggestion-template hybrid would sit in two lanes
+        // with two conflicting action rows.
+        isTemplate: isSuggestion ? false : !!formData.isTemplate,
         // All posts are attributed to the operator uid (so the operator's query
         // + the single per-client review token resolve across multi-author
         // content); clientId is the immutable tenant key.
         uid: OPERATOR_UID,
         clientId: isSuggestion ? '' : (isClientMember ? myClientId : clientIdFor(client)),
+        // Suggestions keep their identity through saves. forClientId tracks the CURRENT
+        // client name so promote can never mis-tenant a renamed suggestion — but it is
+        // re-derived ONLY on an actual rename: the worker's original forClientId is
+        // roster-resolved, while clientIdFor is the posts-derived (phantom-slug-prone)
+        // resolver, so re-stamping on every save would degrade it. The '' fallback makes
+        // promote fail loudly ("couldn't resolve") instead of guessing.
+        ...(isSuggestion ? {
+          source: 'suggestion',
+          forClientId: existingPost
+            ? (client !== existingPost.client ? (clientIdFor(client) || '') : (existingPost.forClientId || ''))
+            : (formData.forClientId || clientIdFor(client) || '')
+        } : {}),
         scheduledDate: getSafeDateString(formData.scheduledDate),
         updatedAt: new Date().toISOString()
       };
@@ -271,7 +287,16 @@ const App = () => {
           try {
             await addDoc(collection(db, 'posts'), {
               uid: OPERATOR_UID,
-              clientId: post.clientId || clientIdFor(post.client || ''),
+              // Undo on a SUGGESTION must resurrect it into the parked lane, not the client
+              // queue: the name-derived clientId backfill (correct for legacy posts that lost
+              // theirs) would otherwise silently promote it. Branch on source — '' IS the
+              // suggestion's correct tenant key.
+              clientId: post.source === 'suggestion' ? '' : (post.clientId || clientIdFor(post.client || '')),
+              // Restore identity fields verbatim so an undone suggestion (or any sourced post)
+              // returns exactly where it was.
+              ...(post.source ? { source: post.source } : {}),
+              ...(post.forClientId ? { forClientId: post.forClientId } : {}),
+              ...(post.automationId ? { automationId: post.automationId } : {}),
               client: post.client || '',
               content: post.content || '',
               title: (post.title || '').slice(0, 200),
@@ -429,8 +454,12 @@ const App = () => {
 
   // Promote a parked suggestion into the client's normal review queue. Stamping the real
   // clientId (forClientId — the roster slug the Worker resolved at generation time) is what
-  // makes it client-visible: rules and subscriptions both key on it. forClientId stays behind
-  // as provenance; the source relabel + tag removal take it out of the suggestions lane.
+  // makes it client-visible: rules and subscriptions both key on it. Promote TRUSTS
+  // forClientId because every rename path keeps it current (handleSavePost re-stamps on a
+  // client change; handleMergeClient moves it) — re-resolving from the display name here
+  // would route through clientIdFor, the phantom-slug-prone resolver, and degrade the
+  // worker's roster-resolved slug on every promote. forClientId stays behind as provenance;
+  // the source relabel + tag removal take it out of the suggestions lane.
   const handlePromoteSuggestion = useCallback(async (post) => {
     if (isReadOnly || !isOperator) return;
     const target = post.forClientId || clientIdFor(post.client || '');
@@ -440,6 +469,10 @@ const App = () => {
         clientId: target,
         source: 'automation',
         tags: (post.tags || []).filter(t => t !== 'suggested'),
+        // Promote always lands a LIVE pending draft — un-archive and clear any template
+        // flag so the client actually sees what the success toast promises.
+        ...(post.status === STATUS.ARCHIVED ? { status: STATUS.DRAFT } : {}),
+        ...(post.isTemplate ? { isTemplate: false } : {}),
         updatedAt: new Date().toISOString()
       });
       showToast(`Added to ${post.client || 'the client'}'s review queue ✓`);
@@ -509,6 +542,10 @@ const App = () => {
 
   const handleCloneToAll = useCallback((post) => {
     if (isReadOnly || !isOperator) return;
+    // Blast writes LIVE drafts into every tenant's queue — unvetted suggestion content must
+    // go through the explicit Promote first (the card hides the button too; this keeps the
+    // handler safe for any future call site).
+    if (post.source === 'suggestion') return showToast("Promote this suggestion first — Blast works from live drafts", "error");
 
     const targetClients = uniqueClients.filter(c => c !== post.client);
     if (targetClients.length === 0) return showToast("No other clients found.");
@@ -679,6 +716,7 @@ const App = () => {
     const searchLower = deferredSearchQuery.toLowerCase();
     return posts.filter(post =>
       post.isTemplate &&
+      post.source !== 'suggestion' && // a bad doc must never sit in two lanes at once
       (filterClient ? post.client === filterClient : true) &&
       (!searchLower || post._searchContent?.includes(searchLower) || post._searchClient?.includes(searchLower))
     );
@@ -795,7 +833,9 @@ const App = () => {
     const updates = [];
     selectedIds.forEach(id => {
       const post = byId.get(id);
-      if (!post) return;
+      // Suggestions are never selectable, but skip them anyway so no future selection
+      // path can bulk-stamp a clientId (= silent promote) onto a parked suggestion.
+      if (!post || post.source === 'suggestion') return;
       const patch = mutate(post);
       if (patch) updates.push([id, { ...patch, updatedAt: now }]);
     });
@@ -890,7 +930,13 @@ const App = () => {
       const CHUNK = 450;
       for (let i = 0; i < affected.length; i += CHUNK) {
         const batch = writeBatch(db);
-        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id), { client: to, clientId: clientIdFor(to), updatedAt: now }));
+        // A rename/merge sweeps ALL of the client's posts — including parked suggestions,
+        // whose tenant key must STAY '' (stamping clientId would silently promote them).
+        // They follow the rename via display name + a re-derived forClientId instead.
+        affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id),
+          p.source === 'suggestion'
+            ? { client: to, forClientId: clientIdFor(to) || '', updatedAt: now }
+            : { client: to, clientId: clientIdFor(to), updatedAt: now }));
         await batch.commit();
       }
 
@@ -1131,7 +1177,10 @@ const App = () => {
                       {!showArchived
                         ? <StatusFilterChips
                             value={filterStatus}
-                            onChange={setFilterStatus}
+                            /* Entering the suggestions lane drops any in-flight selection —
+                               ids selected in the queue must not ride into a lane whose only
+                               verbs are promote/dismiss. */
+                            onChange={(v) => { setFilterStatus(v); if (v === 'suggestions') exitSelectionMode(); }}
                             counts={statusCounts}
                             /* Operator-only, and only once the lane has (or is showing) content —
                                no point advertising an empty lane to a chip row. */
@@ -1201,7 +1250,7 @@ const App = () => {
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
         />
       )}
-      {isOperator && !showTemplates && selectionMode && selectedIds.size > 0 && (
+      {isOperator && !showTemplates && filterStatus !== 'suggestions' && selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
           count={selectedIds.size}
           totalFiltered={filteredPosts.length}

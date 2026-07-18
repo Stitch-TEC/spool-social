@@ -88,13 +88,16 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
 
           {!isReadOnly && !selectable && (
             <div className="flex gap-1 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
-              {isArchived ? (
+              {/* Suggestion cards keep only Edit + Delete: Archive is a dead end for a parked
+                  post, and Duplicate / Clone-to-All mint client-visible drafts — the ONLY way
+                  off the suggestions lane is the explicit "Use this" promote below. */}
+              {!isSuggestion && (isArchived ? (
                 <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              )}
-              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              ))}
+              {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
+              {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
             </div>
@@ -111,8 +114,10 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         
         {post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">"{post.feedback}"</div>}
 
-        {/* Template card: primary action is "Use as draft" (clone into a new post). */}
-        {!isReadOnly && !selectable && onUseTemplate && (
+        {/* Template card: primary action is "Use as draft" (clone into a new post).
+            !isSuggestion keeps the action rows mutually exclusive — a bad doc carrying both
+            flags renders the suggestion row (its lane is the more restrictive one). */}
+        {!isReadOnly && !selectable && onUseTemplate && !isSuggestion && (
           <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}

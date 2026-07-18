@@ -126,6 +126,14 @@ describe('renderPomPageLine', () => {
     expect(line.length).toBeLessThan(2200); // 1800-char excerpt + framing, never the full 5000
   });
 
+  it('prefers the broker\'s fuller text field over the teaser excerpt', () => {
+    const line = renderPomPageLine({ excerpt: 'short teaser', text: 'the full page body copy' });
+    expect(line).toContain('Content: the full page body copy');
+    expect(line).not.toContain('short teaser');
+    // Old brokers (no text on the wire) still render the excerpt.
+    expect(renderPomPageLine({ excerpt: 'short teaser' })).toContain('Content: short teaser');
+  });
+
   it('returns "" for every absent/empty shape', () => {
     expect(renderPomPageLine(undefined)).toBe('');
     expect(renderPomPageLine(null)).toBe('');
@@ -204,5 +212,13 @@ describe('buildImagePrompt with the structured brand kit', () => {
 
   it('is unchanged when neither brand field is provided (back-compat)', () => {
     expect(buildImagePrompt(base)).toBe(buildImagePrompt({ ...base, pomBrandKit: null, pomBrand: '' }));
+  });
+
+  it('adds a title-only topic hint for a grounded page, collapsed and capped', () => {
+    const out = buildImagePrompt({ ...base, pomPage: { title: 'Laser\nInspection', excerpt: 'never rendered here', images: ['x'] } });
+    expect(out).toContain('Illustrate the topic: "Laser Inspection".');
+    // Only the title reaches the flat image prompt — excerpt/text stay in the framed text path.
+    expect(out).not.toContain('never rendered here');
+    expect(buildImagePrompt({ ...base, pomPage: null })).toBe(buildImagePrompt(base));
   });
 });

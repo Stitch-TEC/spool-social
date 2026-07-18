@@ -134,10 +134,29 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
     setBusyId(a.id);
     try {
       await apiRun(a.id);
-      showToast?.(`Draft generated for ${a.client} — check their review queue ✓`);
+      // Suggest-mode output parks in the operator-only Suggestions lane — pointing the
+      // operator at the client's review queue would send them to the wrong place.
+      showToast?.(a.mode === 'suggest'
+        ? `Suggestion generated for ${a.client} — check the Suggestions chip ✓`
+        : `Draft generated for ${a.client} — check their review queue ✓`);
       refresh(); // reflect the updated lastRun / runCount
     } catch (err) {
       showToast?.(err.message || 'Run failed', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Patch one field of an existing automation from the row (Source / Delivery selects).
+  // The Worker's PATCH whitelist already validates these; without row editability the two
+  // new knobs would be fixed at creation, forcing delete-and-recreate to change them.
+  const handleRowField = async (a, patch) => {
+    setBusyId(a.id);
+    try {
+      const { automation } = await apiUpdate(a.id, patch);
+      setItems(prev => prev.map(x => (x.id === a.id ? automation : x)));
+    } catch (err) {
+      showToast?.(err.message || 'Update failed', 'error');
     } finally {
       setBusyId(null);
     }
@@ -269,7 +288,25 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
                           <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${p ? p.color + ' text-white' : 'bg-slate-200 text-slate-600'}`}>{p?.name || a.platform}</span>
                           {!a.enabled && <span className="text-[10px] font-bold uppercase text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">Paused</span>}
                         </p>
-                        <p className="text-xs text-slate-500 mt-0.5 truncate">{a.contentType.replace('+', ' + ')} · every {a.intervalHours}h · {a.tone}/{a.length}{a.grounding === 'site' && ' · site-grounded'}{a.mode === 'suggest' && ' · suggests'}</p>
+                        <p className="text-xs text-slate-500 mt-0.5 truncate">{a.contentType.replace('+', ' + ')} · every {a.intervalHours}h · {a.tone}/{a.length}</p>
+                        {/* Source/Delivery are live-editable (the Worker PATCH validates both);
+                            absent fields on pre-feature automations read as the old behavior. */}
+                        <div className="flex items-center gap-1.5 mt-1.5">
+                          <select
+                            value={a.grounding || 'none'} disabled={busy} aria-label="Content source"
+                            onChange={(e) => handleRowField(a, { grounding: e.target.value })}
+                            className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-md px-1.5 py-0.5"
+                          >
+                            {GROUNDINGS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+                          </select>
+                          <select
+                            value={a.mode || 'auto'} disabled={busy} aria-label="Delivery"
+                            onChange={(e) => handleRowField(a, { mode: e.target.value })}
+                            className="text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded-md px-1.5 py-0.5"
+                          >
+                            {MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                          </select>
+                        </div>
                         <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
                           <Clock size={11} /> Next {a.enabled ? fmtDate(a.nextRunAt) : 'paused'}
                           <span className="text-slate-300">·</span>
@@ -301,7 +338,7 @@ const AutomationsPanel = ({ onClose, uniqueClients = [], initialClient = '', cli
 
           <div className="mt-5 flex items-start gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-xl p-3">
             <ShieldCheck size={16} className="text-emerald-500 shrink-0 mt-0.5" />
-            <span>Automations are operator-only — clients can’t see or control them. Each run drops a <b className="text-slate-700">draft</b> into the client’s review queue (pending approval); nothing posts automatically. API usage is capped to protect your generation quota.</span>
+            <span>Automations are operator-only — clients can’t see or control them. Each run drops a <b className="text-slate-700">draft</b> into the client’s review queue (pending approval) — or, in <b className="text-slate-700">Suggest options</b> mode, into your operator-only Suggestions lane to promote or dismiss. Nothing posts automatically. API usage is capped to protect your generation quota.</span>
           </div>
         </div>
       </div>

@@ -28,20 +28,42 @@ const MAX_SEED = 2000; // matches the generation API's MAX_PROMPT
 const slugifyClient = (name) =>
   String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
 
-// Re-host a page image from the client's own site into R2 (content-addressed) instead of
+// Raster formats only — NEVER svg: the /media route serves the stored content-type inline on
+// our own origin, so an accepted image/svg+xml would be stored XSS on spool.stitchtec.dev.
+const REHOST_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+// Minimal public-host guard (ported from feedback-worker's validatePublicHttpUrl posture):
+// reject IP-literal / loopback / internal-suffix hosts so the Worker never fetches into
+// private address space. We deliberately do NOT domain-pin image hosts — legit sites hot-link
+// CDN imagery — so "public http(s) host" is the boundary, not "the client's domain".
+function isPublicHttpUrl(u) {
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  const h = u.hostname.toLowerCase();
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return false;
+  if (h.startsWith('[') || h.includes(':')) return false;              // IPv6 literal
+  if (/^[0-9.]+$/.test(h) || /^0x[0-9a-f.]+$/i.test(h)) return false; // IPv4 / integer / hex literal
+  return true;
+}
+
+// Re-host a page image from the grounded page into R2 (content-addressed) instead of
 // hot-linking it: a /media URL is what the SPA, pickers, and the reference-based GC understand,
-// and it survives the client's site redeploys. Only URLs the domain-pinned broker returned ever
-// reach here, so this is not an open fetch surface — but still require an image/* body and the
-// same 5MB cap as the upload route. Best-effort by design: ANY miss returns '' (a missing hero
-// image must never fail the run — same posture as the AI-image path's text salvage).
+// and it survives the client's site redeploys. IMPORTANT: the broker domain-pins only the PAGE
+// url — the image URLs inside the page are untrusted page content and may point at any host, so
+// treat this as an untrusted fetch: public-host guard before AND after redirects, a raster-only
+// content-type allowlist (no svg), and the upload route's 5MB cap. Best-effort by design: ANY
+// check failure returns '' (a missing hero image must never fail the run — same posture as the
+// AI-image path's text salvage).
 async function rehostPageImage(env, origin, imgUrl, clientId) {
   try {
     const u = new URL(String(imgUrl));
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+    if (!isPublicHttpUrl(u)) return '';
     const res = await fetch(u.href, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return '';
+    // Redirects are followed — re-validate where we actually landed so a public URL can't
+    // bounce the fetch into private address space.
+    try { if (!isPublicHttpUrl(new URL(res.url))) return ''; } catch { return ''; }
     const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!mime.startsWith('image/')) return '';
+    if (!REHOST_MIMES.includes(mime)) return '';
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (!bytes.length || bytes.length > 5_000_000) return '';
     return (await storeImage(env, origin, bytes, mime, 'internal', clientId)).url;
@@ -151,91 +173,106 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       nextCursor = (cursor + 1) % pages.length;
     }
     if (env.CONTEXT_KEY) {
-      console.log(`[grounding] ${clientId}: ${groundedPage ? `page loaded (${groundedPage.url})` : 'no page — running ungrounded'}`);
+      console.log(`[grounding] ${clientId}: ${groundedPage
+        ? `page loaded (${groundedPage.url}, ${(groundedPage.text || groundedPage.excerpt || '').length} chars)`
+        : 'no page — running ungrounded'}`);
     }
   }
 
-  let content = '';
-  if (wantText) {
-    const { system, maxTokens } = buildTextContext({
-      platform, tone: auto.tone, length: auto.length,
-      clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets,
-      // Structured brand theme + auto-refreshed recent-activity digest (same seam, newer fields —
-      // absent on old brokers, and the builder renders nothing for them: fail-open unchanged).
-      pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit,
-      // The grounded page rides in as UNTRUSTED reference data (renderPomPageLine) — never
-      // appended to promptSeed, which is capped and injection-defended separately.
-      pomPage: groundedPage
-    });
-    const out = await generateText(env, seed, { system, maxTokens, clientId });
-    content = String(out || '').trim().slice(0, max);
-  }
-
-  let imageUrl = '';
-  if (wantImage) {
-    const imgPrompt = buildImagePrompt({
-      prompt: seed, style: auto.imageStyle, platform,
-      // The structured kit (palette hexes + theme) wins inside the builder; the one-line
-      // pomBrand string stays as the fallback for old brokers that send no brandKit.
-      clientName: auto.client, clientSettings, pomBrand: profile?.brand, pomBrandKit: profile?.brandKit
-    });
-    try {
-      imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId })) || '';
-    } catch (err) {
-      // Best-effort image: for text+image, persist the already-generated text
-      // rather than discarding it. Image-only has nothing to salvage, so let
-      // the failure surface (recorded as lastStatus:'error', schedule advances).
-      // A QUOTA denial always surfaces — swallowing it would record lastStatus 'ok'
-      // and hide the exhausted budget from the operator.
-      if (!wantText || err?.quotaExceeded) throw err;
-      console.error('Automation image failed; persisting text-only draft:', err?.message || err);
+  try {
+    let content = '';
+    if (wantText) {
+      const { system, maxTokens } = buildTextContext({
+        platform, tone: auto.tone, length: auto.length,
+        clientName: auto.client, clientSettings, pomContext: profile?.aiContext, pomAssets: profile?.assets,
+        // Structured brand theme + auto-refreshed recent-activity digest (same seam, newer fields —
+        // absent on old brokers, and the builder renders nothing for them: fail-open unchanged).
+        pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit,
+        // The grounded page rides in as UNTRUSTED reference data (renderPomPageLine) — never
+        // appended to promptSeed, which is capped and injection-defended separately.
+        pomPage: groundedPage
+      });
+      const out = await generateText(env, seed, { system, maxTokens, clientId });
+      content = String(out || '').trim().slice(0, max);
     }
+
+    let imageUrl = '';
+    if (wantImage) {
+      const imgPrompt = buildImagePrompt({
+        prompt: seed, style: auto.imageStyle, platform,
+        // The structured kit (palette hexes + theme) wins inside the builder; the one-line
+        // pomBrand string stays as the fallback for old brokers that send no brandKit.
+        clientName: auto.client, clientSettings, pomBrand: profile?.brand, pomBrandKit: profile?.brandKit,
+        // Grounded runs steer the AI image toward the page's subject too (title-only hint,
+        // capped inside the builder) — grounded copy under an off-topic render reads broken.
+        pomPage: groundedPage
+      });
+      try {
+        imageUrl = (await resolveDraftImage(env, origin, { prompt: imgPrompt, clientId })) || '';
+      } catch (err) {
+        // Best-effort image: for text+image, persist the already-generated text
+        // rather than discarding it. Image-only has nothing to salvage, so let
+        // the failure surface (recorded as lastStatus:'error', schedule advances).
+        // A QUOTA denial always surfaces — swallowing it would record lastStatus 'ok'
+        // and hide the exhausted budget from the operator.
+        if (!wantText || err?.quotaExceeded) throw err;
+        console.error('Automation image failed; persisting text-only draft:', err?.message || err);
+      }
+    }
+
+    // Grounded TEXT drafts attach the chosen page's own hero image (re-hosted into R2) — the
+    // site's real imagery beats a generic AI render for grounded copy. Also the fallback when
+    // a grounded text+image run's AI image failed above (never overwrites a successful AI
+    // render); image-only keeps its surface-the-failure semantics. A rehost miss just means a
+    // draft without an image.
+    if (auto.grounding === 'site' && wantText && !imageUrl && groundedPage?.images?.[0]) {
+      imageUrl = await rehostPageImage(env, origin, groundedPage.images[0], clientId);
+    }
+
+    // An image-only automation still needs non-empty content (the post model / UI
+    // require it) — fall back to the seed as a starting caption.
+    if (!content) content = seed.trim().slice(0, max);
+
+    const suggest = auto.mode === 'suggest';
+    const nowIso = new Date().toISOString();
+    const postId = await createPost(env, {
+      uid: env.OWNER_UID,
+      // 'suggest' parks the draft operator-only: visibility is clientId-keyed (firestore.rules +
+      // the app's subscriptions both query on it), so an EMPTY clientId is invisible to client
+      // members and share guests while the operator's uid-scoped query still sees it.
+      // `forClientId` carries the real slug for the one-click promote in the app.
+      // 'auto' keeps the classic straight-to-review behavior.
+      clientId: suggest ? '' : clientId,
+      ...(suggest ? { forClientId: clientId } : {}),
+      client: auto.client,
+      content,
+      title: '',
+      altText: '',
+      metaDescription: '',
+      slug: '',
+      platform,
+      status: 'draft',
+      approvalStatus: 'pending',
+      feedback: '',
+      imageUrl,
+      tags: suggest ? ['suggested'] : [],
+      scheduledDate: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      source: suggest ? 'suggestion' : 'automation',
+      automationId: auto.id
+    });
+    // pageCursor is undefined unless this run rotated the site index — callers only persist it
+    // when defined, so ungrounded automations never gain the field.
+    return { postId, content, imageUrl, pageCursor: nextCursor };
+  } catch (err) {
+    // A page that fetches fine but then breaks generation must not re-pick itself forever:
+    // carry the advanced cursor on the error so the callers' error-path updates persist it.
+    // Budget exhaustion throws BEFORE the rotation above, so its no-advance / retry-next-tick
+    // semantics are untouched.
+    if (nextCursor !== undefined && err && typeof err === 'object') err.pageCursor = nextCursor;
+    throw err;
   }
-
-  // Site-grounded TEXT drafts attach the chosen page's own hero image (re-hosted into R2) —
-  // the site's real imagery beats a generic AI render for grounded copy. The 'image' /
-  // 'text+image' content types keep the AI-generation path above untouched, and a rehost
-  // miss just means a draft without an image.
-  if (auto.grounding === 'site' && contentType === 'text' && groundedPage?.images?.[0]) {
-    imageUrl = await rehostPageImage(env, origin, groundedPage.images[0], clientId);
-  }
-
-  // An image-only automation still needs non-empty content (the post model / UI
-  // require it) — fall back to the seed as a starting caption.
-  if (!content) content = seed.trim().slice(0, max);
-
-  const suggest = auto.mode === 'suggest';
-  const nowIso = new Date().toISOString();
-  const postId = await createPost(env, {
-    uid: env.OWNER_UID,
-    // 'suggest' parks the draft operator-only: visibility is clientId-keyed (firestore.rules +
-    // the app's subscriptions both query on it), so an EMPTY clientId is invisible to client
-    // members and share guests while the operator's uid-scoped query still sees it.
-    // `forClientId` carries the real slug for the one-click promote in the app.
-    // 'auto' keeps the classic straight-to-review behavior.
-    clientId: suggest ? '' : clientId,
-    ...(suggest ? { forClientId: clientId } : {}),
-    client: auto.client,
-    content,
-    title: '',
-    altText: '',
-    metaDescription: '',
-    slug: '',
-    platform,
-    status: 'draft',
-    approvalStatus: 'pending',
-    feedback: '',
-    imageUrl,
-    tags: suggest ? ['suggested'] : [],
-    scheduledDate: null,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-    source: suggest ? 'suggestion' : 'automation',
-    automationId: auto.id
-  });
-  // pageCursor is undefined unless this run rotated the site index — callers only persist it
-  // when defined, so ungrounded automations never gain the field.
-  return { postId, content, imageUrl, pageCursor: nextCursor };
 }
 
 /**
@@ -292,7 +329,10 @@ export async function runDueAutomations(env, origin) {
         await updateAutomation(env, auto.id, {
           lastRunAt: nowIso, lastStatus: 'error',
           lastError: String(err?.message || err).slice(0, 300),
-          nextRunAt: advancedIso, updatedAt: nowIso
+          nextRunAt: advancedIso, updatedAt: nowIso,
+          // The rotation advances on failed runs too (the error carries the cursor when a
+          // page was picked) — otherwise one generation-breaking page wedges the rotation.
+          ...(err?.pageCursor !== undefined ? { pageCursor: err.pageCursor } : {})
         });
       } catch (e2) {
         console.error('Automation status update failed:', e2?.message || e2);

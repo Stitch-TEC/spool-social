@@ -416,17 +416,21 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
           </div>
 
           {/* Evergreen: mark as a reusable template (kept out of the dated queue,
-              lives in the Templates library — "Use as draft" clones it into a post). */}
-          <label className="flex items-center gap-2.5 mb-5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={!!formData.isTemplate}
-              onChange={(e) => setFormData({ ...formData, isTemplate: e.target.checked })}
-              className="accent-indigo-600 w-4 h-4 shrink-0"
-            />
-            <span className="text-sm font-semibold text-slate-700">Reusable template</span>
-            <span className="text-xs text-slate-400 hidden sm:inline">— saved to your Templates library; no date needed</span>
-          </label>
+              lives in the Templates library — "Use as draft" clones it into a post).
+              Hidden for parked suggestions: a suggestion-template hybrid would sit in two
+              lanes at once (the save path forces the flag off for them regardless). */}
+          {formData.source !== 'suggestion' && (
+            <label className="flex items-center gap-2.5 mb-5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={!!formData.isTemplate}
+                onChange={(e) => setFormData({ ...formData, isTemplate: e.target.checked })}
+                className="accent-indigo-600 w-4 h-4 shrink-0"
+              />
+              <span className="text-sm font-semibold text-slate-700">Reusable template</span>
+              <span className="text-xs text-slate-400 hidden sm:inline">— saved to your Templates library; no date needed</span>
+            </label>
+          )}
 
           {/* Metadata Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
