@@ -36,7 +36,9 @@ function mdInline(escaped) {
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
 }
 function postToEmailHtml(post) {
-  const content = String(post?.content || '').trim();
+  // Normalize CRLF/CR first — pasted content is often \r\n, and the \n-only block split below
+  // would otherwise see the ENTIRE post as one giant paragraph.
+  const content = String(post?.content || '').replace(/\r\n?/g, '\n').trim();
   if (!content && !post?.title) return '';
   const parts = [];
   if (post.title) parts.push(`<h1>${escapeHtml(post.title)}</h1>`);
@@ -48,8 +50,16 @@ function postToEmailHtml(post) {
   for (const block of escapeHtml(content).split(/\n{2,}/)) {
     const b = block.trim();
     if (!b) continue;
-    const h = b.match(/^(#{1,3})\s+(.+)$/s);
-    if (h) { parts.push(`<${h[1].length === 1 ? 'h1' : 'h2'}>${mdInline(h[2].trim())}</${h[1].length === 1 ? 'h1' : 'h2'}>`); continue; }
+    // Heading = the FIRST LINE only (no /s — a dotall match would swallow every following line
+    // of the block into the heading); any remainder renders as a normal paragraph below it.
+    const h = b.match(/^(#{1,3})\s+(.+)$/m);
+    if (h && b.startsWith(h[1])) {
+      const tag = h[1].length === 1 ? 'h1' : 'h2';
+      parts.push(`<${tag}>${mdInline(h[2].trim())}</${tag}>`);
+      const rest = b.slice(h[0].length).trim();
+      if (rest) parts.push(`<p>${mdInline(rest).replace(/\n/g, '<br>')}</p>`);
+      continue;
+    }
     const lines = b.split('\n');
     if (lines.length > 0 && lines.every((l) => /^\s*[-*]\s+/.test(l))) {
       parts.push(`<ul>${lines.map((l) => `<li>${mdInline(l.replace(/^\s*[-*]\s+/, ''))}</li>`).join('')}</ul>`);
@@ -827,7 +837,13 @@ export default {
       const byName = roster.find((c) => (c.name || '').toLowerCase() === (post.client || '').toLowerCase());
       const slug = (bySlug || byName)?.slug || '';
       if (!slug) {
-        return json({ error: roster.length ? 'This post’s client isn’t on the suite roster' : 'Roster unavailable (CONTEXT_KEY seam not configured)' }, roster.length ? 404 : 503, cors);
+        // Distinguish the three empty-roster causes honestly: an unconfigured seam is permanent
+        // (fix the secret), a transient roster failure is retryable — conflating them sent the
+        // operator chasing configuration during a network blip.
+        if (roster.length) return json({ error: 'This post’s client isn’t on the suite roster' }, 404, cors);
+        return env.CONTEXT_KEY
+          ? json({ error: 'Roster temporarily unavailable — try again in a moment' }, 503, cors)
+          : json({ error: 'CONTEXT_KEY seam not configured' }, 503, cors);
       }
 
       const html = postToEmailHtml(post);
@@ -1255,7 +1271,10 @@ export default {
         // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would
         // wrongly validate and let a junk platform through). PLATFORM_MAX is a plain object literal.
         if (!Object.prototype.hasOwnProperty.call(PLATFORM_MAX, platform)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
-        const bodyClientId = String(body?.clientId || '').trim().slice(0, 64);
+        // Same slug alphabet every other clientId intake enforces (lowercase a-z0-9-): an
+        // unsanitized fallback here was the one place a mixed-case/spaced id could slip into
+        // the automations collection and then never join suite-side.
+        const bodyClientId = String(body?.clientId || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64);
         const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
         if (!bodyClientId || !client) return json({ error: 'client and clientId are required' }, 400, cors);
         const promptSeed = String(body?.promptSeed || '').trim().slice(0, MAX_PROMPT);
