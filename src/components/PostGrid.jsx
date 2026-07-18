@@ -20,12 +20,24 @@ const PostGrid = ({
   onPromoteSuggestion,
   onDismissSuggestion,
   onPushToSender,
+  isSuggestionLane = false,
   selectable = false,
   selectedIds,
   onToggleSelect
 }) => {
   if (posts.length === 0) {
     const isTemplates = !!onUseTemplate;
+    // The Suggestions lane's emptiness means "automations haven't parked options yet" — a
+    // "Create Thread" CTA here would be a lie (hand-made posts are never suggestions).
+    if (isSuggestionLane) {
+      return (
+        <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
+          <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4"><Grid className="text-slate-300" /></div>
+          <h3 className="text-slate-900 font-bold text-lg">No suggestions waiting</h3>
+          <p className="text-slate-400 text-sm mt-1">Automations set to “Suggest options” park drafts here for you to pick from — check Automations to set one up.</p>
+        </div>
+      );
+    }
     return (
       <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
         <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4"><Grid className="text-slate-300" /></div>

@@ -260,7 +260,17 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       createdAt: nowIso,
       updatedAt: nowIso,
       source: suggest ? 'suggestion' : 'automation',
-      automationId: auto.id
+      automationId: auto.id,
+      // PROVENANCE for the operator's pick decision: which prompt seed produced this, and (when
+      // grounded) which real site page it drew from — rendered on the suggestion card so "Use
+      // this" is an informed click, not a guess. Strings only, additive.
+      ...(suggest ? {
+        suggestSeed: String(auto.promptSeed || '').slice(0, 140),
+        ...(groundedPage ? {
+          suggestPageUrl: String(groundedPage.url || '').slice(0, 500),
+          suggestPageTitle: String(groundedPage.title || '').slice(0, 140),
+        } : {}),
+      } : {}),
     });
     // pageCursor is undefined unless this run rotated the site index — callers only persist it
     // when defined, so ungrounded automations never gain the field.

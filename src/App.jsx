@@ -248,9 +248,12 @@ const App = () => {
         // promote fail loudly ("couldn't resolve") instead of guessing.
         ...(isSuggestion ? {
           source: 'suggestion',
+          // On a rename, ONLY a posts-derived exact name match may re-stamp — clientIdFor's
+          // slugify fallback would MINT a phantom slug for a fresh name, and promote would then
+          // silently mis-tenant. No match → '' → promote fails loudly and the operator re-picks.
           forClientId: existingPost
-            ? (client !== existingPost.client ? (clientIdFor(client) || '') : (existingPost.forClientId || ''))
-            : (formData.forClientId || clientIdFor(client) || '')
+            ? (client !== existingPost.client ? (clientIdByName[client] || '') : (existingPost.forClientId || ''))
+            : (formData.forClientId || clientIdByName[client] || '')
         } : {}),
         scheduledDate: getSafeDateString(formData.scheduledDate),
         updatedAt: new Date().toISOString()
@@ -270,7 +273,7 @@ const App = () => {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");
     }
-  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor]);
+  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName]);
 
   // Delete immediately with an Undo toast (less friction than a confirm modal,
   // but still recoverable). Undo re-creates the doc with explicit field mapping.
@@ -1236,6 +1239,7 @@ const App = () => {
                     onPromoteSuggestion={isOperator ? handlePromoteSuggestion : undefined}
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
                     onPushToSender={isOperator ? handlePushToSender : undefined}
+                    isSuggestionLane={filterStatus === 'suggestions'}
                     onCreate={() => setView('editor')}
                     selectable={!isReadOnly && !showTemplates && filterStatus !== 'suggestions' && selectionMode}
                     selectedIds={selectedIds}

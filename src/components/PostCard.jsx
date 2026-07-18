@@ -145,6 +145,15 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         {/* Suggestion card: parked automation output — the primary action is promoting it into
             the client's review queue; Dismiss deletes (it never reached the client). Replaces
             the status row: a suggestion has no workflow until it's promoted. */}
+        {/* Provenance: WHY this suggestion exists — its automation seed and (when site-grounded)
+            the real page it drew from — so "Use this" is an informed click. */}
+        {isSuggestion && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed) && (
+          <p className="text-[10px] text-slate-400 mb-2 line-clamp-2" title={post.suggestPageUrl || post.suggestSeed || ''}>
+            {post.suggestPageTitle || post.suggestPageUrl
+              ? <>From your site: <span className="text-slate-500 font-medium">{post.suggestPageTitle || post.suggestPageUrl}</span></>
+              : <>From automation: <span className="text-slate-500 font-medium">{post.suggestSeed}</span></>}
+          </p>
+        )}
         {!isReadOnly && !selectable && isSuggestion && (
           <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
             <button
