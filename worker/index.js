@@ -30,6 +30,11 @@ const AUTO_CONTENT_TYPES = ['text', 'image', 'text+image'];
 const AUTO_TONES = ['professional', 'friendly', 'bold', 'educational'];
 const AUTO_LENGTHS = ['short', 'medium', 'long'];
 const AUTO_IMAGE_STYLES = ['photo', 'studio', 'illustration', 'minimal', 'bold'];
+// 'site' grounds each run in one real page of the client's site (rotating via pageCursor);
+// 'none' is the original prompt-only behavior. 'suggest' parks each run as an operator-only
+// suggestion the operator promotes/dismisses; 'auto' drops it straight into the review queue.
+const AUTO_GROUNDINGS = ['none', 'site'];
+const AUTO_MODES = ['auto', 'suggest'];
 
 // Clamp a requested interval UP to the platform's minimum (and cap at 1 year) so
 // a schedule can't spam a channel or runaway the Gemini quota. Falls back to the
@@ -51,6 +56,13 @@ function sanitizeAutomationPatch(body, platform) {
   if (typeof body?.promptSeed === 'string') {
     const seed = body.promptSeed.trim().slice(0, MAX_PROMPT);
     if (seed) patch.promptSeed = seed;
+  }
+  if (AUTO_GROUNDINGS.includes(body?.grounding)) patch.grounding = body.grounding;
+  if (AUTO_MODES.includes(body?.mode)) patch.mode = body.mode;
+  // pageCursor is runner-managed rotation state, but PATCH-able so the operator/API can reset a
+  // rotation; only a usable non-negative number counts (same posture as intervalHours below).
+  if (body?.pageCursor !== undefined && Number.isFinite(parseInt(body.pageCursor, 10))) {
+    patch.pageCursor = Math.max(0, parseInt(body.pageCursor, 10));
   }
   if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
   // Only a usable numeric value counts as a change — null/""/garbage must NOT
@@ -839,7 +851,10 @@ export default {
       if (request.method === 'GET') {
         try {
           let drafts = await listPosts(env, env.OWNER_UID);
-          drafts = drafts.filter(d => !d.isTemplate); // evergreen templates aren't drafts
+          // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: POM's
+          // Content card joins this list by display name (which suggestions carry), so without
+          // this filter a not-yet-promoted option would surface on a client's dashboard.
+          drafts = drafts.filter(d => !d.isTemplate && d.source !== 'suggestion');
           const q = url.searchParams;
           const fc = q.get('client'), fp = q.get('platform'), fst = q.get('status');
           if (fc) drafts = drafts.filter(d => d.client === fc);
@@ -1074,10 +1089,18 @@ export default {
             const nowIso = new Date().toISOString();
             await updateAutomation(env, id, {
               lastRunAt: nowIso, lastStatus: 'ok', lastError: '',
-              runCount: (parseInt(existing.runCount, 10) || 0) + 1, updatedAt: nowIso
+              runCount: (parseInt(existing.runCount, 10) || 0) + 1, updatedAt: nowIso,
+              // Persist the site-grounding rotation on previews too — repeated "Run now" clicks
+              // should walk the site, not restate one page (nextRunAt stays untouched).
+              ...(result.pageCursor !== undefined ? { pageCursor: result.pageCursor } : {})
             }).catch(() => {});
             return json({ ok: true, postId: result.postId }, 200, cors);
           } catch (err) {
+            // Even a failed preview advanced the rotation if it picked a page — persist
+            // (best-effort) so repeated "Run now" retries don't wedge on one broken page.
+            if (err?.pageCursor !== undefined) {
+              await updateAutomation(env, id, { pageCursor: err.pageCursor, updatedAt: new Date().toISOString() }).catch(() => {});
+            }
             if (err?.quotaExceeded || err?.budgetExhausted) return json({ error: err.message }, 429, cors);
             console.error('Automation run failed:', err?.message || err);
             return json({ error: 'Generation failed' }, 502, cors);
@@ -1140,10 +1163,19 @@ export default {
         const promptSeed = String(body?.promptSeed || '').trim().slice(0, MAX_PROMPT);
         if (!promptSeed) return json({ error: 'promptSeed is required' }, 400, cors);
 
-        // Bind to the tenant key existing posts already use for this client name
-        // (authoritative), not a possibly-stale client-supplied slug; fall back
-        // to the supplied id for a brand-new client with no posts yet.
-        const clientId = (await resolveClientId(env, client)) || bodyClientId;
+        // Bind to the tenant key existing posts already use for this client name, falling back
+        // to the supplied id for a brand-new client with no posts yet — then CANONICALIZE against
+        // the roster (same repair as /api/ideas): both of those sources are self-referential, so a
+        // drifted/first-time display name mints a phantom slug the roster never issued and the
+        // automation joins to nothing suite-side (context seam 404s, the aiQuota 429 never fires).
+        // Roster unreachable/empty = keep the resolved value (fail-open, same posture as
+        // generation's context injection).
+        let clientId = (await resolveClientId(env, client)) || bodyClientId;
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === clientId)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slugifyClient(client));
+          if (byName) clientId = byName.slug;
+        }
 
         // Caps protect the owner's Gemini quota and keep the dashboard sane.
         let existing;
@@ -1168,6 +1200,11 @@ export default {
           tone: fields.tone || 'professional',
           length: fields.length || 'medium',
           imageStyle: fields.imageStyle || 'photo',
+          // Grounding + delivery (defaults = exact pre-existing behavior). pageCursor is the
+          // runner-advanced rotation index into the client's site page list ('site' only).
+          grounding: fields.grounding || 'none',
+          mode: fields.mode || 'auto',
+          pageCursor: fields.pageCursor || 0,
           promptSeed,
           intervalHours,
           enabled: typeof fields.enabled === 'boolean' ? fields.enabled : true,
@@ -1200,6 +1237,14 @@ export default {
       const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
       headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      // Serve stored bytes as EXACTLY their stored type — R2 holds user/site-sourced content,
+      // and content-sniffing an inline same-origin response is how a disguised HTML/SVG body
+      // becomes stored XSS. New stores only accept raster types; the svg→attachment fallback
+      // neutralizes any legacy svg object without breaking <img> rendering of raster images.
+      headers.set('X-Content-Type-Options', 'nosniff');
+      if ((headers.get('Content-Type') || '').toLowerCase().includes('svg')) {
+        headers.set('Content-Disposition', 'attachment');
+      }
       // Conditional-request support: keys are content-addressed/immutable, so a
       // revalidating client gets a bodyless 304 instead of a full R2 read-through.
       headers.set('ETag', obj.httpEtag);

@@ -17,6 +17,8 @@ const PostGrid = ({
   onCreate,
   onUseTemplate,
   onResubmit,
+  onPromoteSuggestion,
+  onDismissSuggestion,
   selectable = false,
   selectedIds,
   onToggleSelect
@@ -51,6 +53,8 @@ const PostGrid = ({
           onRestore={onRestore}
           onUseTemplate={onUseTemplate}
           onResubmit={onResubmit}
+          onPromoteSuggestion={onPromoteSuggestion}
+          onDismissSuggestion={onDismissSuggestion}
           selectable={selectable}
           selected={selectable && selectedIds?.has(p.id)}
           onToggleSelect={onToggleSelect}

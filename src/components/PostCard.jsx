@@ -1,19 +1,22 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
   const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+  // Parked automation suggestion (operator-only lane) — swaps the status row for the
+  // promote/dismiss pair. Handler presence doubles as the operator gate.
+  const isSuggestion = post.source === 'suggestion' && !!onPromoteSuggestion && !!onDismissSuggestion;
 
   const statusPill = isPosted ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
     : isScheduled ? 'bg-amber-100 text-amber-800 border-amber-200'
@@ -70,7 +73,9 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <div>
                 <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
                 <div className="flex items-center gap-2">
-                    {post.isTemplate
+                    {post.source === 'suggestion'
+                      ? <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded">Suggested</span>
+                      : post.isTemplate
                       ? <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Template</span>
                       : <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
@@ -83,13 +88,16 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
 
           {!isReadOnly && !selectable && (
             <div className="flex gap-1 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
-              {isArchived ? (
+              {/* Suggestion cards keep only Edit + Delete: Archive is a dead end for a parked
+                  post, and Duplicate / Clone-to-All mint client-visible drafts — the ONLY way
+                  off the suggestions lane is the explicit "Use this" promote below. */}
+              {!isSuggestion && (isArchived ? (
                 <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              )}
-              <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              ))}
+              {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
+              {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
             </div>
@@ -106,8 +114,10 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         
         {post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">"{post.feedback}"</div>}
 
-        {/* Template card: primary action is "Use as draft" (clone into a new post). */}
-        {!isReadOnly && !selectable && onUseTemplate && (
+        {/* Template card: primary action is "Use as draft" (clone into a new post).
+            !isSuggestion keeps the action rows mutually exclusive — a bad doc carrying both
+            flags renders the suggestion row (its lane is the more restrictive one). */}
+        {!isReadOnly && !selectable && onUseTemplate && !isSuggestion && (
           <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
@@ -126,7 +136,29 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           </div>
         )}
 
-        {!isReadOnly && !selectable && !onUseTemplate && (
+        {/* Suggestion card: parked automation output — the primary action is promoting it into
+            the client's review queue; Dismiss deletes (it never reached the client). Replaces
+            the status row: a suggestion has no workflow until it's promoted. */}
+        {!isReadOnly && !selectable && isSuggestion && (
+          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+            <button
+              onClick={(e) => { e.stopPropagation(); onDismissSuggestion(post); }}
+              className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full px-3 py-2 transition-colors"
+              title="Dismiss this suggestion (deletes it)" aria-label="Dismiss suggestion"
+            >
+              <X size={14} /> Dismiss
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onPromoteSuggestion(post); }}
+              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              title="Move this draft into the client's review queue" aria-label="Use this suggestion"
+            >
+              <CheckCircle size={14} /> Use this
+            </button>
+          </div>
+        )}
+
+        {!isReadOnly && !selectable && !onUseTemplate && !isSuggestion && (
           <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
