@@ -19,6 +19,7 @@ const PostGrid = ({
   onResubmit,
   onPromoteSuggestion,
   onDismissSuggestion,
+  onPushToSender,
   selectable = false,
   selectedIds,
   onToggleSelect
@@ -55,6 +56,7 @@ const PostGrid = ({
           onResubmit={onResubmit}
           onPromoteSuggestion={onPromoteSuggestion}
           onDismissSuggestion={onDismissSuggestion}
+          onPushToSender={onPushToSender}
           selectable={selectable}
           selected={selectable && selectedIds?.has(p.id)}
           onToggleSelect={onToggleSelect}

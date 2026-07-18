@@ -137,6 +137,16 @@ export async function addVideoUrl(client, videoUrl) {
   return postJSON('/api/media', { client, videoUrl });
 }
 
+/**
+ * Push a post into the client's Sender tenant as a campaign-ready email template (operator-only;
+ * the worker converts + relays via the broker, which alone holds the Sender key). Resolves to
+ * { templateId, builderUrl, updated }. Throws with the server's error string so the caller can
+ * surface honest outcomes (e.g. no_tenant_for_slug = client has no Sender workspace yet).
+ */
+export async function pushToSender(postId) {
+  return postJSON('/api/sender-template', { postId });
+}
+
 /** Delete a media item by its R2 key. */
 export async function deleteMedia(key) {
   const res = await fetch(`${API_BASE}/api/media/${encodeURIComponent(key)}`, { method: 'DELETE', headers: await authHeaders() });
