@@ -965,6 +965,22 @@ export default {
       if (request.method === 'GET') {
         try {
           let drafts = await listPosts(env, env.OWNER_UID);
+          // Summary mode (internal key, whole-owner): review-state COUNTS across all clients,
+          // INCLUDING the suggestion lane (which the list below strips). Counts only, no rows —
+          // feeds the feedback-worker broker's cross-app "/attention" strip. Archived drafts are
+          // excluded so a cleared item doesn't keep pinging the attention count.
+          if (url.searchParams.get('summary') === '1') {
+            const nonTemplate = drafts.filter(d => !d.isTemplate);
+            const reviewable = nonTemplate.filter(d => d.source !== 'suggestion' && d.status !== 'archived');
+            return json({
+              ok: true,
+              summary: {
+                pendingReview: reviewable.filter(d => d.approvalStatus === 'pending').length,
+                changesRequested: reviewable.filter(d => d.approvalStatus === 'changes_requested').length,
+                suggestions: nonTemplate.filter(d => d.source === 'suggestion').length,
+              },
+            }, 200, cors);
+          }
           // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: POM's
           // Content card joins this list by display name (which suggestions carry), so without
           // this filter a not-yet-promoted option would surface on a client's dashboard.
