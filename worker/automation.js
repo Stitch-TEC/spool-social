@@ -55,13 +55,26 @@ function isPublicHttpUrl(u) {
 // AI-image path's text salvage).
 async function rehostPageImage(env, origin, imgUrl, clientId) {
   try {
-    const u = new URL(String(imgUrl));
-    if (!isPublicHttpUrl(u)) return '';
-    const res = await fetch(u.href, { signal: AbortSignal.timeout(10000) });
+    let target = new URL(String(imgUrl));
+    if (!isPublicHttpUrl(target)) return '';
+    // Follow redirects MANUALLY so EVERY hop's host is validated BEFORE the Worker fetches it.
+    // Default redirect:'follow' would make each intermediate request itself and only expose the
+    // FINAL url via res.url — a public image URL could 30x-bounce us into private address space
+    // on an intermediate hop (SSRF) and land back on a public URL undetected. Bounded to <=3
+    // redirects, re-validating each Location, exactly matching feedback-worker's fetchGuarded.
+    let res;
+    for (let hop = 0; ; hop++) {
+      res = await fetch(target.href, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+      if (res.status < 300 || res.status >= 400) break; // not a redirect — this is the response
+      if (hop >= 3) return '';                           // redirect budget exhausted
+      const loc = res.headers.get('location');
+      if (!loc) return '';
+      let next;
+      try { next = new URL(loc, target); } catch { return ''; }
+      if (!isPublicHttpUrl(next)) return '';             // validate the NEXT hop before fetching it
+      target = next;
+    }
     if (!res.ok) return '';
-    // Redirects are followed — re-validate where we actually landed so a public URL can't
-    // bounce the fetch into private address space.
-    try { if (!isPublicHttpUrl(new URL(res.url))) return ''; } catch { return ''; }
     const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!REHOST_MIMES.includes(mime)) return '';
     const bytes = new Uint8Array(await res.arrayBuffer());

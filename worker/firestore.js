@@ -137,25 +137,42 @@ function fromFields(fields = {}) {
 
 // List posts for a uid (filtered/sorted by the caller). Single-field equality
 // query — no composite index required.
-export async function listPosts(env, uid, limit = 300) {
+// Every post owned by `uid`. Paginates with a __name__ cursor: a fixed single-page
+// limit silently dropped posts once the owner outgrew it, and BOTH callers compute
+// over the whole set — /api/drafts (attention COUNTS + the client-facing list) and
+// resolveClientId (find the tenant an existing post uses) — so a truncated page
+// under-counts pending reviews and can mint a phantom slug for a client whose posts
+// happened to sort past the cap. `cap` is an optional early-stop (default: fetch all).
+// where(uid==x) + orderBy(__name__) is served by the automatic single-field index
+// (its entries are already ordered by name within a uid) — no composite index needed.
+export async function listPosts(env, uid, cap = Infinity) {
   const token = await getAccessToken(env);
-  const body = {
-    structuredQuery: {
+  const pageSize = 300;
+  const out = [];
+  let startAfter = null;
+  for (;;) {
+    const structuredQuery = {
       from: [{ collectionId: 'posts' }],
       where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
-      limit
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: pageSize
+    };
+    if (startAfter) structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
+    const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structuredQuery })
+    });
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
+    const rows = (Array.isArray(data) ? data : []).filter(r => r.document);
+    for (const r of rows) {
+      out.push({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) });
+      if (out.length >= cap) return out;
     }
-  };
-  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const data = await res.json().catch(() => ([]));
-  if (!res.ok) throw new Error(data?.error?.message || `Query failed (${res.status})`);
-  return (Array.isArray(data) ? data : [])
-    .filter(r => r.document)
-    .map(r => ({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) }));
+    if (rows.length < pageSize) return out;
+    startAfter = rows[rows.length - 1].document.name;
+  }
 }
 
 export async function getPost(env, id) {
