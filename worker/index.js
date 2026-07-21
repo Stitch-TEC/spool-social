@@ -10,7 +10,7 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
+import { createPost, getPost, listPosts, countDraftSummary, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
@@ -973,24 +973,22 @@ export default {
 
       // /api/drafts — list (GET) or create (POST).
       if (request.method === 'GET') {
+        // Summary mode (internal key, whole-owner): review-state COUNTS across all clients,
+        // INCLUDING the suggestion lane (which the list below strips). Counts only, no rows —
+        // feeds the feedback-worker broker's cross-app "/attention" strip. This is the FREQUENT
+        // poll, so use a projected count query (only the 4 count fields, no post bodies/threads)
+        // instead of pulling every owner post's full document. Archived drafts are excluded.
+        if (url.searchParams.get('summary') === '1') {
+          try {
+            const summary = await countDraftSummary(env, env.OWNER_UID);
+            return json({ ok: true, summary }, 200, cors);
+          } catch (err) {
+            console.error('Draft summary failed:', err?.message || err);
+            return json({ error: 'Summary failed' }, 502, cors);
+          }
+        }
         try {
           let drafts = await listPosts(env, env.OWNER_UID);
-          // Summary mode (internal key, whole-owner): review-state COUNTS across all clients,
-          // INCLUDING the suggestion lane (which the list below strips). Counts only, no rows —
-          // feeds the feedback-worker broker's cross-app "/attention" strip. Archived drafts are
-          // excluded so a cleared item doesn't keep pinging the attention count.
-          if (url.searchParams.get('summary') === '1') {
-            const nonTemplate = drafts.filter(d => !d.isTemplate);
-            const reviewable = nonTemplate.filter(d => d.source !== 'suggestion' && d.status !== 'archived');
-            return json({
-              ok: true,
-              summary: {
-                pendingReview: reviewable.filter(d => d.approvalStatus === 'pending').length,
-                changesRequested: reviewable.filter(d => d.approvalStatus === 'changes_requested').length,
-                suggestions: nonTemplate.filter(d => d.source === 'suggestion').length,
-              },
-            }, 200, cors);
-          }
           // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: POM's
           // Content card joins this list by display name (which suggestions carry), so without
           // this filter a not-yet-promoted option would surface on a client's dashboard.
