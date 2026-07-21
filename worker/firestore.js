@@ -175,6 +175,53 @@ export async function listPosts(env, uid, cap = Infinity) {
   }
 }
 
+// Cheap review-state counts for /api/drafts?summary=1 (the frequently-polled cross-app attention
+// strip). Pages with a __name__ cursor + a SELECT projection so it pulls ONLY the four fields the
+// counts need — never post bodies / feedbackThread arrays. Semantics mirror the list summary
+// EXACTLY: non-template; suggestions counted on their own; archived excluded from review;
+// pending/changes_requested among the rest.
+export async function countDraftSummary(env, uid) {
+  const token = await getAccessToken(env);
+  const pageSize = 300;
+  let pendingReview = 0, changesRequested = 0, suggestions = 0;
+  let startAfter = null;
+  for (;;) {
+    const structuredQuery = {
+      from: [{ collectionId: 'posts' }],
+      where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
+      select: { fields: [
+        { fieldPath: 'isTemplate' },
+        { fieldPath: 'source' },
+        { fieldPath: 'status' },
+        { fieldPath: 'approvalStatus' },
+      ] },
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: pageSize
+    };
+    if (startAfter) structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
+    const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structuredQuery })
+    });
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) throw new Error(data?.error?.message || `Summary query failed (${res.status})`);
+    const rows = (Array.isArray(data) ? data : []).filter(r => r.document);
+    for (const r of rows) {
+      const f = r.document.fields || {};
+      if (f.isTemplate?.booleanValue === true) continue;              // templates aren't drafts
+      if ((f.source?.stringValue || '') === 'suggestion') { suggestions++; continue; }
+      if ((f.status?.stringValue || '') === 'archived') continue;     // cleared → not review content
+      const approval = f.approvalStatus?.stringValue || '';
+      if (approval === 'pending') pendingReview++;
+      else if (approval === 'changes_requested') changesRequested++;
+    }
+    if (rows.length < pageSize) break;
+    startAfter = rows[rows.length - 1].document.name;
+  }
+  return { pendingReview, changesRequested, suggestions };
+}
+
 export async function getPost(env, id) {
   const token = await getAccessToken(env);
   const res = await fetch(`${FS_BASE(env)}/posts/${id}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -347,25 +394,39 @@ export async function getShareDoc(env, token) {
   return { id: token, ...fromFields(data.fields) };
 }
 
-export async function listShareDocs(env, ownerUid, limit = 200) {
+// Every share doc owned by `ownerUid`. Paginates with a __name__ cursor: a fixed
+// single-page limit silently truncated the share-link MANAGEMENT listing once the
+// owner outgrew it (and shares have no creation cap bounding them below the limit),
+// so a stale link past the cap became invisible — and un-revocable — from the list.
+// where(ownerUid==x)+orderBy(__name__) rides the automatic single-field index.
+export async function listShareDocs(env, ownerUid, cap = Infinity) {
   const token = await getAccessToken(env);
-  const body = {
-    structuredQuery: {
+  const pageSize = 200;
+  const out = [];
+  let startAfter = null;
+  for (;;) {
+    const structuredQuery = {
       from: [{ collectionId: 'shares' }],
       where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: { stringValue: ownerUid } } },
-      limit
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: pageSize
+    };
+    if (startAfter) structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
+    const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structuredQuery })
+    });
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) throw new Error(data?.error?.message || `Share list failed (${res.status})`);
+    const rows = (Array.isArray(data) ? data : []).filter(r => r.document);
+    for (const r of rows) {
+      out.push({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) });
+      if (out.length >= cap) return out;
     }
-  };
-  const res = await fetch(`${FS_BASE(env)}:runQuery`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const data = await res.json().catch(() => ([]));
-  if (!res.ok) throw new Error(data?.error?.message || `Share list failed (${res.status})`);
-  return (Array.isArray(data) ? data : [])
-    .filter(r => r.document)
-    .map(r => ({ id: r.document.name.split('/').pop(), ...fromFields(r.document.fields) }));
+    if (rows.length < pageSize) return out;
+    startAfter = rows[rows.length - 1].document.name;
+  }
 }
 
 export async function deleteShareDoc(env, token) {
