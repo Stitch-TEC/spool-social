@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
-import { Loader2, ShieldCheck, X, CheckSquare, Files, Plus } from 'lucide-react';
+import { Loader2, ShieldCheck, X, CheckSquare, Files, Plus, Lightbulb } from 'lucide-react';
 import {
   collection,
   addDoc,
@@ -81,6 +81,9 @@ const App = () => {
   const [isDataOpen, setIsDataOpen] = useState(false); // Import & Export modal
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // Session-level dismissal for the "N suggestions parked" nudge — so it isn't naggy, but returns
+  // next session (and the Suggestions chip stays as the always-available entry point regardless).
+  const [suggestionsBannerDismissed, setSuggestionsBannerDismissed] = useState(false);
 
   // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
   const postsRef = useRef([]);
@@ -1170,6 +1173,37 @@ const App = () => {
                       </div>
                     </div>
                   )}
+                  {/* "N suggestions parked" nudge — the missing surfacing that made cron-parked
+                      suggestions invisible unless the operator happened to notice the chip. Operator-
+                      only (suggestionPosts is empty for everyone else), hidden on the lane itself and
+                      on templates/archived, one click into the lane, session-dismissible. */}
+                  {isOperator && !showTemplates && !showArchived && filterStatus !== 'suggestions' && statusCounts.suggestions > 0 && !suggestionsBannerDismissed && (
+                    <div className="mb-6 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-3 sm:p-4">
+                      <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                        <Lightbulb size={18} className="text-amber-600" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-bold text-amber-900">
+                          {statusCounts.suggestions} AI {statusCounts.suggestions === 1 ? 'suggestion is' : 'suggestions are'} parked for your review
+                        </p>
+                        <p className="text-xs text-amber-700/80">From your automations — promote the good ones into a client&rsquo;s queue.</p>
+                      </div>
+                      <button
+                        onClick={() => { setFilterStatus('suggestions'); exitSelectionMode(); }}
+                        className="shrink-0 flex items-center gap-1.5 bg-amber-500 text-white px-3 py-2 rounded-xl font-bold text-xs shadow-sm hover:bg-amber-600 transition-colors"
+                      >
+                        Review
+                      </button>
+                      <button
+                        onClick={() => setSuggestionsBannerDismissed(true)}
+                        aria-label="Dismiss suggestions notice"
+                        title="Dismiss"
+                        className="shrink-0 p-1.5 text-amber-500 hover:text-amber-700 rounded-full"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  )}
                   {showTemplates ? (
                     <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
                       <div>
@@ -1220,6 +1254,10 @@ const App = () => {
                         onTagChange={setFilterTag}
                         tagCounts={tagCounts}
                         showClientSort={isOperator}
+                        /* Platform/tag filters don't apply on the Suggestions lane (filteredPosts
+                           short-circuits before them) — hide the dead controls so their counts
+                           can't mismatch the lane or silently carry a stale filter back out. */
+                        showFilters={filterStatus !== 'suggestions'}
                       />
                     </div>
                   )}
@@ -1240,6 +1278,9 @@ const App = () => {
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
                     onPushToSender={isOperator ? handlePushToSender : undefined}
                     isSuggestionLane={filterStatus === 'suggestions'}
+                    /* Operators see machine-provenance badges (Auto/Suggested + source page);
+                       clients & guests never do — matches the caution on machine-derived labels. */
+                    showProvenance={isOperator}
                     onCreate={() => setView('editor')}
                     selectable={!isReadOnly && !showTemplates && filterStatus !== 'suggestions' && selectionMode}
                     selectedIds={selectedIds}

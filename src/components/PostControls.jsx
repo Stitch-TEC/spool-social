@@ -41,6 +41,9 @@ const PostControls = ({
   filterPlatform, onPlatformChange, platformCounts = {},
   filterTag, onTagChange, tagCounts = {},
   showClientSort = true,
+  // Sort always applies; the platform/tag filters can be hidden on lanes where they don't (the
+  // Suggestions lane short-circuits before filtering) so dead controls don't mislead.
+  showFilters = true,
 }) => {
   const present = Object.keys(platformCounts).filter((p) => platformCounts[p] > 0);
   // Keep the active platform selectable even if the other filters dropped its
@@ -52,6 +55,7 @@ const PostControls = ({
   return (
     <div className="flex flex-wrap items-center gap-2 shrink-0" role="group" aria-label="Sort and filter posts">
       {/* Platform filter */}
+      {showFilters && (
       <div className="relative">
         <Layers size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         <select
@@ -69,9 +73,10 @@ const PostControls = ({
         </select>
         <Chevron />
       </div>
+      )}
 
       {/* Tag filter — only when there are shared tags to filter by */}
-      {tags.length > 0 && (
+      {showFilters && tags.length > 0 && (
         <div className="relative">
           <Tag size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
           <select
