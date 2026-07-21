@@ -32,13 +32,17 @@ const slugifyClient = (name) =>
 // our own origin, so an accepted image/svg+xml would be stored XSS on spool.stitchtec.dev.
 const REHOST_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
-// Minimal public-host guard (ported from feedback-worker's validatePublicHttpUrl posture):
-// reject IP-literal / loopback / internal-suffix hosts so the Worker never fetches into
-// private address space. We deliberately do NOT domain-pin image hosts — legit sites hot-link
-// CDN imagery — so "public http(s) host" is the boundary, not "the client's domain".
+// Public-host guard at PARITY with feedback-worker's validatePublicHttpUrl: reject IP-literal /
+// loopback / internal-suffix hosts (and userinfo) so the Worker never fetches into private address
+// space. We deliberately do NOT domain-pin image hosts — legit sites hot-link CDN imagery — so
+// "public http(s) host" is the boundary, not "the client's domain".
 function isPublicHttpUrl(u) {
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
-  const h = u.hostname.toLowerCase();
+  if (u.username || u.password) return false;                          // no userinfo (http://user:pass@host)
+  // Strip a trailing FQDN dot BEFORE the suffix checks: WHATWG keeps the dot on NAMED hosts, so
+  // 'metadata.google.internal.' would otherwise slip the '.internal' guard. (Numeric hosts are
+  // already dot-normalized by the URL parser, so the IP checks below are unaffected.)
+  const h = u.hostname.toLowerCase().replace(/\.$/, '');
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return false;
   if (h.startsWith('[') || h.includes(':')) return false;              // IPv6 literal
   if (/^[0-9.]+$/.test(h) || /^0x[0-9a-f.]+$/i.test(h)) return false; // IPv4 / integer / hex literal
