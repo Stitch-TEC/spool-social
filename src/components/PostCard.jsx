@@ -1,13 +1,13 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X, Send
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X, Send, Zap, Sparkles
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, onPushToSender, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, onPushToSender, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
@@ -17,6 +17,10 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
   // Parked automation suggestion (operator-only lane) — swaps the status row for the
   // promote/dismiss pair. Handler presence doubles as the operator gate.
   const isSuggestion = post.source === 'suggestion' && !!onPromoteSuggestion && !!onDismissSuggestion;
+  // A draft the cron/automation produced straight into the queue (or a promoted suggestion, which is
+  // relabelled 'automation'). Only surfaced to operators (showProvenance) — clients/guests never see
+  // machine-provenance labels.
+  const isAutomationDraft = post.source === 'automation' && showProvenance && !isSuggestion;
 
   const statusPill = isPosted ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
     : isScheduled ? 'bg-amber-100 text-amber-800 border-amber-200'
@@ -29,7 +33,14 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
   const formattedDate = useMemo(() => {
     return post.scheduledDate ? DATE_FORMATTERS.short.format(post.scheduledDate) : 'No date set';
   }, [post.scheduledDate]);
-  
+
+  // When this suggestion/auto draft was generated — shown on the provenance line so "Use this" is
+  // a more informed click. createdAt is an ISO string on the doc; guard the parse.
+  const generatedDate = useMemo(() => {
+    if (!post.createdAt) return '';
+    try { return DATE_FORMATTERS.short.format(new Date(post.createdAt)); } catch { return ''; }
+  }, [post.createdAt]);
+
   const brandColor = clientSettings.brandColor || '#4338ca'; // indigo-700 default
 
   // ⚡ OPTIMIZATION: Memoize clipboard handler to prevent unnecessary re-renders of the button.
@@ -42,11 +53,13 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
      });
   }, []);
 
-  const getStatusColor = () => { 
-      if (post.approvalStatus === APPROVAL_STATUS.APPROVED) return 'border-l-4 border-l-emerald-500'; 
-      if (post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) return 'border-l-4 border-l-rose-500'; 
-      if (isPosted) return 'opacity-90'; 
-      return ''; 
+  const getStatusColor = () => {
+      // Parked suggestions get an amber rail so they're distinguishable at a glance in a mixed grid.
+      if (isSuggestion) return 'border-l-4 border-l-amber-400';
+      if (post.approvalStatus === APPROVAL_STATUS.APPROVED) return 'border-l-4 border-l-emerald-500';
+      if (post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) return 'border-l-4 border-l-rose-500';
+      if (isPosted) return 'opacity-90';
+      return '';
   };
 
   const toggle = () => onToggleSelect?.(post.id);
@@ -72,12 +85,19 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <PlatformIcon platformId={post.platform} size={28} />
             <div>
                 <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                     {post.source === 'suggestion'
-                      ? <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded">Suggested</span>
+                      ? <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded inline-flex items-center gap-1"><Sparkles size={9} /> Suggested</span>
                       : post.isTemplate
                       ? <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Template</span>
-                      : <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>}
+                      : (
+                        <div className="flex items-center gap-2">
+                          {/* Auto-generated drafts get a distinct 'Auto' badge (operator-only) so a
+                              machine draft is never mistaken for a hand-written one in the queue. */}
+                          {isAutomationDraft && <span className="text-[10px] font-bold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-100 px-1.5 py-0.5 rounded inline-flex items-center gap-1"><Zap size={9} /> Auto</span>}
+                          <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>
+                        </div>
+                      )}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
                 </div>
             </div>
@@ -147,12 +167,28 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             the status row: a suggestion has no workflow until it's promoted. */}
         {/* Provenance: WHY this suggestion exists — its automation seed and (when site-grounded)
             the real page it drew from — so "Use this" is an informed click. */}
-        {isSuggestion && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed) && (
-          <p className="text-[10px] text-slate-400 mb-2 line-clamp-2" title={post.suggestPageUrl || post.suggestSeed || ''}>
-            {post.suggestPageTitle || post.suggestPageUrl
-              ? <>From your site: <span className="text-slate-500 font-medium">{post.suggestPageTitle || post.suggestPageUrl}</span></>
-              : <>From automation: <span className="text-slate-500 font-medium">{post.suggestSeed}</span></>}
-          </p>
+        {(isSuggestion || isAutomationDraft) && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed || generatedDate) && (
+          <div className="text-[10px] text-slate-400 mb-2 flex items-start gap-1 min-w-0" title={post.suggestPageUrl || post.suggestSeed || ''}>
+            <Sparkles size={11} className="text-amber-400 shrink-0 mt-px" />
+            <span className="min-w-0 line-clamp-2">
+              {/* Grounded (page) provenance wins; else the operator's seed (suggestions only); else a
+                  bare "Generated <date>" so a plain auto draft still self-explains — no dangling label. */}
+              {post.suggestPageTitle || post.suggestPageUrl ? (
+                <>From your site:{' '}
+                  {post.suggestPageUrl
+                    ? <a href={post.suggestPageUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-slate-500 font-medium hover:text-indigo-600 hover:underline">{post.suggestPageTitle || post.suggestPageUrl}</a>
+                    : <span className="text-slate-500 font-medium">{post.suggestPageTitle}</span>}
+                  {generatedDate && <span className="text-slate-300"> · generated {generatedDate}</span>}
+                </>
+              ) : post.suggestSeed ? (
+                <>From automation: <span className="text-slate-500 font-medium">{post.suggestSeed}</span>
+                  {generatedDate && <span className="text-slate-300"> · generated {generatedDate}</span>}
+                </>
+              ) : (
+                <>Generated {generatedDate}</>
+              )}
+            </span>
+          </div>
         )}
         {!isReadOnly && !selectable && isSuggestion && (
           <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">

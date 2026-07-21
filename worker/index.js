@@ -420,7 +420,16 @@ export default {
           if (byName) slug = byName.slug;
         }
       }
-      const out = await fetchClientSignals(env, slug);
+      // Operators/internal callers additionally get the auto-refreshed recentActivity digest (POM's
+      // AI summary of what the client has been doing) — the richest single ideation signal, and today
+      // invisible in every UI. It is repo-DERIVABLE prose, so it is gated exactly like `repos` below:
+      // client members never receive it. Fetched in PARALLEL with the signals so it adds no latency,
+      // and fetchClientProfile fail-opens to null on any miss, so it never blocks or breaks the panel.
+      const canSeeAll = !ideasCaller || ideasCaller.isOperator;
+      const [out, profile] = await Promise.all([
+        fetchClientSignals(env, slug),
+        canSeeAll ? fetchClientProfile(env, slug, 'standard') : Promise.resolve(null),
+      ]);
       if (!out.ok) {
         if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
         // Unknown slug is NORMAL here (free-text client names that never joined the roster) —
@@ -432,8 +441,9 @@ export default {
       }
       // Client-role members get SITE signals only: repo items carry the agency's commit messages
       // and release notes — engineering prose that was never part of the client-facing surface.
-      // Operators and the internal key see everything.
-      const signals = ideasCaller && !ideasCaller.isOperator ? { ...out.signals, repos: [] } : out.signals;
+      // Operators and the internal key see everything (repos + the recentActivity digest).
+      const signals = canSeeAll ? out.signals : { ...out.signals, repos: [] };
+      if (canSeeAll && profile?.recentActivity?.text) signals.recent = profile.recentActivity;
       return json({ ok: true, slug, signals }, 200, cors);
     }
 

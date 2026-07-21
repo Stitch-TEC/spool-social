@@ -3,4 +3,4 @@
 // (src/constants.js imports lucide). This file re-exports them so existing
 // callers (and tests) keep importing from '../utils/aiPrompt' unchanged.
 
-export { buildTextContext, buildImagePrompt } from '../generation/prompts';
+export { buildTextContext, buildImagePrompt, buildIdeaBrainstormPrompt, parseIdeaLines } from '../generation/prompts';

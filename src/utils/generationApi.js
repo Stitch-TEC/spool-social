@@ -52,7 +52,9 @@ export async function generateText(prompt, opts = {}) {
 /**
  * Content-idea signals for a client — site pages + repo releases/commits, brokered server-side
  * (Worker → feedback-worker /client-signals; the CONTEXT_KEY never reaches the browser). Resolves
- * to { slug, signals: { fetchedAt, cached, site: { pages }, repos } }. THROWS on any miss —
+ * to { slug, signals: { fetchedAt, cached, site: { pages }, repos, recent? } }. `recent`
+ * ({ text, updatedAt }) is the auto-refreshed recent-activity digest, present for operator/internal
+ * callers only (repo-derivable prose, gated like `repos`); absent otherwise. THROWS on any miss —
  * including the seam being unconfigured ({ ok:false, error:'not_configured' }) — so the Ideas
  * panel can treat every failure the same way: quietly disappear.
  */
