@@ -167,20 +167,26 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             the status row: a suggestion has no workflow until it's promoted. */}
         {/* Provenance: WHY this suggestion exists — its automation seed and (when site-grounded)
             the real page it drew from — so "Use this" is an informed click. */}
-        {(isSuggestion || isAutomationDraft) && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed) && (
+        {(isSuggestion || isAutomationDraft) && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed || generatedDate) && (
           <div className="text-[10px] text-slate-400 mb-2 flex items-start gap-1 min-w-0" title={post.suggestPageUrl || post.suggestSeed || ''}>
             <Sparkles size={11} className="text-amber-400 shrink-0 mt-px" />
             <span className="min-w-0 line-clamp-2">
+              {/* Grounded (page) provenance wins; else the operator's seed (suggestions only); else a
+                  bare "Generated <date>" so a plain auto draft still self-explains — no dangling label. */}
               {post.suggestPageTitle || post.suggestPageUrl ? (
                 <>From your site:{' '}
                   {post.suggestPageUrl
                     ? <a href={post.suggestPageUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-slate-500 font-medium hover:text-indigo-600 hover:underline">{post.suggestPageTitle || post.suggestPageUrl}</a>
                     : <span className="text-slate-500 font-medium">{post.suggestPageTitle}</span>}
+                  {generatedDate && <span className="text-slate-300"> · generated {generatedDate}</span>}
+                </>
+              ) : post.suggestSeed ? (
+                <>From automation: <span className="text-slate-500 font-medium">{post.suggestSeed}</span>
+                  {generatedDate && <span className="text-slate-300"> · generated {generatedDate}</span>}
                 </>
               ) : (
-                <>From automation: <span className="text-slate-500 font-medium">{post.suggestSeed}</span></>
+                <>Generated {generatedDate}</>
               )}
-              {generatedDate && <span className="text-slate-300"> · generated {generatedDate}</span>}
             </span>
           </div>
         )}

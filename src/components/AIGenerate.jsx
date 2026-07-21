@@ -150,6 +150,10 @@ const AIGenerate = ({
   // The client this panel is currently bound to — a pull that resolves AFTER a client switch must
   // not paint the previous client's page here (mirrors POM's slugRef / the ideas `cancelled` flag).
   const clientIdRef = useRef(clientId);
+  // In-flight guard for the batch brainstorm that the client/open effect can NOT reset (unlike
+  // deck.loading, which it does): without this, closing+reopening the panel mid-flight re-enables
+  // the button and a second click double-spends a metered generation for the same action.
+  const brainstormingRef = useRef(false);
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
@@ -316,9 +320,14 @@ const AIGenerate = ({
   // untrusted, so buildIdeaBrainstormPrompt frames them as data and flat() already collapsed their
   // whitespace at ingest.
   const brainstorm = async () => {
-    if (deck.loading || loading || !cards.length) return;
+    // brainstormingRef (not deck.loading) is the authoritative re-entry guard — it survives the
+    // effect's deck reset on a benign close/reopen, so one conceptual action = one metered debit.
+    if (brainstormingRef.current || deck.loading || loading || !cards.length) return;
     const forClient = clientId;
-    setDeck({ loading: true, list: [], error: null });
+    brainstormingRef.current = true;
+    // Keep any existing results visible while regenerating (Regenerate spins) — resetting the list
+    // to [] would make the results box vanish and the header button flash back mid-request.
+    setDeck((d) => ({ ...d, loading: true, error: null }));
     try {
       const out = await generateText(
         buildIdeaBrainstormPrompt({ clientName, clientSettings, cards, count: 6 }),
@@ -330,7 +339,9 @@ const AIGenerate = ({
       setDeck({ loading: false, list, error: list.length ? null : 'No usable ideas came back — try again.' });
     } catch (e) {
       if (clientIdRef.current !== forClient) return;
-      setDeck({ loading: false, list: [], error: e.message || 'Could not generate ideas.' });
+      setDeck((d) => ({ ...d, loading: false, error: e.message || 'Could not generate ideas.' }));
+    } finally {
+      brainstormingRef.current = false;
     }
   };
 
@@ -541,8 +552,10 @@ const AIGenerate = ({
                 : <>Content ideas</>}
             </div>
             {/* One-click batch: synthesize post ideas across ALL of this client's signals at once
-                (one metered debit for ~6 ideas). Only worth showing once there's data to draw on. */}
-            {cards.length > 0 && (
+                (one metered debit for ~6 ideas). Only worth showing once there's data to draw on,
+                and only until a batch exists — after that the in-box "Regenerate" is the sole
+                re-run control, so we don't duplicate it or mislead with a "Suggest ideas" label. */}
+            {cards.length > 0 && deck.list.length === 0 && !deck.error && (
               <button
                 type="button"
                 onClick={brainstorm}

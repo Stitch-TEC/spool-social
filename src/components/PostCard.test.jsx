@@ -72,6 +72,22 @@ describe('PostCard', () => {
     expect(screen.queryByText('Auto')).toBeNull();
   });
 
+  it('shows a generated date on a plain auto draft, and a linked source page on a grounded one (operators)', () => {
+    // Plain cron auto draft (no site grounding): still self-explains with a generated date.
+    const plain = { ...basePost, source: 'automation', createdAt: '2026-07-20T00:00:00Z' };
+    const { rerender } = render(<PostCard post={plain} onEdit={() => {}} onStatusChange={() => {}} showProvenance />);
+    expect(screen.getByText(/Generated/)).toBeInTheDocument();
+    // Grounded auto draft: shows the client's own source page as a link (provenance the worker now
+    // stamps on auto drafts too, not just suggestions).
+    const grounded = { ...plain, suggestPageUrl: 'https://acme.com/news', suggestPageTitle: 'Latest news' };
+    rerender(<PostCard post={grounded} onEdit={() => {}} onStatusChange={() => {}} showProvenance />);
+    expect(screen.getByText('Latest news').closest('a')).toHaveAttribute('href', 'https://acme.com/news');
+    // Clients/guests never see any of this provenance.
+    rerender(<PostCard post={grounded} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.queryByText('Latest news')).toBeNull();
+    expect(screen.queryByText(/Generated/)).toBeNull();
+  });
+
   it('shows the "Suggested" badge and site provenance on a parked suggestion card', () => {
     const suggestion = {
       ...basePost,

@@ -274,16 +274,18 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       updatedAt: nowIso,
       source: suggest ? 'suggestion' : 'automation',
       automationId: auto.id,
-      // PROVENANCE for the operator's pick decision: which prompt seed produced this, and (when
-      // grounded) which real site page it drew from — rendered on the suggestion card so "Use
-      // this" is an informed click, not a guess. Strings only, additive.
-      ...(suggest ? {
-        suggestSeed: String(auto.promptSeed || '').slice(0, 140),
-        ...(groundedPage ? {
-          suggestPageUrl: String(groundedPage.url || '').slice(0, 500),
-          suggestPageTitle: String(groundedPage.title || '').slice(0, 140),
-        } : {}),
+      // PROVENANCE (operator-only in the UI): which real site page this drew from and, for
+      // suggestions, the prompt seed — so a parked suggestion's "Use this" and a queue draft's
+      // "Auto" badge both explain where the content came from. The grounded page is the client's
+      // OWN site, so it's safe to stamp on an 'auto' draft (which carries the real clientId and is
+      // client-visible); the prompt SEED is the operator's instruction text, so it stays on the
+      // operator-only suggestion doc (empty clientId) and is never written to a client-visible draft.
+      // Strings only, additive.
+      ...(groundedPage ? {
+        suggestPageUrl: String(groundedPage.url || '').slice(0, 500),
+        suggestPageTitle: String(groundedPage.title || '').slice(0, 140),
       } : {}),
+      ...(suggest ? { suggestSeed: String(auto.promptSeed || '').slice(0, 140) } : {}),
     });
     // pageCursor is undefined unless this run rotated the site index — callers only persist it
     // when defined, so ungrounded automations never gain the field.
