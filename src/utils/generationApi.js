@@ -77,6 +77,30 @@ export async function fetchPage(client, pageUrl) {
   return data;
 }
 
+/**
+ * The durable per-client content index (broker D1, brokered server-side): pages with SEO fields +
+ * AI summaries; `images: true` adds the site image inventory ({ url, pageUrl, alt, kind,
+ * spoolUrl? }). Resolves to { slug, counts, pages, images }. THROWS on any miss (including
+ * 'not_configured' on brokers without the index) — callers fall back to the signals index.
+ */
+export async function fetchContentIndex(client, { images = false } = {}) {
+  const qs = `client=${encodeURIComponent(client)}${images ? '&images=1' : ''}`;
+  const res = await fetch(`${API_BASE}/api/content-index?${qs}`, { headers: await authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+/**
+ * Import ONE indexed site image into the client's curated library (idempotent — an
+ * already-imported image resolves to its existing library URL). Resolves to the hosted library
+ * URL. Throws with the server's error string ('library_full', 'unsupported_type', …).
+ */
+export async function importSiteImage(client, imageUrl) {
+  const data = await postJSON('/api/site-image-import', { client, url: imageUrl });
+  return data.url;
+}
+
 /** List the reusable generated/uploaded images (the media pool). When `forClient` (a suite slug) is
  *  given, the operator's cross-client pool is scoped to just that client's images — so the picker
  *  shows only what belongs to the client you're working on, not every client's generated media. */

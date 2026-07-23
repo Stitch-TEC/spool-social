@@ -15,7 +15,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, pushSenderTemplate } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, importSiteImage, pushSenderTemplate } from './suiteContext.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
 // Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
@@ -69,7 +69,7 @@ function postToEmailHtml(post) {
   }
   return parts.join('\n');
 }
-import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine } from '../src/generation/prompts.js';
+import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine, renderPomSeoLine } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
 // Per-platform character caps, derived from the shared PLATFORM_META so the
@@ -487,6 +487,94 @@ export default {
       return json({ ok: true, slug, page: out.page }, 200, cors);
     }
 
+    // --- The durable content index (authed) — picker summaries + the media picker's site images. ---
+    // Same auth stack + tenant pinning as /api/page; the broker serves its D1-backed index (pages
+    // w/ SEO fields + AI summaries; ?images=1 adds the image inventory). Client-role members get
+    // SITE-sourced rows only: repo-sourced pages can include DRAFT/unpublished content pulled from
+    // the agency's repos — same gating rationale as /api/ideas hiding repo signals from clients.
+    if (url.pathname === '/api/content-index') {
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      let idxCaller = null;
+      if (auth.mode !== 'apikey') {
+        idxCaller = await resolveShareCaller(auth, env);
+        if (!idxCaller) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      const requested = slugifyClient(url.searchParams.get('client') || '');
+      let slug = idxCaller && !idxCaller.isOperator ? slugifyClient(idxCaller.clientId) : requested;
+      if (!slug) return json({ error: 'client is required' }, 400, cors);
+      if (!idxCaller || idxCaller.isOperator) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === slug)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slug);
+          if (byName) slug = byName.slug;
+        }
+      }
+      const withImages = url.searchParams.get('images') === '1';
+      const out = await fetchContentIndex(env, slug, withImages);
+      if (!out.ok) {
+        if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+        if (out.reason === 'not_found') return json({ ok: false, error: 'unknown_client' }, 200, cors);
+        console.error(`[content-index] ${slug}: fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
+        return json({ ok: false, error: 'upstream_failed' }, 502, cors);
+      }
+      const canSeeAllIdx = !idxCaller || idxCaller.isOperator;
+      const pages = canSeeAllIdx ? out.pages : out.pages.filter((p) => p.source !== 'repo');
+      return json({ ok: true, slug, counts: out.counts, pages, images: out.images }, 200, cors);
+    }
+
+    // --- Import one indexed site image into the client's curated library (authed). ---
+    // The broker is the authority (URL must be in the D1 image index for THIS slug) and does the
+    // SSRF-guarded download + type/size gates; this route only maps auth + tenant pinning, exactly
+    // like /api/page. Idempotent — an already-imported image returns its existing library URL.
+    if (url.pathname === '/api/site-image-import') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      let impCaller = null;
+      if (auth.mode !== 'apikey') {
+        impCaller = await resolveShareCaller(auth, env);
+        if (!impCaller) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      let impBody = {};
+      try {
+        impBody = await request.json();
+      } catch {
+        return json({ error: 'Invalid JSON' }, 400, cors);
+      }
+      const requested = slugifyClient(String(impBody.client || ''));
+      let slug = impCaller && !impCaller.isOperator ? slugifyClient(impCaller.clientId) : requested;
+      if (!slug) return json({ error: 'client is required' }, 400, cors);
+      if (!impCaller || impCaller.isOperator) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === slug)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === slug);
+          if (byName) slug = byName.slug;
+        }
+      }
+      const imageUrl = String(impBody.url || '').trim();
+      if (!imageUrl) return json({ error: 'url is required' }, 400, cors);
+      const out = await importSiteImage(env, slug, imageUrl);
+      if (!out.ok) {
+        if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+        if (out.reason === 'library_full') return json({ ok: false, error: 'library_full', message: out.message }, 409, cors);
+        if (out.reason === 'unknown_image') return json({ ok: false, error: 'unknown_image' }, 404, cors);
+        if (out.reason === 'unsupported_type') return json({ ok: false, error: 'unsupported_type' }, 415, cors);
+        console.error(`[site-image-import] ${slug}: import failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
+        return json({ ok: false, error: 'upstream_failed' }, 502, cors);
+      }
+      return json({ ok: true, slug, url: out.url, alreadySynced: out.alreadySynced }, 200, cors);
+    }
+
     // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---
     // Grants/revokes CLIENT access by upserting/deleting users/{email}. Privileged docs
     // (super_admin / client_admin) are hand-managed and NEVER touched by this path — a 409 tells
@@ -611,6 +699,7 @@ export default {
           if (profile) {
             const extras = [
               renderPomBrandStyleLine(profile.brandKit),
+              renderPomSeoLine(profile.seoKit),
               renderPomContextLine(profile.aiContext),
               renderPomRecentLine(profile.recentActivity),
               renderPomAssetsLine(profile.assets),

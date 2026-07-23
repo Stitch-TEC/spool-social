@@ -1,18 +1,25 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info } from 'lucide-react';
-import { listMedia, listClientMedia } from '../utils/generationApi';
+import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info, Globe } from 'lucide-react';
+import { listMedia, listClientMedia, fetchContentIndex, importSiteImage } from '../utils/generationApi';
 import { imageContentId } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 
-// One selectable thumbnail — shared by all sections so they look identical.
-const Thumb = ({ item, onPick }) => (
+// One selectable thumbnail — shared by all sections so they look identical. `busy` marks the one
+// site image currently being imported into the library (pick disabled meanwhile).
+const Thumb = ({ item, onPick, busy = false }) => (
   <button
     type="button"
     onClick={onPick}
-    title="Use this image"
-    className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-500 hover:ring-2 hover:ring-indigo-500/30 transition-all"
+    disabled={busy}
+    title={item.alt || 'Use this image'}
+    className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-500 hover:ring-2 hover:ring-indigo-500/30 transition-all disabled:opacity-60"
   >
-    <img src={item.url} alt="" loading="lazy" className="w-full h-full object-cover" />
+    <img src={item.url} alt={item.alt || ''} loading="lazy" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+    {busy && (
+      <span className="absolute inset-0 bg-white/60 flex items-center justify-center">
+        <Loader2 size={18} className="animate-spin text-indigo-600" />
+      </span>
+    )}
   </button>
 );
 
@@ -35,6 +42,8 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
   const [error, setError] = useState(null);
   const [clientItems, setClientItems] = useState(null); // null = loading (only relevant when clientKey)
   const [clientError, setClientError] = useState(null);
+  const [siteItems, setSiteItems] = useState([]); // the durable index's site-image inventory ([] = none/miss)
+  const [importingUrl, setImportingUrl] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -67,13 +76,30 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
     return () => { live = false; };
   }, [clientKey, reloadKey]);
 
+  // The client's SITE images from the durable content index (crawled inventory w/ page attribution
+  // + alt). Best-effort bonus section: any miss (old broker, index empty) leaves it hidden. Images
+  // already imported carry spoolUrl — those dedupe against the curated section via that URL.
+  useEffect(() => {
+    if (!clientKey) return;
+    let live = true;
+    fetchContentIndex(clientKey, { images: true })
+      .then((d) => {
+        if (!live) return;
+        setSiteItems((d.images || []).filter((i) => i && i.kind !== 'logo'));
+      })
+      .catch(() => { if (live) setSiteItems([]); });
+    return () => { live = false; };
+  }, [clientKey, reloadKey]);
+
   // Cross-section dedupe: an image kept by an earlier (higher-priority) section is
   // dropped from every later one. This is the fix for the same photo showing 2-3
   // times when it's on a post AND in the curated library AND in the generated pool.
   const sections = useMemo(() => {
     const seen = new Set();
+    // Dedupe key: `dedupeUrl` (a site image's imported LIBRARY copy) wins over the display url, so
+    // an already-imported site image collapses into its curated twin instead of showing twice.
     const take = (list) => (list || []).filter(m => {
-      const k = imageContentId(m.url);
+      const k = imageContentId(m.dedupeUrl || m.url);
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -82,10 +108,33 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
       used: take(clientImages.map((url) => ({ key: url, url }))),
       curated: clientItems === null ? null : take(clientItems),
       generated: items === null ? null : take(items),
+      site: take(siteItems.map((i) => ({ key: `site:${i.url}`, url: i.url, alt: i.alt, spoolUrl: i.spoolUrl, dedupeUrl: i.spoolUrl || '' }))),
     };
-  }, [clientImages, clientItems, items]);
+  }, [clientImages, clientItems, items, siteItems]);
 
   const pick = (url) => { onSelect(url); onClose(); };
+
+  // Picking a SITE image imports it into the curated library first (broker-validated + downloaded,
+  // idempotent) so the post references a durable /media URL, never a hotlink that can rot or shift.
+  const pickSiteImage = async (item) => {
+    if (importingUrl) return;
+    if (item.spoolUrl) { pick(item.spoolUrl); return; }
+    setImportingUrl(item.url);
+    try {
+      const hosted = await importSiteImage(clientKey, item.url);
+      pick(hosted);
+    } catch (e) {
+      const msg = String(e?.message || '');
+      showToast?.(
+        msg === 'library_full' ? 'The client library is full — remove some items first.'
+          : msg === 'unsupported_type' ? 'That image format can’t be imported.'
+            : 'Couldn’t import that image — try another.',
+        'error'
+      );
+    } finally {
+      setImportingUrl('');
+    }
+  };
 
   const grid = (list) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
@@ -153,6 +202,21 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
               ) : (
                 grid(sections.curated)
               )}
+            </section>
+          )}
+
+          {/* The client's SITE images (the durable content index's crawled inventory) — picking one
+              imports it into the curated library first, so the post gets a hosted /media URL. */}
+          {clientKey && sections.site.length > 0 && (
+            <section aria-label={`Images on ${clientName || clientKey}'s site`}>
+              <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                <Globe size={13} className="text-indigo-400" /> On {clientName ? `${clientName}’s` : 'the client’s'} site
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {sections.site.map(m => (
+                  <Thumb key={m.key} item={m} busy={importingUrl === m.url} onPick={() => pickSiteImage(m)} />
+                ))}
+              </div>
             </section>
           )}
 

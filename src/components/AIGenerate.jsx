@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb, ChevronDown, RefreshCw } from 'lucide-react';
-import { generateImage, generateText, fetchIdeas, fetchPage } from '../utils/generationApi';
+import { generateImage, generateText, fetchIdeas, fetchPage, fetchContentIndex } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt, buildIdeaBrainstormPrompt, parseIdeaLines } from '../utils/aiPrompt';
 import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '../constants';
 
@@ -190,13 +190,24 @@ const AIGenerate = ({
     setIdeas([]);
     const t = setTimeout(() => {
       setIdeasState('loading');
-      fetchIdeas(clientId)
-        .then((data) => {
+      // The durable content index (D1-backed, richer: per-page AI summaries + og images, and it
+      // survives the signals pack's KV expiry) is fetched IN PARALLEL and, when it has pages,
+      // REPLACES the signals-derived url/title index as the picker menu. Fail-open: any miss
+      // (old broker, index empty, network) resolves null and the signals index serves as before.
+      Promise.all([
+        fetchIdeas(clientId),
+        fetchContentIndex(clientId).catch(() => null),
+      ])
+        .then(([data, rich]) => {
           // Cache BEFORE the cancelled check: a panel closed mid-flight already paid for this
           // fetch (possibly a slow cold broker collect) — discarding the result would re-pay it
           // on the next open. Only the STATE updates are gated on still being mounted.
           const items = flattenIdeas(data);
-          const index = Array.isArray(data?.signals?.site?.index) ? data.signals.site.index.filter((e) => e && e.url) : [];
+          const signalsIndex = Array.isArray(data?.signals?.site?.index) ? data.signals.site.index.filter((e) => e && e.url) : [];
+          const richIndex = (rich?.pages || [])
+            .filter((p) => p && p.url)
+            .map((p) => ({ url: p.url, title: flat(p.title), summary: flat(p.summary), image: p.ogImage, publishedAt: p.publishedAt }));
+          const index = richIndex.length ? richIndex : signalsIndex;
           ideasCache.set(clientId, { items, index });
           if (cancelled) return;
           setIdeas(items);
@@ -309,7 +320,7 @@ const AIGenerate = ({
   const shownUrls = new Set(cards.map((c) => canonUrl(c.url)).filter(Boolean));
   const pickable = pageIndex.filter((e) => e.url && !shownUrls.has(canonUrl(e.url)));
   const pq = pickerQuery.trim().toLowerCase();
-  const pickableFiltered = pq ? pickable.filter((e) => `${e.title || ''} ${e.url}`.toLowerCase().includes(pq)) : pickable;
+  const pickableFiltered = pq ? pickable.filter((e) => `${e.title || ''} ${e.url} ${e.summary || ''}`.toLowerCase().includes(pq)) : pickable;
   const anySiteCard = cards.some((c) => c.tag === 'Site');
 
   // Batch "Suggest ideas": ONE metered generation synthesizes ~6 concrete post ideas across ALL of
@@ -740,6 +751,11 @@ const AIGenerate = ({
                         >
                           <span className="flex-1 min-w-0">
                             <span className="block truncate text-xs font-medium text-slate-700">{e.title || e.url}</span>
+                            {/* The durable index's per-page AI summary — what this page is actually
+                                about, so picking is informed instead of URL-guessing. */}
+                            {e.summary && (
+                              <span className="block text-[10.5px] text-slate-500 leading-snug line-clamp-2">{e.summary}</span>
+                            )}
                             <span className="block truncate text-[10px] text-slate-400">{e.url}</span>
                           </span>
                           <span className="shrink-0 text-[11px] font-bold text-indigo-600">
