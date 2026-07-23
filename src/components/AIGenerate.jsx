@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb, ChevronDown, RefreshCw } from 'lucide-react';
-import { generateImage, generateText, fetchIdeas, fetchPage, fetchContentIndex } from '../utils/generationApi';
+import { generateImage, generateText, fetchIdeas, fetchPage, fetchContentIndex, fetchIndexPage } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt, buildIdeaBrainstormPrompt, parseIdeaLines } from '../utils/aiPrompt';
 import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '../constants';
 
@@ -206,7 +206,10 @@ const AIGenerate = ({
           const signalsIndex = Array.isArray(data?.signals?.site?.index) ? data.signals.site.index.filter((e) => e && e.url) : [];
           const richIndex = (rich?.pages || [])
             .filter((p) => p && p.url)
-            .map((p) => ({ url: p.url, title: flat(p.title), summary: flat(p.summary), image: p.ogImage, publishedAt: p.publishedAt }));
+            // `source` rides along: repo-sourced rows must pull through the index detail read —
+            // the live /api/page scrape is domain-pinned and can't serve them (github blob URLs
+            // 403 off_site; deployed JS-shell routes scrape to nothing).
+            .map((p) => ({ url: p.url, source: p.source, title: flat(p.title), summary: flat(p.summary), image: p.ogImage, publishedAt: p.publishedAt }));
           const index = richIndex.length ? richIndex : signalsIndex;
           ideasCache.set(clientId, { items, index });
           if (cancelled) return;
@@ -275,20 +278,24 @@ const AIGenerate = ({
     setPickingUrl(u);
     setPickError(null);
     try {
-      const data = await fetchPage(clientId, u);
+      // Repo-sourced rows read from the DURABLE index (the only place their extracted text
+      // exists); site rows keep the live domain-pinned pull (freshest content + images).
+      const data = entry.source === 'repo' ? await fetchIndexPage(clientId, u) : await fetchPage(clientId, u);
       if (clientIdRef.current !== forClient) return; // switched clients mid-pull — drop the result
       const p = data.page || {};
       const card = {
         id: `picked:${u}`,
         tag: 'Site',
         title: flat(p.title) || flat(entry.title) || u,
-        description: flat(p.excerpt),
+        description: flat(p.excerpt) || flat(p.summary),
         // Keep the broker's fuller page body (what it fetched for grounded generation) so
         // "Post ideas" and the batch brainstorm reason over real content, not just a teaser.
         // `description` stays the excerpt for the compact 2-line preview.
-        content: flat(p.text || p.excerpt),
+        content: flat(p.text || p.excerpt || p.summary),
         url: u,
-        image: Array.isArray(p.images) && /^https?:\/\//i.test(String(p.images[0] || '')) ? String(p.images[0]) : ''
+        image: Array.isArray(p.images) && /^https?:\/\//i.test(String(p.images[0] || ''))
+          ? String(p.images[0])
+          : (/^https?:\/\//i.test(String(p.ogImage || '')) ? String(p.ogImage) : '')
       };
       setPicked((prev) => (prev.some((it) => canonUrl(it.url) === canonUrl(u)) ? prev : [card, ...prev]));
       setPickerOpen(false);

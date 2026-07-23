@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info, Globe } from 'lucide-react';
 import { listMedia, listClientMedia, fetchContentIndex, importSiteImage } from '../utils/generationApi';
 import { imageContentId } from '../utils/helpers';
@@ -112,7 +112,19 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
     };
   }, [clientImages, clientItems, items, siteItems]);
 
-  const pick = (url) => { onSelect(url); onClose(); };
+  // Liveness guard for the async import: a slow import resolving after the modal closed (or after
+  // the user picked something else) must NOT fire onSelect again and silently replace the post's
+  // image — the same `live` discipline every fetch effect in this file uses.
+  const liveRef = useRef(true);
+  useEffect(() => () => { liveRef.current = false; }, []);
+
+  // While an import is in flight, EVERY pick is a no-op (not just other site thumbs) — otherwise
+  // a fast second pick races the import's own onSelect.
+  const pick = (url) => {
+    if (importingUrl) return;
+    onSelect(url);
+    onClose();
+  };
 
   // Picking a SITE image imports it into the curated library first (broker-validated + downloaded,
   // idempotent) so the post references a durable /media URL, never a hotlink that can rot or shift.
@@ -122,8 +134,13 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
     setImportingUrl(item.url);
     try {
       const hosted = await importSiteImage(clientKey, item.url);
-      pick(hosted);
+      if (!liveRef.current) return; // modal closed mid-import — the library copy exists, nothing selected
+      setImportingUrl(''); // clear BEFORE pick — pick() no-ops while an import is marked in flight
+      onSelect(hosted);
+      onClose();
     } catch (e) {
+      if (!liveRef.current) return;
+      setImportingUrl('');
       const msg = String(e?.message || '');
       showToast?.(
         msg === 'library_full' ? 'The client library is full — remove some items first.'
@@ -131,8 +148,6 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
             : 'Couldn’t import that image — try another.',
         'error'
       );
-    } finally {
-      setImportingUrl('');
     }
   };
 

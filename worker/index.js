@@ -15,7 +15,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, importSiteImage, pushSenderTemplate } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate } from './suiteContext.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
 // Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
@@ -515,6 +515,24 @@ export default {
           if (byName) slug = byName.slug;
         }
       }
+      const canSeeAllIdx = !idxCaller || idxCaller.isOperator;
+
+      // Detail mode (?url=): ONE page's full row from the durable index — incl. the extracted
+      // text /client-page structurally can't serve for repo-sourced pages (domain-pinned live
+      // scrape). Client-role callers never see a repo-sourced row here either.
+      const detailUrl = url.searchParams.get('url') || '';
+      if (detailUrl) {
+        const out = await fetchContentIndexPage(env, slug, detailUrl);
+        if (!out.ok) {
+          if (out.reason === 'not_configured') return json({ ok: false, error: 'not_configured' }, 200, cors);
+          if (out.reason === 'not_found') return json({ ok: false, error: 'unknown_page' }, 200, cors);
+          console.error(`[content-index] ${slug}: detail fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
+          return json({ ok: false, error: 'upstream_failed' }, 502, cors);
+        }
+        if (!canSeeAllIdx && out.page.source === 'repo') return json({ ok: false, error: 'unknown_page' }, 200, cors);
+        return json({ ok: true, slug, page: out.page }, 200, cors);
+      }
+
       const withImages = url.searchParams.get('images') === '1';
       const out = await fetchContentIndex(env, slug, withImages);
       if (!out.ok) {
@@ -523,9 +541,21 @@ export default {
         console.error(`[content-index] ${slug}: fetch failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
         return json({ ok: false, error: 'upstream_failed' }, 502, cors);
       }
-      const canSeeAllIdx = !idxCaller || idxCaller.isOperator;
+      // The client-role repo gate covers EVERY payload section, not just pages: counts are
+      // recomputed from the filtered slice (the broker aggregate counts hidden repo rows — even
+      // the COUNT of unpublished draft pages shouldn't leak), and images drop any row attributed
+      // to a repo-sourced page (empty today by construction, but the plumbing is source-generic —
+      // an additive broker change must not start leaking draft-content imagery here).
       const pages = canSeeAllIdx ? out.pages : out.pages.filter((p) => p.source !== 'repo');
-      return json({ ok: true, slug, counts: out.counts, pages, images: out.images }, 200, cors);
+      const repoPageUrls = canSeeAllIdx ? null : new Set(out.pages.filter((p) => p.source === 'repo').map((p) => p.url));
+      const images = canSeeAllIdx ? out.images : out.images.filter((i) => !i.pageUrl || !repoPageUrls.has(i.pageUrl));
+      const counts = canSeeAllIdx ? out.counts : {
+        total: pages.length,
+        crawled: pages.filter((p) => p.lastCrawled).length,
+        summarized: pages.filter((p) => p.summary).length,
+        missingDescription: out.counts.missingDescription || 0, // already site-only broker-side
+      };
+      return json({ ok: true, slug, counts, pages, images }, 200, cors);
     }
 
     // --- Import one indexed site image into the client's curated library (authed). ---

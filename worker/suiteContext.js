@@ -189,6 +189,41 @@ export async function fetchContentIndex(env, slug, includeImages = false) {
   }
 }
 
+// ONE page's full row from the durable index (broker ?url= detail mode) — the ONLY way to read a
+// repo-sourced page's extracted text (the live /client-page scrape is domain-pinned and would
+// return the JS-shell). Backs /api/content-index?url=. Typed failures as above.
+export async function fetchContentIndexPage(env, slug, pageUrl) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug || !pageUrl) return { ok: false, reason: 'bad_request' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/client-content/index?slug=${encodeURIComponent(slug)}&url=${encodeURIComponent(pageUrl)}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 503) return { ok: false, reason: 'not_configured' };
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok || !d.page || typeof d.page.url !== 'string') return { ok: false, reason: 'bad_payload' };
+    const p = d.page;
+    return {
+      ok: true,
+      page: {
+        url: p.url,
+        source: p.source === 'repo' ? 'repo' : 'site',
+        title: typeof p.title === 'string' ? p.title : '',
+        excerpt: typeof p.excerpt === 'string' ? p.excerpt : '',
+        text: typeof p.text === 'string' ? p.text : '',
+        summary: typeof p.summary === 'string' ? p.summary : '',
+        ogImage: typeof p.ogImage === 'string' ? p.ogImage : '',
+      },
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
 // Import ONE indexed site image into the client's curated library (broker POST /spool/assets
 // { slug, imageUrl } on the CONTEXT_KEY path — the broker validates the URL against the D1 image
 // index, downloads it SSRF-guarded with the site-sync type/size gates, and stores it via this

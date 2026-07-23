@@ -92,6 +92,18 @@ export async function fetchContentIndex(client, { images = false } = {}) {
 }
 
 /**
+ * ONE page's full row from the durable index (extracted text + summary) — the read path for
+ * repo-sourced pages, whose content the live /api/page scrape structurally can't return (the
+ * rendered site is a JS shell; the copy lives in the repo). Resolves to { slug, page }.
+ */
+export async function fetchIndexPage(client, pageUrl) {
+  const res = await fetch(`${API_BASE}/api/content-index?client=${encodeURIComponent(client)}&url=${encodeURIComponent(pageUrl)}`, { headers: await authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+/**
  * Import ONE indexed site image into the client's curated library (idempotent — an
  * already-imported image resolves to its existing library URL). Resolves to the hosted library
  * URL. Throws with the server's error string ('library_full', 'unsupported_type', …).
