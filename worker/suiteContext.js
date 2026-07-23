@@ -43,6 +43,10 @@ export async function fetchClientProfile(env, slug, tier = 'standard') {
       // recent:[{name,type,provider?}] } — counts + filenames, never blobs. Absent on old
       // brokers / cheap tier / any broker-side miss; consumers must treat it as optional.
       assets: d.assets && typeof d.assets === 'object' ? d.assets : undefined,
+      // Operator-authored SEO strategy (POM clients/{slug}.seoKit): { targetKeywords[], topics[],
+      // audience?, geo?, notes? } — standard/hard tiers only, absent on old brokers. Rendered by
+      // renderPomSeoLine as drafting guidance (operator-authored, but re-capped defensively).
+      seoKit: d.seoKit && typeof d.seoKit === 'object' ? d.seoKit : null,
     };
   } catch {
     return null;
@@ -127,6 +131,125 @@ export async function fetchClientSignals(env, slug) {
         repos: Array.isArray(d.repos) ? d.repos : [],
       },
     };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
+// The DURABLE per-client content index (broker GET /client-content/index, D1-backed): every
+// discovered page with SEO metafields + a once-per-version AI summary, and optionally the image
+// inventory (source page + alt + spoolUrl once imported). Richer and longer-lived than the
+// signals pack's url/title index — backs GET /api/content-index (picker summaries + the media
+// picker's "Client site" section). Typed failures like fetchClientSignals; CONTEXT_KEY never
+// leaves this worker.
+export async function fetchContentIndex(env, slug, includeImages = false) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug) return { ok: false, reason: 'slug_required' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const qs = `slug=${encodeURIComponent(slug)}${includeImages ? '&include=images' : ''}`;
+    const res = await fetch(`${base}/client-content/index?${qs}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    // 503 = the broker predates the index or its D1 is unbound — a NORMAL degrade (callers fall
+    // back to the signals index), distinct from a real failure.
+    if (res.status === 503) return { ok: false, reason: 'not_configured' };
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok) return { ok: false, reason: 'bad_payload' };
+    return {
+      ok: true,
+      counts: d.counts && typeof d.counts === 'object' ? d.counts : {},
+      pages: Array.isArray(d.pages)
+        ? d.pages.filter((p) => p && typeof p.url === 'string').map((p) => ({
+            url: p.url,
+            source: p.source === 'repo' ? 'repo' : 'site',
+            title: typeof p.title === 'string' ? p.title : '',
+            summary: typeof p.summary === 'string' ? p.summary : '',
+            metaDescription: typeof p.metaDescription === 'string' ? p.metaDescription : '',
+            ogImage: typeof p.ogImage === 'string' ? p.ogImage : '',
+            publishedAt: typeof p.publishedAt === 'string' ? p.publishedAt : '',
+            lastCrawled: typeof p.lastCrawled === 'string' ? p.lastCrawled : '',
+          }))
+        : [],
+      images: Array.isArray(d.images)
+        ? d.images.filter((i) => i && typeof i.url === 'string').map((i) => ({
+            url: i.url,
+            pageUrl: typeof i.pageUrl === 'string' ? i.pageUrl : '',
+            alt: typeof i.alt === 'string' ? i.alt : '',
+            kind: typeof i.kind === 'string' ? i.kind : 'img',
+            spoolUrl: typeof i.spoolUrl === 'string' ? i.spoolUrl : '',
+          }))
+        : [],
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
+// ONE page's full row from the durable index (broker ?url= detail mode) — the ONLY way to read a
+// repo-sourced page's extracted text (the live /client-page scrape is domain-pinned and would
+// return the JS-shell). Backs /api/content-index?url=. Typed failures as above.
+export async function fetchContentIndexPage(env, slug, pageUrl) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug || !pageUrl) return { ok: false, reason: 'bad_request' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/client-content/index?slug=${encodeURIComponent(slug)}&url=${encodeURIComponent(pageUrl)}`, {
+      headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 503) return { ok: false, reason: 'not_configured' };
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (!res.ok) return { ok: false, status: res.status, reason: 'upstream_error' };
+    const d = await res.json();
+    if (!d || !d.ok || !d.page || typeof d.page.url !== 'string') return { ok: false, reason: 'bad_payload' };
+    const p = d.page;
+    return {
+      ok: true,
+      page: {
+        url: p.url,
+        source: p.source === 'repo' ? 'repo' : 'site',
+        title: typeof p.title === 'string' ? p.title : '',
+        excerpt: typeof p.excerpt === 'string' ? p.excerpt : '',
+        text: typeof p.text === 'string' ? p.text : '',
+        summary: typeof p.summary === 'string' ? p.summary : '',
+        ogImage: typeof p.ogImage === 'string' ? p.ogImage : '',
+      },
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+  }
+}
+
+// Import ONE indexed site image into the client's curated library (broker POST /spool/assets
+// { slug, imageUrl } on the CONTEXT_KEY path — the broker validates the URL against the D1 image
+// index, downloads it SSRF-guarded with the site-sync type/size gates, and stores it via this
+// worker's own /api/media). Idempotent: an already-imported image returns its existing library
+// URL. Backs POST /api/site-image-import. CONTEXT_KEY never leaves this worker.
+export async function importSiteImage(env, slug, imageUrl) {
+  if (!env || !env.CONTEXT_KEY) return { ok: false, reason: 'not_configured' };
+  if (!slug || !imageUrl) return { ok: false, reason: 'bad_request' };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  try {
+    const res = await fetch(`${base}/spool/assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
+      body: JSON.stringify({ slug, imageUrl }),
+      // Generous: the broker downloads up to 5MB then re-uploads to this worker inside this window.
+      signal: AbortSignal.timeout(30000),
+    });
+    const d = await res.json().catch(() => null);
+    if (res.status === 409) return { ok: false, reason: 'library_full', message: (d && d.message) || 'Library is full.' };
+    if (res.status === 404) return { ok: false, reason: 'unknown_image' };
+    if (res.status === 415) return { ok: false, reason: 'unsupported_type' };
+    if (res.status === 503) return { ok: false, reason: 'not_configured' };
+    if (!res.ok || !d || !d.ok || !d.asset || typeof d.asset.url !== 'string' || !d.asset.url) {
+      return { ok: false, status: res.status, reason: 'upstream_error' };
+    }
+    return { ok: true, url: d.asset.url, alreadySynced: !!d.alreadySynced };
   } catch (err) {
     return { ok: false, reason: err && err.name === 'TimeoutError' ? 'timeout' : 'network_error' };
   }

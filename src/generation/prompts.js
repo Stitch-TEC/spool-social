@@ -223,8 +223,31 @@ export function renderPomBrandPart(pomBrand) {
   return pomBrand ? `Brand palette to favor where appropriate: ${clean(pomBrand)}.` : '';
 }
 
+// Operator-authored SEO strategy from POM (the profile's optional `seoKit`: { targetKeywords[],
+// topics[], audience?, geo?, notes? }). Unlike the fetched context/activity this is OPERATOR
+// guidance — a directive like the brand-style line — but every field is re-capped defensively
+// (the broker caps on the wire; a doc authored any other way must not balloon the prompt).
+// Returns '' when empty/absent (old brokers, cheap tier, no kit authored).
+export function renderPomSeoLine(seoKit) {
+  const k = seoKit && typeof seoKit === 'object' ? seoKit : null;
+  if (!k) return '';
+  const kws = (Array.isArray(k.targetKeywords) ? k.targetKeywords : []).map((s) => clean(s).slice(0, 80)).filter(Boolean).slice(0, 20);
+  const topics = (Array.isArray(k.topics) ? k.topics : []).map((s) => clean(s).slice(0, 120)).filter(Boolean).slice(0, 12);
+  const audience = typeof k.audience === 'string' ? clean(k.audience).slice(0, 300) : '';
+  const geo = typeof k.geo === 'string' ? clean(k.geo).slice(0, 120) : '';
+  const notes = typeof k.notes === 'string' ? clean(k.notes).slice(0, 1000) : '';
+  const parts = [];
+  if (kws.length) parts.push(`work these target keywords in where natural (never stuffed): ${kws.join(', ')}`);
+  if (topics.length) parts.push(`priority topics: ${topics.join('; ')}`);
+  if (audience) parts.push(`audience: ${audience}`);
+  if (geo) parts.push(`geographic focus: ${geo}`);
+  if (notes) parts.push(`notes: ${notes}`);
+  if (!parts.length) return '';
+  return `\nSEO guidance for this client — ${parts.join('. ')}.`;
+}
+
 // System instruction + token budget for a text generation.
-export function buildTextContext({ platform, tone, length, clientName, clientSettings, pomContext, pomAssets, pomRecent, pomBrandKit, pomPage } = {}) {
+export function buildTextContext({ platform, tone, length, clientName, clientSettings, pomContext, pomAssets, pomRecent, pomBrandKit, pomPage, pomSeo } = {}) {
   const p = PLATFORM_META[platform] || PLATFORM_META.gmb;
   const guidance = PLATFORM_AI_GUIDANCE[p.id] || PLATFORM_AI_GUIDANCE.gmb;
   const toneDef = TONE_PRESETS.find(t => t.id === tone);
@@ -255,6 +278,10 @@ export function buildTextContext({ platform, tone, length, clientName, clientSet
   // are reference-only data).
   const pomBrandStyleLine = renderPomBrandStyleLine(pomBrandKit);
   if (pomBrandStyleLine) lines.push(pomBrandStyleLine);
+  // SEO guidance is a DIRECTIVE (operator-authored, like the brand-style line) — it sits with the
+  // instruction lines above the untrusted-data block.
+  const pomSeoLine = renderPomSeoLine(pomSeo);
+  if (pomSeoLine) lines.push(pomSeoLine);
   const pomContextLine = renderPomContextLine(pomContext);
   if (pomContextLine) lines.push(pomContextLine);
   const pomRecentLine = renderPomRecentLine(pomRecent);

@@ -205,6 +205,8 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
         // Structured brand theme + auto-refreshed recent-activity digest (same seam, newer fields —
         // absent on old brokers, and the builder renders nothing for them: fail-open unchanged).
         pomRecent: profile?.recentActivity, pomBrandKit: profile?.brandKit,
+        // Operator-authored SEO strategy (seoKit) — a directive line, absent on old brokers.
+        pomSeo: profile?.seoKit,
         // The grounded page rides in as UNTRUSTED reference data (renderPomPageLine) — never
         // appended to promptSeed, which is capped and injection-defended separately.
         pomPage: groundedPage
