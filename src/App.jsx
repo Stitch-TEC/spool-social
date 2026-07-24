@@ -14,7 +14,7 @@ import {
 import { db } from './config/firebase';
 import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT } from './constants';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
-import { ensureHostedImage, pushToSender } from './utils/generationApi';
+import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
 import useToast from './hooks/useToast';
@@ -517,6 +517,29 @@ const App = () => {
       if (msg.includes('no_tenant_for_slug')) showToast('This client doesn’t have a Sender workspace yet', 'error');
       else if (msg.includes('empty_content')) showToast('Nothing email-safe survived conversion — check the post content', 'error');
       else showToast(msg || 'Push to Sender failed', 'error');
+    }
+  }, [isReadOnly, isOperator, showToast]);
+
+  // Stage an APPROVED blog draft for site publication (the deterministic publish lane). Nothing
+  // goes live from here: the broker writes a spine ticket + a sha-pinned publish object, the
+  // operator dispatches it from POM (agent PR), and a human merges. Idempotent — re-clicking the
+  // unchanged draft replays the existing ticket.
+  const handlePublishToSite = useCallback(async (post) => {
+    if (isReadOnly || !isOperator) return;
+    showToast('Staging for site publication…');
+    try {
+      const out = await publishToSite(post.id);
+      showToast(out.alreadyStaged
+        ? `Already staged — dispatch ticket ${out.ticketId} from POM to open the PR`
+        : `Staged as ticket ${out.ticketId} → ${out.path}. Dispatch it from POM to open the PR.`);
+    } catch (err) {
+      const msg = String(err?.message || '');
+      if (msg.includes('repo_required')) showToast('This client has several repos — publish from POM where you can pick one, or set a single repo', 'error');
+      else if (msg.includes('no_repo_linked')) showToast('This client has no GitHub repo linked in POM yet', 'error');
+      else if (msg.includes('content_too_many_lines')) showToast(msg, 'error');
+      else if (msg.includes('invalid_path')) showToast('The generated file path was refused — rename the post (avoid special characters) and retry', 'error');
+      else if (msg.includes('approved')) showToast(msg, 'error');
+      else showToast(msg || 'Could not stage the publish', 'error');
     }
   }, [isReadOnly, isOperator, showToast]);
 
@@ -1277,6 +1300,7 @@ const App = () => {
                     onPromoteSuggestion={isOperator ? handlePromoteSuggestion : undefined}
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
                     onPushToSender={isOperator ? handlePushToSender : undefined}
+                    onPublishToSite={isOperator ? handlePublishToSite : undefined}
                     isSuggestionLane={filterStatus === 'suggestions'}
                     /* Operators see machine-provenance badges (Auto/Suggested + source page);
                        clients & guests never do — matches the caution on machine-derived labels. */

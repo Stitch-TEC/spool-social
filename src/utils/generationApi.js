@@ -185,6 +185,17 @@ export async function pushToSender(postId) {
   return postJSON('/api/sender-template', { postId });
 }
 
+/**
+ * Stage an APPROVED blog draft for publication to the client's site (the deterministic publish
+ * lane): worker → broker → spine ticket + server-side publish object. Resolves to
+ * { ticketId, repo, path, alreadyStaged? }. The operator dispatches the ticket from POM (PR) and
+ * merges — two human gates; nothing goes live from this call. Throws the server's honest error
+ * ('repo_required', 'invalid_path', 'content_too_many_lines', …).
+ */
+export async function publishToSite(postId, opts = {}) {
+  return postJSON('/api/publish-to-site', { postId, ...opts });
+}
+
 /** Delete a media item by its R2 key. */
 export async function deleteMedia(key) {
   const res = await fetch(`${API_BASE}/api/media/${encodeURIComponent(key)}`, { method: 'DELETE', headers: await authHeaders() });

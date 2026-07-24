@@ -20,6 +20,7 @@ const PostGrid = ({
   onPromoteSuggestion,
   onDismissSuggestion,
   onPushToSender,
+  onPublishToSite,
   isSuggestionLane = false,
   showProvenance = false,
   selectable = false,
@@ -70,6 +71,7 @@ const PostGrid = ({
           onPromoteSuggestion={onPromoteSuggestion}
           onDismissSuggestion={onDismissSuggestion}
           onPushToSender={onPushToSender}
+          onPublishToSite={onPublishToSite}
           showProvenance={showProvenance}
           selectable={selectable}
           selected={selectable && selectedIds?.has(p.id)}

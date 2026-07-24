@@ -15,7 +15,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite } from './suiteContext.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
 // Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
@@ -990,6 +990,116 @@ export default {
       } catch (err) {
         console.error('sender-template push failed:', err?.message || err);
         return json({ ok: false, error: 'sender_unreachable' }, 502, cors);
+      }
+    }
+
+    //   POST /api/publish-to-site  { postId, path?, repo? } → { ok, ticketId, repo, path }
+    // The DETERMINISTIC publish lane's Spool entry: stage an APPROVED blog draft for publication
+    // to the client's site repo. This worker only gates + composes (operator auth, approval
+    // check, roster slug, frontmatter); the broker validates the target, pins the sha256, writes
+    // the spine ticket + server-side publish object. The operator then dispatches from POM and a
+    // human merges the PR — content bytes never touch a prompt anywhere in the lane.
+    if (url.pathname === '/api/publish-to-site') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      // Human super-admins only — publishing to a client's live site is an operator act.
+      if (auth.mode !== 'firebase') return json({ error: 'Sign in as an operator' }, 403, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      const caller = await resolveShareCaller(auth, env);
+      if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+      const postId = String(body?.postId || '').trim();
+      if (!postId) return json({ error: 'postId is required' }, 400, cors);
+      const post = await getPost(env, postId);
+      if (!post) return json({ error: 'Post not found' }, 404, cors);
+      if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
+      // STRICTER than the Sender push, deliberately: site publication is the client's public
+      // voice — only content that finished the review loop may stage.
+      if (post.approvalStatus !== 'approved') {
+        return json({ error: 'Only approved drafts can be published to the site — get the draft approved first' }, 409, cors);
+      }
+      // v1 scope: long-form blog drafts (a social caption isn't a site page).
+      if (post.platform !== 'blog') return json({ error: 'Only blog drafts can be published to the site (v1)' }, 400, cors);
+      const md = String(post.content || '').trim();
+      if (!md) return json({ error: 'Post has no content' }, 400, cors);
+
+      // Resolve the ROSTER slug — never slugify a display name (the documented phantom-slug bug).
+      const roster = await fetchClientRoster(env);
+      const bySlug = roster.find((c) => c.slug === (post.clientId || ''));
+      const byName = roster.find((c) => (c.name || '').toLowerCase() === (post.client || '').toLowerCase());
+      const slug = (bySlug || byName)?.slug || '';
+      if (!slug) {
+        if (roster.length) return json({ error: 'This post’s client isn’t on the suite roster' }, 404, cors);
+        return env.CONTEXT_KEY
+          ? json({ error: 'Roster temporarily unavailable — try again in a moment' }, 503, cors)
+          : json({ error: 'CONTEXT_KEY seam not configured' }, 503, cors);
+      }
+
+      const title = (post.title || md.split('\n')[0].replace(/^#+\s*/, '')).trim().slice(0, 200) || 'Untitled post';
+      // Target path: caller-supplied wins (re-publish / operator override); else derive the
+      // content-collection DIRECTORY + EXTENSION from the durable content index — repo-sourced
+      // rows carry the repo file path of every existing post, so a new post lands where the
+      // site's build actually reads (e.g. lyf-fit = content/posts/*.mdx, not a guessed
+      // content/blog/*.md). Fail-open to the generic default when the index has no repo rows.
+      const postSlug = String(post.slug || '').trim()
+        || title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
+        || `post-${postId.slice(0, 8).toLowerCase()}`;
+      let path = String(body?.path || '').trim();
+      if (!path) {
+        let dir = 'content/blog';
+        let ext = '.md';
+        try {
+          const idx = await fetchContentIndex(env, slug);
+          if (idx.ok) {
+            // Most common directory among repo-sourced content files (the site's real collection).
+            const dirs = new Map();
+            for (const p of idx.pages) {
+              if (p.source !== 'repo') continue;
+              const rp = String(p.path || '');
+              const m = rp.match(/^(.*content\/[^/]+)\/[^/]+\.(md|mdx)$/i);
+              if (!m) continue;
+              const key = `${m[1]}|.${m[2].toLowerCase()}`;
+              dirs.set(key, (dirs.get(key) || 0) + 1);
+            }
+            const top = [...dirs.entries()].sort((a, b) => b[1] - a[1])[0];
+            if (top) [dir, ext] = top[0].split('|');
+          }
+        } catch {
+          // index unavailable — the generic default still opens a reviewable PR
+        }
+        path = `${dir}/${postSlug}${ext}`;
+      }
+      // Frontmatter: only when the draft doesn't already carry its own.
+      const yq = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const content = md.startsWith('---\n')
+        ? md
+        : [
+            '---',
+            `title: "${yq(title)}"`,
+            ...(post.metaDescription ? [`description: "${yq(String(post.metaDescription).slice(0, 200))}"`] : []),
+            `date: "${new Date().toISOString().slice(0, 10)}"`,
+            '---',
+            '',
+            md,
+          ].join('\n');
+
+      try {
+        const out = await publishDraftToSite(env, {
+          slug,
+          repo: String(body?.repo || '').trim().toLowerCase() || undefined,
+          path,
+          title,
+          content,
+          spoolPostId: postId,
+        });
+        return json(out.body, out.status, cors);
+      } catch (err) {
+        console.error('publish-to-site failed:', err?.message || err);
+        return json({ ok: false, error: 'broker_unreachable' }, 502, cors);
       }
     }
 
