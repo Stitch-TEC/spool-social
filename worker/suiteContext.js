@@ -172,6 +172,10 @@ export async function fetchContentIndex(env, slug, includeImages = false) {
             ogImage: typeof p.ogImage === 'string' ? p.ogImage : '',
             publishedAt: typeof p.publishedAt === 'string' ? p.publishedAt : '',
             lastCrawled: typeof p.lastCrawled === 'string' ? p.lastCrawled : '',
+            // Repo provenance — the publish route derives the site's REAL content directory from
+            // these (dropping them here dead-coded that derivation; review fix 2026-07-23).
+            repo: typeof p.repo === 'string' ? p.repo : '',
+            path: typeof p.path === 'string' ? p.path : '',
           }))
         : [],
       images: Array.isArray(d.images)
@@ -309,6 +313,24 @@ export async function pushSenderTemplate(env, { slug, name, html, preheader, spo
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
     body: JSON.stringify({ slug, name, html, preheader, spoolPostId }),
     signal: AbortSignal.timeout(15000), // broker adds its own 10s Sender timeout inside this
+  });
+  const body = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
+  return { status: res.status, body };
+}
+
+// Stage an APPROVED Spool draft for site publication (broker POST /spool/publish-draft — the
+// deterministic publish lane's entry). The broker validates target repo/path, pins the content
+// sha256, writes the spine ticket + the server-side publish object; the operator then dispatches
+// from POM (human gate #1) and merges the PR (human gate #2). Returns { status, body } passthrough
+// so the route surfaces the broker's honest, typed outcomes (repo_required carries the repo list).
+export async function publishDraftToSite(env, { slug, repo, path, title, content, spoolPostId }) {
+  if (!env || !env.CONTEXT_KEY) return { status: 503, body: { ok: false, error: 'not_configured' } };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  const res = await fetch(`${base}/spool/publish-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
+    body: JSON.stringify({ slug, ...(repo ? { repo } : {}), path, title, content, spoolPostId }),
+    signal: AbortSignal.timeout(15000),
   });
   const body = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
   return { status: res.status, body };
