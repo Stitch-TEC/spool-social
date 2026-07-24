@@ -1024,7 +1024,9 @@ export default {
       }
       // v1 scope: long-form blog drafts (a social caption isn't a site page).
       if (post.platform !== 'blog') return json({ error: 'Only blog drafts can be published to the site (v1)' }, 400, cors);
-      const md = String(post.content || '').trim();
+      // Normalize line endings FIRST: keeps the frontmatter detection below honest for CRLF
+      // content and makes the sha the broker pins independent of paste/import line-ending luck.
+      const md = String(post.content || '').replace(/\r\n?/g, '\n').trim();
       if (!md) return json({ error: 'Post has no content' }, 400, cors);
 
       // Resolve the ROSTER slug — never slugify a display name (the documented phantom-slug bug).
@@ -1073,8 +1075,10 @@ export default {
         }
         path = `${dir}/${postSlug}${ext}`;
       }
-      // Frontmatter: only when the draft doesn't already carry its own.
-      const yq = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // Frontmatter: only when the draft doesn't already carry its own. yq additionally collapses
+      // newlines — a raw newline inside a double-quoted YAML scalar is invalid and would fail the
+      // client site's build (review fix 2026-07-23).
+      const yq = (s) => String(s).replace(/[\r\n]+/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const content = md.startsWith('---\n')
         ? md
         : [

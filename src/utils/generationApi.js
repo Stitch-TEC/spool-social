@@ -193,7 +193,21 @@ export async function pushToSender(postId) {
  * ('repo_required', 'invalid_path', 'content_too_many_lines', …).
  */
 export async function publishToSite(postId, opts = {}) {
-  return postJSON('/api/publish-to-site', { postId, ...opts });
+  // Inline fetch (not postJSON): the broker's refusals carry an actionable `message` (line counts,
+  // path advice) and `repos` (the multi-repo pick list) that the generic error path would drop.
+  const res = await fetch(`${API_BASE}/api/publish-to-site`, {
+    method: 'POST',
+    headers: await authHeaders(),
+    body: JSON.stringify({ postId, ...opts }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    const err = new Error(data.message || data.error || `Request failed (${res.status})`);
+    err.code = data.error || '';
+    if (Array.isArray(data.repos)) err.repos = data.repos;
+    throw err;
+  }
+  return data;
 }
 
 /** Delete a media item by its R2 key. */

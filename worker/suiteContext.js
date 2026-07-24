@@ -172,6 +172,10 @@ export async function fetchContentIndex(env, slug, includeImages = false) {
             ogImage: typeof p.ogImage === 'string' ? p.ogImage : '',
             publishedAt: typeof p.publishedAt === 'string' ? p.publishedAt : '',
             lastCrawled: typeof p.lastCrawled === 'string' ? p.lastCrawled : '',
+            // Repo provenance — the publish route derives the site's REAL content directory from
+            // these (dropping them here dead-coded that derivation; review fix 2026-07-23).
+            repo: typeof p.repo === 'string' ? p.repo : '',
+            path: typeof p.path === 'string' ? p.path : '',
           }))
         : [],
       images: Array.isArray(d.images)

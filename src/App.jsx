@@ -524,21 +524,31 @@ const App = () => {
   // goes live from here: the broker writes a spine ticket + a sha-pinned publish object, the
   // operator dispatches it from POM (agent PR), and a human merges. Idempotent — re-clicking the
   // unchanged draft replays the existing ticket.
-  const handlePublishToSite = useCallback(async (post) => {
+  const handlePublishToSite = useCallback(async (post, repoOverride) => {
     if (isReadOnly || !isOperator) return;
     showToast('Staging for site publication…');
     try {
-      const out = await publishToSite(post.id);
+      const out = await publishToSite(post.id, repoOverride ? { repo: repoOverride } : {});
       showToast(out.alreadyStaged
         ? `Already staged — dispatch ticket ${out.ticketId} from POM to open the PR`
         : `Staged as ticket ${out.ticketId} → ${out.path}. Dispatch it from POM to open the PR.`);
     } catch (err) {
+      const code = String(err?.code || '');
       const msg = String(err?.message || '');
-      if (msg.includes('repo_required')) showToast('This client has several repos — publish from POM where you can pick one, or set a single repo', 'error');
-      else if (msg.includes('no_repo_linked')) showToast('This client has no GitHub repo linked in POM yet', 'error');
-      else if (msg.includes('content_too_many_lines')) showToast(msg, 'error');
-      else if (msg.includes('invalid_path')) showToast('The generated file path was refused — rename the post (avoid special characters) and retry', 'error');
-      else if (msg.includes('approved')) showToast(msg, 'error');
+      if (code === 'repo_required' && Array.isArray(err.repos) && err.repos.length) {
+        // Multi-repo client: one native prompt beats a dead end (house dialogs are a POM
+        // convention; Spool has no dialog system yet).
+        const pick = window.prompt(`This client has several linked repos — publish to which?\n\n${err.repos.join('\n')}`, err.repos[0]);
+        const chosen = (pick || '').trim().toLowerCase();
+        if (chosen && err.repos.includes(chosen)) {
+          handlePublishToSite(post, chosen);
+        } else if (pick !== null) {
+          showToast('That isn’t one of the linked repos — publish cancelled', 'error');
+        }
+        return;
+      }
+      if (code === 'no_repo_linked') showToast('This client has no GitHub repo linked in POM yet', 'error');
+      else if (code === 'invalid_path') showToast('The file path was refused — rename the post (avoid special characters and the word “auth”) and retry', 'error');
       else showToast(msg || 'Could not stage the publish', 'error');
     }
   }, [isReadOnly, isOperator, showToast]);
