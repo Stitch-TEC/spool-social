@@ -42,7 +42,7 @@
     "tailwindcss": "^4.1.18",
     "vite": "^7.2.4",
     "vitest": "^4.1.7",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.114.0"
   },
   "overrides": {
     "esbuild": "^0.28.1"
