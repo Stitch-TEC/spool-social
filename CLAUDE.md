@@ -35,18 +35,27 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 
 ## Gotchas that bite
 - **Node 25 here** → prefix wrangler: `NODE_OPTIONS=--dns-result-order=ipv4first wrangler ...`
-- This env's main shell **cannot reach api.cloudflare.com** — run `wrangler dev/deploy` via a
-  subagent or your own terminal, not the main shell.
+- ~~This env's main shell cannot reach api.cloudflare.com~~ — **FALSE (corrected 2026-07-14):**
+  with the `NODE_OPTIONS` prefix, wrangler works from the main shell. Verify prod state directly.
 - `wrangler deploy` ships the **working tree** but does NOT commit — commit source alongside deploys.
 - AI **fails OPEN**: if any gateway call fails (or `STITCH_AI_KEY` is absent) Spool falls back to
-  direct Gemini; multimodal (image-in) always goes direct. Instant revert = `wrangler secret delete STITCH_AI_KEY`.
+  direct Gemini; **image-INPUT text generation always goes direct (UNMETERED — the suite's one live
+  meter hole; image *generation* is gatewayed and honors the 429)**. Instant revert =
+  `wrangler secret delete STITCH_AI_KEY` — but note that revert routes EVERYTHING through unmetered Gemini.
 - Auth **fails CLOSED**: anonymous/guest tokens are always rejected for generation + drafts.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
 
 ## Suite invariants (load-bearing here)
-- Client **SLUG is the universal join key**. ONE canonical roster: authored in
-  `feedback-worker/src/clients.seed.json`, served by feedback-worker `GET /clients`. Spool PULLS it
-  (`src/lib/clientsClient.js`) — do NOT mirror or fork the roster.
+- Client **SLUG is the universal join key**. ONE canonical roster: **the LIVE roster is the
+  Firestore `clients` collection** (the seed JSON is bootstrap/DR — corrected 2026-07-14), served
+  by feedback-worker `GET /clients`. Consumers here: the SPA's `src/lib/clientsClient.js`
+  (AdminPanel picker) and — load-bearing since 2026-07-29 — the worker's `fetchClientRoster`
+  (`worker/suiteContext.js`), which **roster-repairs the clientId on 8 routes** (generate/text/
+  ideas/page/content-index/site-image-import/automations; the publish lane hard-fails off-roster).
+  ⚠️ Known residual hole: the SPA still mints + stamps display-name slugs (`App.jsx:117-119`,
+  `:245`) and the repair only catches name-slug equality — a drifted display name still creates a
+  phantom slug (and the `aiQuota` 429 then never fires). Do NOT add new client-id resolution
+  paths that skip the roster.
 - ONE shared AI gateway (`ai.stitchtec.dev`, Claude-first, per-app key). Tier via `SPOOL_AI_TIER`.
 - **POM context/brand/ideas seam** (all server-side via `CONTEXT_KEY` → feedback-worker; the key
   never reaches the browser): generation injects the client profile (aiContext, structured
@@ -57,6 +66,13 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   as untrusted data by the `renderPom*` helpers in `src/generation/prompts.js` — keep that framing.
 - Firestore is multi-tenant by `clientId`; rules enforce per-client isolation server-side. Keep DB
   changes ADDITIVE. RBAC / client-teammate logins are built but gated — see `RBAC_DEPLOY_RUNBOOK.md`.
+- **Shipped lanes not listed above (added 2026-07-29):** the **publish lane** (#80 —
+  `/api/publish-to-site`, operator-only, approved blog drafts → broker `/spool/publish-draft` →
+  exact-bytes agent PR); **content-index consumption** (#79 — `/api/content-index`,
+  `/api/site-image-import`, `/api/page`, seoKit in prompts, MediaPicker "Client site" section);
+  the **suggestion/auto-draft lane** (`source:'suggestion'` + `forClientId` tenant-key semantics in
+  `App.jsx:252-260` — load-bearing, don't break); **brainstorm/SparkDeck** (#76); the attention
+  seam (`/api/drafts?summary=1`); **push-to-Sender** (`/api/sender-template`).
 
 ## File map
 - `src/main.jsx` `App.jsx` — SPA entry + root.
@@ -75,6 +91,6 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 
 ## Deeper context
 - This repo: `README.md`, `WALKTHROUGH.md`, `SPOOL_DRAFTS_API.md`, `SHARE_LINKS.md`,
-  `RBAC_DEPLOY_RUNBOOK.md` / `RBAC_REFACTOR_BRIEF.md`, `CLOUDFLARE_MIGRATION.md`, `SUITE-TASKS.md`.
+  `RBAC_DEPLOY_RUNBOOK.md` / `RBAC_REFACTOR_BRIEF.md`, `CLOUDFLARE_MIGRATION.md`.
 - Suite canon (at suite root): `SUITE-STATUS.md` (read first), `SUITE-ARCHITECTURE.md`,
   `AI-GATEWAY.md`, `STITCH-BRAND.md`, `IDENTITY-ACCESS-ROADMAP.md`, `STITCH-SUITE-ROADMAP.md`.
