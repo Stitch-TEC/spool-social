@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { OPERATOR_UID } from '../config/roles';
 
 /**
  * Real-time posts + client-branding subscriptions for a workspace.
@@ -12,13 +13,19 @@ import { db } from '../config/firebase';
  * Queries MUST filter so the rule resolves against the result set — the
  * immutable clientId is the scope key (never the free-text client name).
  */
-export default function usePosts(user, sharedUid, clientId, shareClientId) {
+export default function usePosts(user, sharedUid, clientId, shareClientId, isOperator = false) {
   const [posts, setPosts] = useState([]);
   const [clientMap, setClientMap] = useState({});
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState(null);
 
-  const targetUid = sharedUid || user?.uid;
+  // The operator query pins to the CANONICAL owner uid, not the signer's. Every post in Spool is
+  // stamped `uid: OPERATOR_UID` by design (App.jsx — one attribution so the operator query and the
+  // per-client review token both resolve across multi-author content), and firestore.rules admits
+  // any isSuperAdmin() reader regardless of uid. Querying the signer's own uid therefore returned
+  // NOTHING for a second super_admin: a fully-authorized operator saw a completely empty workspace,
+  // with no error to explain it. Guests still use their share uid; members scope by clientId.
+  const targetUid = sharedUid || (isOperator ? OPERATOR_UID : user?.uid);
   const isGuest = !!sharedUid && sharedUid !== user?.uid;
   const isClientMember = !isGuest && !!clientId;
   // Guests AND client members scope by the immutable clientId (matching the
@@ -144,7 +151,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId) {
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
     return () => { unsubscribe(); clientUnsub(); };
-  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId, isGuest]);
+  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId, isGuest, isOperator]);
 
   // Loading = an active subscription that hasn't delivered its first snapshot.
   const isLoading = shouldSubscribe && !hasLoaded;

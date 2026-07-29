@@ -47,7 +47,7 @@ const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
   const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
   const isLoading = authLoading || postsLoading;
 
   const clientParam = useMemo(
@@ -984,6 +984,34 @@ const App = () => {
     if (!from || !to || from === to) return showToast("Pick a different target name", "error");
 
     const affected = postsRef.current.filter(p => p.client === from);
+    // RENAME and MERGE are different operations and must not share a tenant-key policy.
+    //
+    // A MERGE folds one client's threads into ANOTHER, existing client — re-stamping clientId to
+    // the target's is the whole point. A RENAME is a display-name change for the SAME client, and
+    // the tenant key must survive it untouched. Both used to run `clientIdFor(to)`, whose slugify
+    // fallback MINTS a fresh slug for a name it hasn't seen — the very phantom-slug hazard
+    // handleSavePost documents and guards against. So renaming "Lyf Fit" → "Lyf-Fit Studio"
+    // silently re-tenanted every thread: live review links (bound to the old clientId) went dead,
+    // client-member logins stopped matching their own posts, and the POM↔Spool join by slug broke.
+    //
+    // Computed BEFORE any write, since clientMap only refreshes on the next snapshot.
+    //
+    // "Does a client with this display name already exist?" must be asked of EVERY existing name,
+    // not just the ones that happen to carry a clientId. clientIdByName is built only from posts
+    // where `p.clientId` is truthy, so a target whose only content is parked suggestions (clientId
+    // is '' for those BY DESIGN) looked like a fresh name — the operator picked "Merge into Acme"
+    // in the UI and got a rename, silently stranding Acme's existing threads on a different tenant.
+    const targetExists =
+      Boolean(clientMap[to]) ||
+      Boolean(clientIdByName[to]) ||
+      postsRef.current.some((p) => p.client === to);
+    const isMerge = targetExists;
+    // The target's REAL tenant key, in the same precedence Editor.jsx uses. clientIdFor alone would
+    // fall through to slugifyClientId for a target that exists only as a branding doc, minting the
+    // phantom slug this whole change exists to prevent.
+    const targetClientId = clientIdByName[to] || clientMap[to]?.clientId || clientIdFor(to);
+    // The SOURCE's tenant key — what a pure rename must preserve.
+    const sourceClientId = clientIdByName[from] || clientMap[from]?.clientId || '';
     try {
       const now = new Date().toISOString();
       const CHUNK = 450;
@@ -993,9 +1021,13 @@ const App = () => {
         // whose tenant key must STAY '' (stamping clientId would silently promote them).
         // They follow the rename via display name + a re-derived forClientId instead.
         affected.slice(i, i + CHUNK).forEach(p => batch.update(doc(db, 'posts', p.id),
-          p.source === 'suggestion'
-            ? { client: to, forClientId: clientIdFor(to) || '', updatedAt: now }
-            : { client: to, clientId: clientIdFor(to), updatedAt: now }));
+          isMerge
+            ? (p.source === 'suggestion'
+              ? { client: to, forClientId: targetClientId || '', updatedAt: now }
+              : { client: to, clientId: targetClientId, updatedAt: now })
+            // Pure rename: display name ONLY. Leaving clientId/forClientId alone keeps every
+            // thread on the tenant it already belongs to — which is what a rename means.
+            : { client: to, updatedAt: now }));
         await batch.commit();
       }
 
@@ -1003,21 +1035,27 @@ const App = () => {
       const srcSettings = clientMap[from];
       if (srcSettings) {
         if (!clientMap[to]) {
-          await setDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(to)}`), {
-            ...srcSettings, uid: user.uid, name: to, clientId: clientIdFor(to)
+          await setDoc(doc(db, 'clients', `${OPERATOR_UID}__${encodeURIComponent(to)}`), {
+            // Carry the SOURCE's tenant key across a rename; only a real merge adopts the target's.
+            // The rename fallback chain resolves from the SOURCE — falling back to the target name
+            // would slugify a name no post carries and mint exactly the phantom slug this avoids,
+            // leaving the branding doc pointing at a tenant none of its own posts belong to.
+            ...srcSettings,
+            uid: OPERATOR_UID,
+            name: to,
+            clientId: isMerge ? targetClientId : (srcSettings.clientId || sourceClientId || clientIdFor(from))
           }, { merge: true });
         }
-        await deleteDoc(doc(db, 'clients', `${user.uid}__${encodeURIComponent(from)}`)).catch(() => {});
+        await deleteDoc(doc(db, 'clients', `${OPERATOR_UID}__${encodeURIComponent(from)}`)).catch(() => {});
       }
 
-      const wasMerge = !!clientMap[to];
       if (filterClient === from) setFilterClient(to);
-      showToast(`${wasMerge ? 'Merged' : 'Renamed'} "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`);
+      showToast(`${isMerge ? 'Merged' : 'Renamed'} "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`);
     } catch (err) {
       console.error("Merge client error:", err);
       showToast("Couldn't rename/merge client", "error");
     }
-  }, [isReadOnly, user, isOperator, clientMap, filterClient, showToast, clientIdFor]);
+  }, [isReadOnly, user, isOperator, clientMap, clientIdByName, filterClient, showToast, clientIdFor]);
 
   // --- Render ---
 
@@ -1367,7 +1405,7 @@ const App = () => {
         />
       )}
       {isClientSettingsOpen && isOperator && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} clientIdFor={clientIdFor} />
+        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={isOperator ? OPERATOR_UID : user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} clientIdFor={clientIdFor} />
       )}
       {isShareOpen && !isReadOnly && (
         <ShareManager

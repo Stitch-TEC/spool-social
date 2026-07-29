@@ -695,9 +695,25 @@ export default {
       // (it's contextual attribution, not auth — the gateway meters 'unattributed' when absent).
       // A client MEMBER is tenant-pinned: their generations always meter (and pull POM
       // context/brand for) their OWN client, never a body-supplied one.
-      const genClientId = genCaller && !genCaller.isOperator
+      let genClientId = genCaller && !genCaller.isOperator
         ? (slugifyClient(genCaller.clientId) || undefined)
         : ((body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) || undefined);
+
+      // Canonicalize against the ROSTER — the same repair /api/ideas does (see the comment there),
+      // and for the same reason: the Editor's client field is free text, so a drifted display name
+      // produces a slug the roster never issued. Un-repaired, that phantom slug costs twice on the
+      // path that matters most — fetchClientProfile 404s so generation silently runs with NO client
+      // context, AND the gateway meters usage against a slug that has no aiQuota row, so the 429
+      // never fires for exactly those clients (the suite's documented roster violation). Operator /
+      // internal callers only; a client member is already tenant-pinned. Fail-open: an unreachable
+      // roster keeps the requested value.
+      if (genClientId && (!genCaller || genCaller.isOperator)) {
+        const roster = await fetchClientRoster(env);
+        if (roster.length && !roster.some((c) => c.slug === genClientId)) {
+          const byName = roster.find((c) => slugifyClient(c.name) === genClientId);
+          if (byName) genClientId = byName.slug;
+        }
+      }
 
       // POM per-client context + brand + asset manifest (the cross-app seam) — the SAME injection
       // the automation path does, now for interactive generation. The SPA builds the base
