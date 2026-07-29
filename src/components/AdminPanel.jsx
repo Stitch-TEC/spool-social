@@ -4,7 +4,6 @@ import { X, UserPlus, Trash2, Loader2, ShieldCheck, Check, AlertTriangle } from 
 import { db } from '../config/firebase';
 import { ROLES, slugifyClientId } from '../config/roles';
 import useEscapeKey from '../hooks/useEscapeKey';
-import { useClients } from '../hooks/useClients';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const NEW_CLIENT = '__NEW__'; // sentinel picker value: grant an unlinked client (not yet in POM)
@@ -21,7 +20,7 @@ const ROLE_LABELS = {
  * Guards: a user can never edit/revoke their OWN doc here (rules also forbid it),
  * and clientId is required for client / client_admin roles.
  */
-const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
+const AdminPanel = ({ onClose, currentEmail = '', showToast, clients = [], clientsLoading = false }) => {
   useEscapeKey(onClose);
   const myEmail = (currentEmail || '').toLowerCase();
 
@@ -37,8 +36,8 @@ const AdminPanel = ({ onClose, currentEmail = '', showToast }) => {
   const [error, setError] = useState(null);
 
   // Canonical client roster from POM (source of truth) — drives the picker so a granted clientId is
-  // always a real POM slug. Degrades to free-text entry if the roster is empty/unavailable (seam down).
-  const { clients, loading: clientsLoading } = useClients();
+  // always a real POM slug. Passed down from App's single useClients instance (it also feeds the
+  // clientIdFor ladder). Degrades to free-text entry if the roster is empty/unavailable (seam down).
   const hasRoster = clients.length > 0;
 
   // Infer the intended client from the user's email DOMAIN (each POM client carries its domains[]).

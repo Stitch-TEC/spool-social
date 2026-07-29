@@ -35,6 +35,7 @@ import MediaLibrary from './components/MediaLibrary';
 import ImportExportModal from './components/ImportExportModal';
 import PostControls from './components/PostControls';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
+import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import ShareManager from './components/ShareManager';
 import AdminPanel from './components/AdminPanel';
@@ -43,12 +44,22 @@ import { OPERATOR_UID, slugifyClientId } from './config/roles';
 
 const Editor = lazy(() => import('./components/Editor'));
 
+// Case/whitespace-insensitive key for roster display-name lookups (rename drift is usually
+// casing/spacing: "OMNI  nde" must still find "OMNI NDE"'s canonical slug).
+const normClientName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
   const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
   const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
   const isLoading = authLoading || postsLoading;
+
+  // Canonical POM roster — the ONE fetch (see useClients). Operator-gated: the Worker's
+  // /api/clients 403s anyone else, and a client member's writes are pinned to myClientId anyway,
+  // so for them the roster stays empty and every consumer fails open to legacy behavior.
+  // Feeds the clientIdFor ladder below AND AdminPanel's picker (via props).
+  const { clients: rosterClients, loading: rosterLoading } = useClients(isOperator);
 
   const clientParam = useMemo(
     () => new URLSearchParams(window.location.search).get('client'),
@@ -114,9 +125,29 @@ const App = () => {
     }
     return m;
   }, [clientIdPairsHash]);
+  // Roster display-name → slug map (normalized keys). Empty whenever the roster is
+  // unavailable (client member, fetch failed, not loaded yet) — the ladder below then
+  // degrades to exactly the pre-roster behavior, so drafting never blocks on the roster.
+  const rosterSlugByName = useMemo(() => {
+    const m = new Map();
+    for (const c of rosterClients) {
+      const key = normClientName(c?.name);
+      if (key && c?.slug && !m.has(key)) m.set(key, c.slug);
+    }
+    return m;
+  }, [rosterClients]);
+
+  // Canonical clientId resolution ladder (roster-aware, fail-open):
+  //   1. stamped posts-derived map — a name already seen on posts keeps its exact stamped id;
+  //   2. ROSTER match by normalized display name — a first-time/drifted display name resolves
+  //      to the client's canonical suite slug instead of minting a phantom (the old bug: the
+  //      phantom stuck and the aiQuota 429 never fired for that client);
+  //   3. slugifyClientId(name) — when this equals a roster slug it IS the roster match by slug
+  //      equality (same string either way); otherwise it's the LAST-resort legacy mint, kept so
+  //      resolution never blocks when the roster is empty/unavailable.
   const clientIdFor = useCallback(
-    (name) => clientIdByName[name] || slugifyClientId(name),
-    [clientIdByName]
+    (name) => clientIdByName[name] || rosterSlugByName.get(normClientName(name)) || slugifyClientId(name),
+    [clientIdByName, rosterSlugByName]
   );
 
   // For a client member: their single client's display name (branding doc, else
@@ -1116,6 +1147,9 @@ const App = () => {
             clientMap={clientMap}
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
             clientIdByName={isOperator ? clientIdByName : (myClientName ? { [myClientName]: myClientId } : {})}
+            /* Roster-aware resolver for genClientId's tail (same role-scoped pinning as
+               MediaLibrary): a member's own name resolves straight to their pinned id. */
+            clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
             showToast={showToast}
             onSave={handleSavePost}
             onCreateDrafts={handleCreateDrafts}
@@ -1435,6 +1469,9 @@ const App = () => {
           onClose={() => setIsAdminOpen(false)}
           currentEmail={user?.email || ''}
           showToast={showToast}
+          /* The App-level roster (single fetch — see useClients) drives the picker. */
+          clients={rosterClients}
+          clientsLoading={rosterLoading}
         />
       )}
       {isAutomationsOpen && isOperator && (
