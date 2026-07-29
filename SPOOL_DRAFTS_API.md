@@ -53,7 +53,7 @@ to have Spool generate one, or `image.url` to reference a hosted image.
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/drafts` | List drafts. Filters: `?client=` `?platform=` `?status=`. Returns `{drafts:[…],count}` with all fields incl. `scheduledDate`. |
+| `GET /api/drafts` | List drafts. Filters: `?clientId=` (canonical slug — preferred; when present the name filter is ignored) `?client=` (display name, legacy) `?platform=` `?status=`. Returns `{drafts:[…],count}` with all fields incl. `scheduledDate`. |
 | `GET /api/drafts/{id}` | Fetch one draft. |
 | `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Only the fields you send change. |
 | `DELETE /api/drafts/{id}` | Delete a draft. |

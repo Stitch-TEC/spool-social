@@ -1123,7 +1123,7 @@ export default {
       }
     }
 
-    //   GET    /api/drafts       list (filters: ?client= &platform= &status=)
+    //   GET    /api/drafts       list (filters: ?clientId= [slug, preferred] &client= [name, legacy] &platform= &status=)
     //   GET    /api/drafts/:id    fetch one
     //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags, approvalStatus+feedback)
     //   DELETE /api/drafts/:id    delete
@@ -1238,13 +1238,21 @@ export default {
         }
         try {
           let drafts = await listPosts(env, env.OWNER_UID);
-          // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: POM's
-          // Content card joins this list by display name (which suggestions carry), so without
-          // this filter a not-yet-promoted option would surface on a client's dashboard.
+          // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: legacy
+          // name-keyed callers join this list by display name (which suggestions carry), so
+          // without this filter a not-yet-promoted option would surface on a client's dashboard.
+          // (Slug-keyed callers are safe either way — a suggestion's clientId is '' by design.)
           drafts = drafts.filter(d => !d.isTemplate && d.source !== 'suggestion');
           const q = url.searchParams;
-          const fc = q.get('client'), fp = q.get('platform'), fst = q.get('status');
-          if (fc) drafts = drafts.filter(d => d.client === fc);
+          const fc = q.get('client'), fcid = (q.get('clientId') || '').trim(), fp = q.get('platform'), fst = q.get('status');
+          // Slug-keyed join (2026-07-29): a caller that knows the immutable suite slug sends
+          // ?clientId= and we filter on the stamped d.clientId, IGNORING the mutable display-name
+          // param entirely — a roster rename can no longer empty the POM Content card's join.
+          // The ?client= name filter stays for legacy callers that only send the name (and a
+          // dual-param caller hitting an older deploy of this worker gets the name filter = the
+          // status quo, so the protocol is safe in both interim deploy states).
+          if (fcid) drafts = drafts.filter(d => d.clientId === fcid);
+          else if (fc) drafts = drafts.filter(d => d.client === fc);
           if (fp) drafts = drafts.filter(d => d.platform === fp);
           if (fst) drafts = drafts.filter(d => d.status === fst);
           drafts.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -1272,9 +1280,20 @@ export default {
         // do); otherwise resolve it from existing posts for the same display name. Display NAME is
         // mutable + not guaranteed unique, so the slug is what cross-app guards key on — a draft
         // without it falls back to name matching (legacy behavior).
-        const clientId =
+        let clientId =
           (body?.clientId || '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64) ||
           (await resolveClientId(env, client)) || '';
+        // CANONICALIZE against the roster (same repair as the automations route above): both the
+        // caller-supplied id and the posts-derived resolution are self-referential, so a drifted or
+        // first-time display name mints a phantom slug (or no slug at all) the roster never issued —
+        // and an unstamped/phantom draft is invisible to the slug-keyed GET ?clientId= filter, i.e.
+        // it silently never reaches POM's Content & approvals card. Roster unreachable/empty = keep
+        // the resolved value (fail-open, same posture as generation's context injection).
+        const draftRoster = await fetchClientRoster(env);
+        if (draftRoster.length && !draftRoster.some((c) => c.slug === clientId)) {
+          const byName = draftRoster.find((c) => slugifyClient(c.name) === slugifyClient(client));
+          if (byName) clientId = byName.slug;
+        }
 
         const title = (body?.title || '').toString().trim().slice(0, 200);
         const altText = (body?.altText || '').toString().trim().slice(0, 300);

@@ -35,22 +35,23 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
   }, [uniqueClients, clientMap]);
 
   // The selected client's suite SLUG — attributes AI generation to the client at the gateway meter.
-  // Resolution order matches the app's canonical clientIdFor: the edited post's already-stamped id,
-  // then the posts-derived name→id map (App.jsx passes it role-scoped), then the branding doc's
-  // stamped id, then the slugified name as the last resort (a drifted display name could otherwise
-  // meter under a phantom slug).
+  // Resolution order: the edited post's already-stamped id, then the posts-derived name→id map
+  // (App.jsx passes it role-scoped), then the branding doc's stamped id, then App's roster-aware
+  // clientIdFor (which matches the roster by normalized display name before falling back to
+  // slugify — a drifted display name previously metered under a phantom slug). The bare slugify
+  // tail survives only as a defensive default when the prop isn't wired (e.g. isolated renders).
   const genClientId = (name) => (
     (post?.client === name && post?.clientId)
       || clientIdByName?.[name]
       || clientMap?.[name]?.clientId
-      || (name ? slugifyClientId(name) : '')
+      || (name ? (clientIdFor ? clientIdFor(name) : slugifyClientId(name)) : '')
   );
 
   const [formData, setFormData] = useState({
