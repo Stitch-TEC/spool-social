@@ -52,10 +52,13 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   (AdminPanel picker) and — load-bearing since 2026-07-29 — the worker's `fetchClientRoster`
   (`worker/suiteContext.js`), which **roster-repairs the clientId on 8 routes** (generate/text/
   ideas/page/content-index/site-image-import/automations; the publish lane hard-fails off-roster).
-  ⚠️ Known residual hole: the SPA still mints + stamps display-name slugs (`App.jsx:117-119`,
-  `:245`) and the repair only catches name-slug equality — a drifted display name still creates a
-  phantom slug (and the `aiQuota` 429 then never fires). Do NOT add new client-id resolution
-  paths that skip the roster.
+  **NARROWED FURTHER (PR #83, 2026-07-29):** the SPA's `clientIdFor` is now roster-aware too
+  (stamped map → roster by normalized display name → slugify LAST resort, fail-open when the
+  roster is unavailable), and the POM drafts join is **slug-keyed end to end** (the broker sends
+  `clientId`; `GET /api/drafts` prefers it over the mutable name — a client rename no longer
+  empties POM's card). Residual: a phantom slug is still possible only when the roster is
+  unavailable (fail-open) or a display name drifts beyond case/whitespace normalization. Do NOT
+  add new client-id resolution paths that skip the roster.
 - ONE shared AI gateway (`ai.stitchtec.dev`, Claude-first, per-app key). Tier via `SPOOL_AI_TIER`.
 - **POM context/brand/ideas seam** (all server-side via `CONTEXT_KEY` → feedback-worker; the key
   never reaches the browser): generation injects the client profile (aiContext, structured
