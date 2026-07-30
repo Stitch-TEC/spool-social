@@ -15,7 +15,7 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
 // Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
@@ -416,8 +416,10 @@ export default {
       if (!ideasCaller || ideasCaller.isOperator) {
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === slug)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === slug);
-          if (byName) slug = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(slug);
+          if (byName) slug = byName;
         }
       }
       // Operators/internal callers additionally get the auto-refreshed recentActivity digest (POM's
@@ -470,8 +472,10 @@ export default {
       if (!pageCaller || pageCaller.isOperator) {
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === slug)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === slug);
-          if (byName) slug = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(slug);
+          if (byName) slug = byName;
         }
       }
       const target = url.searchParams.get('url') || '';
@@ -511,8 +515,10 @@ export default {
       if (!idxCaller || idxCaller.isOperator) {
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === slug)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === slug);
-          if (byName) slug = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(slug);
+          if (byName) slug = byName;
         }
       }
       const canSeeAllIdx = !idxCaller || idxCaller.isOperator;
@@ -587,8 +593,10 @@ export default {
       if (!impCaller || impCaller.isOperator) {
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === slug)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === slug);
-          if (byName) slug = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(slug);
+          if (byName) slug = byName;
         }
       }
       const imageUrl = String(impBody.url || '').trim();
@@ -710,8 +718,10 @@ export default {
       if (genClientId && (!genCaller || genCaller.isOperator)) {
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === genClientId)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === genClientId);
-          if (byName) genClientId = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(genClientId);
+          if (byName) genClientId = byName;
         }
       }
 
@@ -1291,8 +1301,10 @@ export default {
         // the resolved value (fail-open, same posture as generation's context injection).
         const draftRoster = await fetchClientRoster(env);
         if (draftRoster.length && !draftRoster.some((c) => c.slug === clientId)) {
-          const byName = draftRoster.find((c) => slugifyClient(c.name) === slugifyClient(client));
-          if (byName) clientId = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(draftRoster).get(slugifyClient(client));
+          if (byName) clientId = byName;
         }
 
         const title = (body?.title || '').toString().trim().slice(0, 200);
@@ -1582,8 +1594,10 @@ export default {
         let clientId = (await resolveClientId(env, client)) || bodyClientId;
         const roster = await fetchClientRoster(env);
         if (roster.length && !roster.some((c) => c.slug === clientId)) {
-          const byName = roster.find((c) => slugifyClient(c.name) === slugifyClient(client));
-          if (byName) clientId = byName.slug;
+          // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+          // display name refuses to repair rather than pick a tenant arbitrarily.
+          const byName = rosterNameLookup(roster).get(slugifyClient(client));
+          if (byName) clientId = byName;
         }
 
         // Caps protect the owner's Gemini quota and keep the dashboard sane.

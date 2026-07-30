@@ -18,7 +18,7 @@ import { resolveDraftImage, storeImage } from './media.js';
 import { checkRateLimit } from './ratelimit.js';
 import { buildTextContext, buildImagePrompt, contextTierForPlatform, PLATFORM_META } from '../src/generation/prompts.js';
 import { createPost, getClientSettings, listAutomations, updateAutomation } from './firestore.js';
-import { fetchClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage } from './suiteContext.js';
+import { fetchClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, rosterNameLookup } from './suiteContext.js';
 
 const MAX_SEED = 2000; // matches the generation API's MAX_PROMPT
 
@@ -127,8 +127,10 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
   let clientId = auto.clientId;
   const roster = await fetchClientRoster(env);
   if (roster.length && !roster.some((c) => c.slug === clientId)) {
-    const byName = roster.find((c) => slugifyClient(c.name) === slugifyClient(auto.client));
-    if (byName) clientId = byName.slug;
+    // Collision-guarded lookup (suiteContext.rosterNameLookup): an ambiguous
+    // display name refuses to repair rather than pick a tenant arbitrarily.
+    const byName = rosterNameLookup(roster).get(slugifyClient(auto.client));
+    if (byName) clientId = byName;
   }
 
   // Reserve the FULL budget this draft needs BEFORE any paid Gemini call, so a
