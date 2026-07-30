@@ -10,7 +10,7 @@ import { slugifyClientId } from '../config/roles';
  * Worker-minted token that scopes an anonymous reviewer to exactly one client
  * (see firestore.rules). Revoking a link invalidates it immediately.
  */
-const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', clientIdByName = {}, showToast }) => {
+const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', clientIdFor, showToast }) => {
   useEscapeKey(onClose);
   const [client, setClient] = useState(initialClient || uniqueClients[0] || '');
   const [links, setLinks] = useState([]);
@@ -51,10 +51,12 @@ const ShareManager = ({ onClose, uniqueClients = [], initialClient = '', clientI
     try {
       // clientId is the secure tenant key the review token is bound to. The
       // Worker forces it to the caller's own for a client member; for an
-      // operator we resolve it from the selected client's posts, falling back
-      // to the canonical slug for clients whose posts predate the clientId
-      // backfill (otherwise creation fails with a raw "clientId is required").
-      const created = await createShareLink(client, '', clientIdByName[client] || slugifyClientId(client));
+      // operator, clientIdFor is the SAME roster-aware ladder handleSavePost
+      // stamps drafts with — the link must bind to the id the drafts actually
+      // carry (the old posts-only ladder here minted a phantom slugify id for
+      // names with no stamped posts yet, e.g. a client whose only content was
+      // parked suggestions, and their review page came up permanently empty).
+      const created = await createShareLink(client, '', clientIdFor ? clientIdFor(client) : slugifyClientId(client));
       setLinks(prev => [{ ...created, createdAt: new Date().toISOString() }, ...prev]);
       await copy(created.url, created.token);
     } catch (err) {
