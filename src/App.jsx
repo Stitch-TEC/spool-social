@@ -125,9 +125,10 @@ const App = () => {
     }
     return m;
   }, [clientIdPairsHash]);
-  // Roster display-name → slug map (normalized keys). Empty whenever the roster is
-  // unavailable (client member, fetch failed, not loaded yet) — the ladder below then
-  // degrades to exactly the pre-roster behavior, so drafting never blocks on the roster.
+  // Roster display-name → slug map (normalized keys) + the set of slugs the roster actually
+  // issued. Both empty whenever the roster is unavailable (client member, fetch failed, not
+  // loaded yet) — the ladder below then degrades to exactly the pre-roster behavior, so
+  // drafting never blocks on the roster.
   const rosterSlugByName = useMemo(() => {
     const m = new Map();
     for (const c of rosterClients) {
@@ -136,18 +137,33 @@ const App = () => {
     }
     return m;
   }, [rosterClients]);
+  const rosterSlugs = useMemo(() => {
+    const s = new Set();
+    for (const c of rosterClients) if (c?.slug) s.add(c.slug);
+    return s;
+  }, [rosterClients]);
 
   // Canonical clientId resolution ladder (roster-aware, fail-open):
-  //   1. stamped posts-derived map — a name already seen on posts keeps its exact stamped id;
-  //   2. ROSTER match by normalized display name — a first-time/drifted display name resolves
-  //      to the client's canonical suite slug instead of minting a phantom (the old bug: the
-  //      phantom stuck and the aiQuota 429 never fired for that client);
-  //   3. slugifyClientId(name) — when this equals a roster slug it IS the roster match by slug
-  //      equality (same string either way); otherwise it's the LAST-resort legacy mint, kept so
-  //      resolution never blocks when the roster is empty/unavailable.
+  //   1. stamped posts-derived map — but ONLY when the roster issued that id (or the roster is
+  //      empty/unavailable and can't vouch either way). A pre-roster phantom mint must NOT
+  //      out-rank the canonical slug: this map is fed newest-post-first, so an unconditional
+  //      stamped-wins re-minted the phantom on every save FOREVER for any client whose slug
+  //      diverges from slugify(name), and the slug-keyed drafts join then hid those drafts
+  //      from POM. Mirrors the worker POST /api/drafts roster repair.
+  //   2. ROSTER match by normalized display name — a first-time/drifted/phantom-stamped name
+  //      resolves to the client's canonical suite slug instead of the phantom;
+  //   3. the stamped id anyway — off-roster with NO roster name match (drift beyond
+  //      normalization): keep the tenant consolidated on its one existing key rather than
+  //      minting a second;
+  //   4. slugifyClientId(name) — the LAST-resort legacy mint, kept so resolution never blocks
+  //      when the roster is empty/unavailable.
   const clientIdFor = useCallback(
-    (name) => clientIdByName[name] || rosterSlugByName.get(normClientName(name)) || slugifyClientId(name),
-    [clientIdByName, rosterSlugByName]
+    (name) => {
+      const stamped = clientIdByName[name];
+      if (stamped && (rosterSlugs.size === 0 || rosterSlugs.has(stamped))) return stamped;
+      return rosterSlugByName.get(normClientName(name)) || stamped || slugifyClientId(name);
+    },
+    [clientIdByName, rosterSlugs, rosterSlugByName]
   );
 
   // For a client member: their single client's display name (branding doc, else
@@ -1446,7 +1462,10 @@ const App = () => {
           onClose={() => setIsShareOpen(false)}
           uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
           initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
-          clientIdByName={isOperator ? clientIdByName : (myClientName ? { [myClientName]: myClientId } : {})}
+          /* The SAME roster-aware resolver drafts are stamped with (member names pin to their
+             own clientId, as MediaLibrary does) — the review token must bind to the tenant key
+             the drafts actually carry, or the review page comes up permanently empty. */
+          clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
           showToast={showToast}
         />
       )}

@@ -29,6 +29,8 @@
 //   bootstrap --email <e> [--role super_admin] [--client-id <id>] [--force]
 //   grant     --email <e> --role <client|client_admin|super_admin> [--client-id <id>] [--force]
 //   backfill  [--apply] [--map map.json]      # add clientId to posts + clients
+//   restamp   [--apply] [--roster <clients.json> | --context-key <key> [--roster-url <url>]]
+//                                              # repair PRE-roster phantom clientIds → canonical roster slugs
 //   audit                                      # report orphans / anomalies (exit 1 if any)
 //
 // FLAGS (global): --key <path> --project <id> --owner-uid <uid>
@@ -269,6 +271,101 @@ async function cmdBackfill() {
   console.log('Next: node scripts/admin.mjs audit\n');
 }
 
+// ----- roster (restamp) --------------------------------------------------------
+// The canonical roster is the suite broker's GET /clients (feedback-worker). Load it
+// from a saved JSON file (--roster; the raw response or a bare [{slug,name},…] array)
+// or fetch it live with --context-key (or the CONTEXT_KEY env var).
+async function loadRoster() {
+  let raw;
+  if (flags.roster) {
+    try { raw = JSON.parse(fs.readFileSync(flags.roster, 'utf8')); } catch (e) { die(`Cannot read/parse roster file ${flags.roster}: ${e.message}`); }
+  } else {
+    const key = flags['context-key'] || process.env.CONTEXT_KEY;
+    if (!key) die('restamp needs the canonical roster. Pass --roster <clients.json> (a saved GET /clients response) or --context-key <CONTEXT_KEY> to fetch it from the broker.');
+    const url = flags['roster-url'] || 'https://feedback.stitchtec.dev/clients';
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+    if (!res.ok) die(`Roster fetch failed (${res.status}) from ${url}`);
+    raw = await res.json().catch(() => null);
+  }
+  const rows = Array.isArray(raw) ? raw : raw?.clients;
+  if (!Array.isArray(rows) || !rows.length) die('Roster is empty — refusing to restamp against nothing.');
+  return rows.filter((c) => c && c.slug).map((c) => ({ slug: String(c.slug), name: String(c.name || c.slug) }));
+}
+
+// One-time repair for PRE-roster phantom tenant keys: posts (clientId + a suggestion's
+// forClientId), clients branding docs, and share links stamped with an id the roster never
+// issued (the old slugify(name) mint — e.g. "clear-sky-aircraft-parts" vs canonical
+// "clear-sky"). Only touches NON-EMPTY off-roster ids whose display name matches a roster
+// client by slugified-name equality (the exact worker POST /api/drafts repair rule); a
+// suggestion's empty clientId is by design and is never filled here. Share docs are patched
+// in place — the guest session token is minted FROM the doc at sign-in, so no reissue needed.
+async function cmdRestamp() {
+  console.log(`\nProject: ${PROJECT_ID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
+  const roster = await loadRoster();
+  const slugSet = new Set(roster.map((c) => c.slug));
+  const slugByName = {};
+  for (const c of roster) { const k = slugify(c.name); if (k && !slugByName[k]) slugByName[k] = c.slug; }
+  console.log(`Roster: ${roster.length} clients (${[...slugSet].sort().join(', ')})`);
+
+  // The roster slug an off-roster stamp should become, or undefined (empty / already canonical / no match).
+  const repair = (name, id) => (!id || slugSet.has(id)) ? undefined : slugByName[slugify(name || '')];
+
+  const posts = await listAll('posts', ['client', 'clientId', 'forClientId']);
+  let clients = [];
+  try { clients = await listAll('clients', ['name', 'clientId']); } catch { /* collection may not exist */ }
+  let shares = [];
+  try { shares = await listAll('shares', ['client', 'clientId', 'revoked']); } catch { /* collection may not exist */ }
+
+  const plan = [];    // { res, label, field, from, to }
+  const orphans = []; // off-roster with no roster name match — report, never guess
+  for (const p of posts) {
+    const cName = str(p.fields.client);
+    for (const field of ['clientId', 'forClientId']) {
+      const id = str(p.fields[field]);
+      const to = repair(cName, id);
+      if (to) plan.push({ res: p.name, label: `post ${p.id} (${JSON.stringify(cName ?? null)})`, field, from: id, to });
+      else if (id && !slugSet.has(id)) orphans.push(`post ${p.id} ${field}=${id} client=${JSON.stringify(cName ?? null)}`);
+    }
+  }
+  for (const c of clients) {
+    const id = str(c.fields.clientId), n = str(c.fields.name);
+    const to = repair(n, id);
+    if (to) plan.push({ res: c.name, label: `clients ${c.id} (${JSON.stringify(n ?? null)})`, field: 'clientId', from: id, to });
+    else if (id && !slugSet.has(id)) orphans.push(`clients ${c.id} clientId=${id} name=${JSON.stringify(n ?? null)}`);
+  }
+  for (const s of shares) {
+    // Tokens are credentials — never print one whole, even in a local report.
+    const id = str(s.fields.clientId), n = str(s.fields.client), tag = `share …${s.id.slice(-8)}`;
+    const to = repair(n, id);
+    if (to) plan.push({ res: s.name, label: `${tag} (${JSON.stringify(n ?? null)})`, field: 'clientId', from: id, to });
+    else if (id && !slugSet.has(id)) orphans.push(`${tag} clientId=${id} client=${JSON.stringify(n ?? null)}`);
+  }
+
+  console.log(`Scanned: ${posts.length} posts, ${clients.length} clients docs, ${shares.length} share links.\n`);
+  if (plan.length) {
+    console.log(`Restamp plan (${plan.length} field${plan.length === 1 ? '' : 's'}):`);
+    for (const x of plan) console.log(`   ${x.label}: ${x.field} ${x.from} → ${x.to}`);
+  } else {
+    console.log('✓ Nothing to restamp — every non-empty tenant key is roster-issued already.');
+  }
+  if (orphans.length) {
+    console.log(`\n⚠ ${orphans.length} off-roster ids with NO roster name match — left untouched (renamed beyond recognition, or an ex-client):`);
+    for (const o of orphans.slice(0, 20)) console.log(`   ${o}`);
+    if (orphans.length > 20) console.log(`   …and ${orphans.length - 20} more`);
+  }
+  if (!plan.length) { console.log(''); return; }
+  if (!flags.apply) { console.log('\n(dry-run) Re-run with --apply to write. Nothing was changed.\n'); return; }
+
+  console.log('\nApplying…');
+  let n = 0;
+  for (const x of plan) {
+    await patchField(x.res, x.field, x.to);
+    if (++n % 25 === 0) console.log(`   …${n}/${plan.length}`);
+  }
+  console.log(`\n✓ Restamped ${n} field${n === 1 ? '' : 's'}. Share links were repaired in place (guest tokens mint from the doc at sign-in — no reissue needed).`);
+  console.log('Next: node scripts/admin.mjs audit\n');
+}
+
 async function cmdAudit() {
   console.log(`\nProject: ${PROJECT_ID}   OWNER_UID: ${OWNER_UID}\n`);
   const posts = await listAll('posts', ['client', 'clientId', 'uid']);
@@ -315,13 +412,14 @@ async function cmdAudit() {
 }
 
 // ----- dispatch --------------------------------------------------------------
-const COMMANDS = ['bootstrap', 'grant', 'backfill', 'audit'];
+const COMMANDS = ['bootstrap', 'grant', 'backfill', 'restamp', 'audit'];
 (async () => {
   if (!COMMANDS.includes(cmd)) {
-    console.log('Usage: node scripts/admin.mjs <bootstrap|grant|backfill|audit> [flags]\n' +
+    console.log('Usage: node scripts/admin.mjs <bootstrap|grant|backfill|restamp|audit> [flags]\n' +
       '  bootstrap --email <e> [--client-id <id>] [--force]   create/refresh a super_admin user doc\n' +
       '  grant     --email <e> --role <client|client_admin|super_admin> [--client-id <id>] [--force]\n' +
       '  backfill  [--apply] [--map map.json]                 add clientId to posts + clients\n' +
+      '  restamp   [--apply] [--roster <clients.json> | --context-key <key>]   phantom clientIds → roster slugs\n' +
       '  audit                                                report orphans/anomalies (exit 1 if any)\n' +
       '  (global)  --key <sa.json> --project <id> --owner-uid <uid>     see file header for details');
     process.exit(cmd ? 1 : 0);
@@ -330,5 +428,6 @@ const COMMANDS = ['bootstrap', 'grant', 'backfill', 'audit'];
   if (cmd === 'bootstrap') return cmdGrant({ defaultRole: 'super_admin' });
   if (cmd === 'grant') return cmdGrant({ defaultRole: null });
   if (cmd === 'backfill') return cmdBackfill();
+  if (cmd === 'restamp') return cmdRestamp();
   if (cmd === 'audit') return cmdAudit();
 })().catch((e) => die(e?.message || String(e)));
