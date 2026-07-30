@@ -128,13 +128,21 @@ const App = () => {
   // Roster display-name → slug map (normalized keys) + the set of slugs the roster actually
   // issued. Both empty whenever the roster is unavailable (client member, fetch failed, not
   // loaded yet) — the ladder below then degrades to exactly the pre-roster behavior, so
-  // drafting never blocks on the roster.
+  // drafting never blocks on the roster. COLLISION guard: when two DISTINCT roster slugs
+  // claim the same normalized name, name-resolution is REFUSED for that key (deleted from
+  // the map, so the ladder falls through to stamped/slugify) — minting a fresh slug is the
+  // lesser evil vs silently stamping the wrong tenant. Non-colliding names are unaffected.
   const rosterSlugByName = useMemo(() => {
     const m = new Map();
+    const dupes = new Set();
     for (const c of rosterClients) {
       const key = normClientName(c?.name);
-      if (key && c?.slug && !m.has(key)) m.set(key, c.slug);
+      if (!key || !c?.slug) continue;
+      const prev = m.get(key);
+      if (prev === undefined) m.set(key, c.slug);
+      else if (prev !== c.slug) dupes.add(key); // same slug twice = duplicate row, not a collision
     }
+    for (const key of dupes) m.delete(key);
     return m;
   }, [rosterClients]);
   const rosterSlugs = useMemo(() => {

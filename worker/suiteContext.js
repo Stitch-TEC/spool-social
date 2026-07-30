@@ -336,6 +336,38 @@ export async function publishDraftToSite(env, { slug, repo, path, title, content
   return { status: res.status, body };
 }
 
+// Mirrors index.js `slugifyClient` / automation.js / src/config/roles.js `slugifyClientId`
+// EXACTLY (same inline-copy rationale: the Worker bundle stays self-contained and the algorithm
+// is stable — if roles.js ever changes, change all of them together).
+const slugifyName = (name) =>
+  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+
+// COLLISION-guarded slugify(name) → slug lookup for the roster name→slug repairs (index.js
+// routes + automation.js). When two DISTINCT roster slugs claim the same slugified display
+// name, repairing by that name could silently re-tenant the request onto the wrong client —
+// so the colliding key resolves to NOTHING and the caller keeps its requested value (the same
+// fail-open posture as an unreachable roster; the lesser evil vs stamping the wrong tenant).
+// Warned once per build so `wrangler tail` names the colliding slugs. Resolution for
+// non-colliding names is exactly the pre-guard behavior.
+export function rosterNameLookup(roster) {
+  const m = new Map();
+  const dupes = new Map(); // key → Set of colliding slugs
+  for (const c of roster || []) {
+    const key = slugifyName(c?.name);
+    if (!key || !c?.slug) continue;
+    if (dupes.has(key)) { dupes.get(key).add(c.slug); continue; }
+    const prev = m.get(key);
+    if (prev === undefined) m.set(key, c.slug);
+    else if (prev !== c.slug) { dupes.set(key, new Set([prev, c.slug])); m.delete(key); }
+    // prev === c.slug: duplicate row for the same tenant — not a collision.
+  }
+  if (dupes.size) {
+    const detail = [...dupes.entries()].map(([k, s]) => `'${k}' → {${[...s].join(', ')}}`).join('; ');
+    console.warn(`[roster] display-name collision — name→slug repair refused for: ${detail}`);
+  }
+  return m;
+}
+
 export async function fetchClientRoster(env) {
   if (!env || !env.CONTEXT_KEY) return [];
   const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
