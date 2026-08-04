@@ -52,5 +52,26 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # This job is expected to be GREEN. It was permanently red from ~2026-07-29
+      # to 2026-08-03 (6+ consecutive runs) on dev-toolchain advisories, which
+      # trained everyone to ignore it — a genuine regression would have blended
+      # straight in. If it goes red, treat it as a real finding, not as noise.
+      #
+      # Two pins in package.json keep it green. Do NOT "tidy" either one without
+      # re-running `npm audit --audit-level=high` first:
+      #
+      #   overrides.undici ^7.29.0 — every published miniflare (4.x AND the 5.x
+      #     pre-release) pins undici to exactly 7.28.0, the top of the vulnerable
+      #     range for 5 high advisories (GHSA-8xcm-r25x-g524, -4cwx-7wf7-3272,
+      #     -m8rv-5g2x-5cg5, -jr45-8vmc-qm54, -v3r7-h72x-cjcm). There is no
+      #     wrangler release that resolves this on its own, so we force the 7.x
+      #     fix line. Drop the override once miniflare ships undici >= 7.29.0.
+      #     (jsdom wants ^7.25.0, so the single override satisfies both consumers.)
+      #
+      #   wrangler ~4.116.0 — the "~" is deliberate. 4.114.0+ is needed for the
+      #     sharp >= 0.35.0 fix (GHSA-f88m-g3jw-g9cj, via miniflare), but 4.117.0+
+      #     depends on miniflare 5.x-*alpha*. Widening to "^" pulls that
+      #     pre-release into the deploy toolchain for a live app and buys nothing
+      #     — 4.x and 5.x-alpha resolve to identical sharp/undici versions.
       - name: npm audit (high severity and above)
         run: npm audit --audit-level=high
