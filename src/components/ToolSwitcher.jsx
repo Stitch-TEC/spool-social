@@ -42,7 +42,13 @@ const ToolSwitcher = () => {
                 className="flex-shrink-0 w-7 h-7 rounded-md overflow-hidden"
                 style={{ background: STITCH_MARK_TILE[app.id], color: STITCH_MARK_INK[app.id] }}
               >
-                <AppMark id={app.id} className="w-7 h-7" />
+                {app.id === 'site' ? (
+                  // The company entry uses the real Stitch TEC logo raster — the
+                  // drawn crescent mark is app-tile geometry, not the brand logo.
+                  <img src="/stitch-tec-logo.png" alt="" className="w-7 h-7 object-cover" />
+                ) : (
+                  <AppMark id={app.id} className="w-7 h-7" />
+                )}
               </span>
             );
             return app.status === 'soon' ? (
