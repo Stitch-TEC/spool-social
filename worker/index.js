@@ -15,65 +15,14 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, renderSenderPreview, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
 // Shared with the SPA editor (pure string helpers — no DOM at module scope).
 import { stripLeadingDuplicateH1 } from '../src/utils/markdownEditing.js';
 
-// ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
-// Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
-// Sender's sanitizer strips anything exotic and its renderEmailDocument scaffold styles bare tags,
-// so a simple fragment IS the correct target — a full md engine would add attack surface for zero
-// fidelity gain. Everything is HTML-escaped FIRST; links/images require http(s) or data:image
-// (Sender extracts data URIs to R2). Output is a FRAGMENT — never a full document (a doctype would
-// make Sender skip its 600px email scaffold).
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-function mdInline(escaped) {
-  return escaped
-    // images before links (shared bracket syntax); URLs were escaped, so match &quot; boundaries
-    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/g, '<img src="$2" alt="$1">')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-}
-function postToEmailHtml(post) {
-  // Normalize CRLF/CR first — pasted content is often \r\n, and the \n-only block split below
-  // would otherwise see the ENTIRE post as one giant paragraph.
-  let content = String(post?.content || '').replace(/\r\n?/g, '\n').trim();
-  if (!content && !post?.title) return '';
-  // The title renders as its own <h1> below — a body that OPENS by repeating it
-  // (AI drafts are told to start with an H1) would put the headline in twice.
-  if (post?.title) content = stripLeadingDuplicateH1(content, post.title);
-  const parts = [];
-  if (post.title) parts.push(`<h1>${escapeHtml(post.title)}</h1>`);
-  // Hero image: hosted /media URLs are already absolute; data URLs are fine (Sender re-hosts them).
-  const img = String(post.imageUrl || '');
-  if (/^(https?:\/\/|data:image\/)/.test(img)) {
-    parts.push(`<img src="${escapeHtml(img)}" alt="${escapeHtml(post.altText || '')}">`);
-  }
-  for (const block of escapeHtml(content).split(/\n{2,}/)) {
-    const b = block.trim();
-    if (!b) continue;
-    // Heading = the FIRST LINE only (no /s — a dotall match would swallow every following line
-    // of the block into the heading); any remainder renders as a normal paragraph below it.
-    const h = b.match(/^(#{1,3})\s+(.+)$/m);
-    if (h && b.startsWith(h[1])) {
-      const tag = h[1].length === 1 ? 'h1' : 'h2';
-      parts.push(`<${tag}>${mdInline(h[2].trim())}</${tag}>`);
-      const rest = b.slice(h[0].length).trim();
-      if (rest) parts.push(`<p>${mdInline(rest).replace(/\n/g, '<br>')}</p>`);
-      continue;
-    }
-    const lines = b.split('\n');
-    if (lines.length > 0 && lines.every((l) => /^\s*[-*]\s+/.test(l))) {
-      parts.push(`<ul>${lines.map((l) => `<li>${mdInline(l.replace(/^\s*[-*]\s+/, ''))}</li>`).join('')}</ul>`);
-      continue;
-    }
-    parts.push(`<p>${mdInline(b).replace(/\n/g, '<br>')}</p>`);
-  }
-  return parts.join('\n');
-}
+// ---- Post → email-safe HTML fragment (the Sender template push + email preview) ----------------
+// Shared with the SPA + vitest via src/utils/emailHtml.js — ONE converter, so the
+// email-preview tab can never lie about what a push would produce.
+import { postToEmailHtml } from '../src/utils/emailHtml.js';
 import { PLATFORM_META, PLATFORM_CADENCE, contextTierForPlatform, renderPomContextLine, renderPomAssetsLine, renderPomBrandPart, renderPomBrandKitPart, renderPomBrandStyleLine, renderPomRecentLine, renderPomSeoLine } from '../src/generation/prompts.js';
 
 const MAX_PROMPT = 2000;
@@ -1023,10 +972,91 @@ export default {
           html,
           preheader: (post.metaDescription || '').slice(0, 200),
           spoolPostId: postId,
+          // Sender refuses (409 sender_edited) when its copy was edited since
+          // the last push; the SPA confirms with the operator and retries with
+          // force — an explicit choice, never a silent overwrite.
+          force: body?.force === true,
         });
         return json(out.body, out.status, cors);
       } catch (err) {
         console.error('sender-template push failed:', err?.message || err);
+        return json({ ok: false, error: 'sender_unreachable' }, 502, cors);
+      }
+    }
+
+    // --- Email preview: render a draft through Sender's REAL pipeline (operator-only) ---
+    //   POST /api/email-preview  { content, title, imageUrl, altText, metaDescription, client, clientId }
+    //     → { ok, html, tenant }
+    // Takes the LIVE editor fields (not a saved post) so unsaved work previews truthfully.
+    // Same converter as the push (postToEmailHtml — the preview can't lie), relayed via the
+    // broker's /sender/render (CONTEXT_KEY; the broker alone holds SENDER_INTERNAL_KEY).
+    // READ-ONLY end to end: Sender renders with the tenant's branding, writes nothing.
+    if (url.pathname === '/api/email-preview') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ error: 'Unauthorized' }, 401, cors);
+      if (auth.mode !== 'firebase') return json({ error: 'Sign in as an operator' }, 403, cors);
+      // Separate rate bucket ('preview:' principal): habitual Email-tab use
+      // must not burn the shared per-operator budget that real AI generation
+      // draws from (and a generation burst must not 429 the preview).
+      const rl = await checkRateLimit(env, `preview:${auth.principal}`, auth.mode, Date.now());
+      if (!rl.ok) return json({ error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      const caller = await resolveShareCaller(auth, env);
+      if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+      // Bound every field to the save path's own limits — this is preview-only,
+      // but it still flows through the broker's 500KB relay cap. A data-URL
+      // hero that would blow that cap is DROPPED whole (never truncated —
+      // sliced base64 is a corrupt image), flagged so the preview can say so.
+      let imageUrl = String(body?.imageUrl || '');
+      let heroOmitted = false;
+      if (imageUrl.startsWith('data:')) {
+        if (imageUrl.length > 400000) {
+          imageUrl = '';
+          heroOmitted = true;
+        }
+      } else {
+        imageUrl = imageUrl.slice(0, 2048); // hosted/https URLs are short
+      }
+      const draft = {
+        content: String(body?.content || '').slice(0, 120000),
+        title: String(body?.title || '').slice(0, 200),
+        imageUrl,
+        altText: String(body?.altText || '').slice(0, 300),
+        metaDescription: String(body?.metaDescription || '').slice(0, 200),
+      };
+
+      // Same roster resolution as the push: stamped id if the roster issued it,
+      // else display-name match — never slugify (the phantom-slug bug).
+      const roster = await fetchClientRoster(env);
+      const bySlug = roster.find((c) => c.slug === String(body?.clientId || ''));
+      const byName = roster.find((c) => (c.name || '').toLowerCase() === String(body?.client || '').toLowerCase());
+      const slug = (bySlug || byName)?.slug || '';
+      if (!slug) {
+        if (roster.length) return json({ error: 'This post’s client isn’t on the suite roster' }, 404, cors);
+        return env.CONTEXT_KEY
+          ? json({ error: 'Roster temporarily unavailable — try again in a moment' }, 503, cors)
+          : json({ error: 'CONTEXT_KEY seam not configured' }, 503, cors);
+      }
+
+      const html = postToEmailHtml(draft);
+      if (!html) return json({ error: 'Nothing to preview yet — add some content' }, 400, cors);
+      // Typed refusal instead of a relayed 413 — the broker cap is our known
+      // bound, so say so before the round trip.
+      if (html.length > 490000) return json({ ok: false, error: 'preview_too_large' }, 413, cors);
+      try {
+        const out = await renderSenderPreview(env, {
+          slug,
+          html,
+          preheader: draft.metaDescription.slice(0, 200),
+        });
+        // heroOmitted rides alongside Sender's response — the preview pane
+        // tells the operator the hero was left out rather than lying by omission.
+        return json({ ...out.body, ...(heroOmitted ? { heroOmitted: true } : {}) }, out.status, cors);
+      } catch (err) {
+        console.error('email-preview render failed:', err?.message || err);
         return json({ ok: false, error: 'sender_unreachable' }, 502, cors);
       }
     }

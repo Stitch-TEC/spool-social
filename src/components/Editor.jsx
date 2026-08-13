@@ -10,6 +10,7 @@ import MarkdownToolbar from './MarkdownToolbar';
 import RepurposeBlog from './RepurposeBlog';
 import MediaPicker from './MediaPicker';
 import SparkDeck from './SparkDeck';
+import SenderEmailPreview from './SenderEmailPreview';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import ConfirmModal from './ConfirmModal';
@@ -47,7 +48,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -83,6 +84,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     isTemplate: false
   });
   const [previewMode, setPreviewMode] = useState(false);
+  // Preview pane tab: the channel preview, or the EMAIL this draft becomes if
+  // pushed to Sender (operator-only, pushable posts only — blog or template).
+  const [previewTab, setPreviewTab] = useState('channel');
   const [isSparkOpen, setIsSparkOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // What the media picker fills: the cover image slot, or an inline markdown
@@ -835,16 +839,61 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       </div>
 
       {/* Right Panel: Preview */}
+      {(() => {
+        // The Email tab exists only for pushable drafts (blog / reusable
+        // template) and only for operators; hide it and fall back to the
+        // channel view the moment either stops being true.
+        const showEmailTab = canPreviewEmail && !isReadOnly && (formData.platform === 'blog' || formData.isTemplate);
+        const activeTab = showEmailTab ? previewTab : 'channel';
+        return (
       <div
         style={!previewMode ? { width: `${previewWidth}px` } : undefined}
         className={`bg-slate-100 border-l border-slate-200 flex-col ${previewMode ? 'flex fixed inset-0 z-20 w-full' : 'hidden md:flex shrink-0'}`}
       >
-         <div className="p-4 border-b border-slate-200 bg-slate-100 flex justify-between items-center">
-            <h3 className="font-bold text-slate-500 text-sm uppercase tracking-wider">Live Preview</h3>
+         <div className="p-4 border-b border-slate-200 bg-slate-100 flex justify-between items-center gap-3">
+            <h3 className="font-bold text-slate-500 text-sm uppercase tracking-wider shrink-0">Live Preview</h3>
+            {showEmailTab && (
+              <div role="tablist" aria-label="Preview mode" className="flex items-center gap-1 bg-slate-200/70 rounded-full p-0.5">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'channel'}
+                  onClick={() => setPreviewTab('channel')}
+                  className={`px-3 py-1 text-xs font-bold rounded-full transition-colors ${activeTab === 'channel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  {isLongForm ? 'Blog' : 'Post'}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'email'}
+                  onClick={() => setPreviewTab('email')}
+                  title="How this draft looks as a Sender email"
+                  className={`px-3 py-1 text-xs font-bold rounded-full transition-colors ${activeTab === 'email' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  Email
+                </button>
+              </div>
+            )}
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
          <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 backdrop-blur-3xl overflow-hidden">
-            {isLongForm ? (
+            {activeTab === 'email' ? (
+              <SenderEmailPreview
+                // Keyed by client: switching the client dropdown must re-render
+                // with THAT client's tenant branding, not a stale snapshot.
+                key={genClientId(formData.client) || formData.client}
+                draft={{
+                  content: formData.content,
+                  title: formData.title,
+                  imageUrl: formData.imageUrl,
+                  altText: formData.altText,
+                  metaDescription: formData.metaDescription,
+                  client: formData.client,
+                  clientId: genClientId(formData.client),
+                }}
+              />
+            ) : isLongForm ? (
               <div className="w-full h-full overflow-y-auto bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
                 <MarkdownPreview content={deferredContent} title={formData.title} imageUrl={formData.imageUrl} />
               </div>
@@ -856,6 +905,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             )}
          </div>
       </div>
+        );
+      })()}
       
       {/* Mobile preview FAB — hidden while the preview overlay is open (it has its own close). */}
       {!previewMode && (

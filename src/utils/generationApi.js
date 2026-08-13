@@ -181,8 +181,21 @@ export async function addVideoUrl(client, videoUrl) {
  * { templateId, builderUrl, updated }. Throws with the server's error string so the caller can
  * surface honest outcomes (e.g. no_tenant_for_slug = client has no Sender workspace yet).
  */
-export async function pushToSender(postId) {
-  return postJSON('/api/sender-template', { postId });
+export async function pushToSender(postId, { force = false } = {}) {
+  // force = the operator confirmed overwriting edits made in Sender's builder
+  // since the last push (the seam otherwise refuses with 409 sender_edited).
+  return postJSON('/api/sender-template', { postId, ...(force ? { force: true } : {}) });
+}
+
+/**
+ * Render a draft's email form through Sender's REAL pipeline (worker converts →
+ * broker relays → Sender renders with the client's tenant branding, read-only).
+ * Takes the LIVE editor fields so unsaved work previews truthfully. Resolves to
+ * { html, tenant } — tenant:false = the client has no Sender workspace yet
+ * (generic chrome). Operator-only.
+ */
+export async function senderEmailPreview(fields) {
+  return postJSON('/api/email-preview', fields);
 }
 
 /**
