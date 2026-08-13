@@ -35,6 +35,15 @@ export function replaceRange(ta, start, end, text, selStart = null, selEnd = nul
   }
 }
 
+// Shared wrap configs — the toolbar buttons and the editor's ⌘B/⌘I/⌘K
+// shortcuts must produce identical markdown, so there is exactly one source.
+export const WRAPS = {
+  bold: { before: '**', after: '**', ph: 'bold text' },
+  italic: { before: '*', after: '*', ph: 'italic text' },
+  code: { before: '`', after: '`', ph: 'code' },
+  link: { before: '[', after: '](https://)', ph: 'link text' },
+};
+
 /**
  * Inline wrap (bold/italic/code/link) with toggle-off: re-applying to a
  * selection that is already wrapped — whether the markers are inside or just

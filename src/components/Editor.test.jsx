@@ -78,6 +78,25 @@ describe('Editor', () => {
     expect(screen.getByPlaceholderText('Select or type a new client...')).toBeDisabled();
   });
 
+  it('applies bold markdown on mod+B in a long-form draft', () => {
+    render(<Editor {...baseProps} post={{ id: 'b3', platform: 'blog', title: 'T', content: 'hello', client: 'Acme' }} />);
+    const textarea = screen.getByDisplayValue('hello');
+    textarea.setSelectionRange(0, 5);
+    // jsdom reports a non-Mac platform, so the binding is Ctrl there.
+    fireEvent.keyDown(textarea, { key: 'b', ctrlKey: true });
+    // jsdom takes replaceRange's fallback path (no execCommand) — the native
+    // setter + input event must still sync React state.
+    expect(screen.getByDisplayValue('**hello**')).toBeInTheDocument();
+  });
+
+  it('does NOT bind formatting shortcuts on plain-text social platforms', () => {
+    render(<Editor {...baseProps} post={{ id: 's1', platform: 'twitter', content: 'hi', client: 'Acme' }} />);
+    const textarea = screen.getByDisplayValue('hi');
+    textarea.setSelectionRange(0, 2);
+    fireEvent.keyDown(textarea, { key: 'b', ctrlKey: true });
+    expect(screen.getByDisplayValue('hi')).toBeInTheDocument();
+  });
+
   it('keeps unsaved form fields when picking a Spark Deck prompt', () => {
     render(<Editor {...baseProps} />);
 

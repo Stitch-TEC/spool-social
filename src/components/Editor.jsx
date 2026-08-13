@@ -15,7 +15,7 @@ import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import ConfirmModal from './ConfirmModal';
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
-import { replaceRange, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
+import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
 import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
 
@@ -25,6 +25,10 @@ const toLocalISOString = (date) => {
   const tzOffset = date.getTimezoneOffset() * 60000;
   return new Date(date.getTime() - tzOffset).toISOString().slice(0, 16);
 };
+
+// Platform-aware modifier: on macOS the shortcuts bind to ⌘ ONLY — Ctrl+B/K in
+// a Mac textarea are native Cocoa caret/kill bindings that must keep working.
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iP(hone|od|ad)/i.test(navigator.platform || '');
 
 // Fields that count as "the operator's work" for the unsaved-changes guard and
 // the local autosave. (Derived/readonly fields like source/approvalStatus are
@@ -630,6 +634,20 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                    e.preventDefault();
                    handleSaveWrapper();
+                   return;
+                 }
+                 // Same bindings as Sender's builder (⌘B / ⌘I / ⌘K) so the two
+                 // editors feel like one tool. Long-form markdown only — social
+                 // channels are plain text where the markers would post literally.
+                 if (isLongForm && (IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey) {
+                   const key = e.key.toLowerCase();
+                   const cfg = key === 'b' ? WRAPS.bold : key === 'i' ? WRAPS.italic : key === 'k' ? WRAPS.link : null;
+                   if (cfg) {
+                     e.preventDefault();
+                     const ta = e.currentTarget;
+                     const r = computeWrapToggle(ta.value, ta.selectionStart, ta.selectionEnd, cfg);
+                     replaceRange(ta, r.start, r.end, r.text, r.selStart, r.selEnd);
+                   }
                  }
                }}
             />

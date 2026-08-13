@@ -5,19 +5,17 @@ import {
 } from 'lucide-react';
 import {
   replaceRange, computeWrapToggle, computeLineToggle, computeCodeFence,
-  computeTableInsert, LINE_KINDS,
+  computeTableInsert, LINE_KINDS, WRAPS,
 } from '../utils/markdownEditing';
 
 // Lightweight "WYSIWYG-ish" toolbar: inserts Markdown at the cursor/selection.
 // Keeps content as portable Markdown (no heavy rich-text dependency). All ops
 // go through replaceRange (execCommand insertText) so ⌘Z undoes a toolbar
 // click the same as typing, and re-applying an op toggles it off.
-const WRAP = {
-  bold: { before: '**', after: '**', ph: 'bold text' },
-  italic: { before: '*', after: '*', ph: 'italic text' },
-  code: { before: '`', after: '`', ph: 'code' },
-  link: { before: '[', after: '](https://)', ph: 'link text' },
-};
+
+// Shortcut hint in tooltips — same convention as Sender's builder ("Bold (⌘B)").
+const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|od|ad)/i.test(navigator.platform || '');
+const mod = isMac ? '⌘' : 'Ctrl+';
 
 // Module-scope so it isn't recreated each render (react-hooks/static-components).
 // onMouseDown preventDefault keeps the textarea selection from clearing on click.
@@ -55,15 +53,15 @@ const MarkdownToolbar = ({ textareaRef, onImageRequest }) => {
       <Btn onClick={() => line(LINE_KINDS.h2)} title="Heading 2"><Heading2 size={16} /></Btn>
       <Btn onClick={() => line(LINE_KINDS.h3)} title="Heading 3"><Heading3 size={16} /></Btn>
       <Divider />
-      <Btn onClick={() => wrap(WRAP.bold)} title="Bold"><Bold size={16} /></Btn>
-      <Btn onClick={() => wrap(WRAP.italic)} title="Italic"><Italic size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAPS.bold)} title={`Bold (${mod}B)`}><Bold size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAPS.italic)} title={`Italic (${mod}I)`}><Italic size={16} /></Btn>
       <Divider />
       <Btn onClick={() => line(LINE_KINDS.ul)} title="Bulleted list"><List size={16} /></Btn>
       <Btn onClick={() => line(LINE_KINDS.ol)} title="Numbered list"><ListOrdered size={16} /></Btn>
       <Btn onClick={() => line(LINE_KINDS.quote)} title="Quote"><Quote size={16} /></Btn>
       <Divider />
-      <Btn onClick={() => wrap(WRAP.link)} title="Link"><Link2 size={16} /></Btn>
-      <Btn onClick={() => wrap(WRAP.code)} title="Inline code"><Code size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAPS.link)} title={`Insert link (${mod}K)`}><Link2 size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAPS.code)} title="Inline code"><Code size={16} /></Btn>
       <Btn onClick={() => run(computeCodeFence)} title="Code block"><SquareCode size={16} /></Btn>
       <Btn onClick={() => run((v, s) => computeTableInsert(v, s))} title="Table"><Table size={16} /></Btn>
       {onImageRequest && (
