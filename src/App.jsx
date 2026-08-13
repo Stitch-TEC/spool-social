@@ -569,17 +569,41 @@ const App = () => {
   // Server-side end to end (worker → broker → Sender); re-push UPDATES the same template
   // (provenance-keyed), so the button is safely idempotent. Honest outcomes: a client without a
   // Sender workspace gets a clear message, not a silent failure.
-  const handlePushToSender = useCallback(async (post) => {
+  const handlePushToSender = useCallback(async (post, { force = false } = {}) => {
     if (isReadOnly || !isOperator) return;
     showToast('Pushing to Sender…');
     try {
-      const out = await pushToSender(post.id);
-      showToast(out.updated
-        ? 'Sender template updated — review it in Sender → Templates'
-        : 'Pushed to Sender — review it in Sender → Templates');
+      const out = await pushToSender(post.id, { force });
+      showToast(
+        out.updated
+          ? 'Sender template updated'
+          : 'Pushed to Sender',
+        'success',
+        // Deep-link straight to the pushed template — "review it in Sender →
+        // Templates" made the operator go hunting for what we already knew.
+        out.builderUrl
+          ? { label: 'Open in Sender', onClick: () => window.open(out.builderUrl, '_blank', 'noopener') }
+          : null,
+      );
     } catch (err) {
       const msg = String(err?.message || '');
-      if (msg.includes('no_tenant_for_slug')) showToast('This client doesn’t have a Sender workspace yet', 'error');
+      if (msg.includes('sender_edited')) {
+        // The template was edited in Sender's builder since the last push —
+        // overwriting is a real decision, never a silent side effect.
+        setConfirmModal({
+          type: 'danger',
+          title: 'Overwrite the Sender copy?',
+          // "changed", not "edited" — the version token also moves on renames
+          // and maintenance saves, and the dialog must not overclaim.
+          message: `"${post.title || post.client || 'This template'}" was changed inside Sender after the last push (an edit, a rename, or a maintenance save). Pushing again replaces the Sender copy with this Spool draft.`,
+          confirmLabel: 'Overwrite',
+          onConfirm: () => {
+            setConfirmModal(null);
+            handlePushToSender(post, { force: true });
+          },
+        });
+      }
+      else if (msg.includes('no_tenant_for_slug')) showToast('This client doesn’t have a Sender workspace yet', 'error');
       else if (msg.includes('empty_content')) showToast('Nothing email-safe survived conversion — check the post content', 'error');
       else showToast(msg || 'Push to Sender failed', 'error');
     }
@@ -1196,6 +1220,7 @@ const App = () => {
                member's own client) so the media picker works before first save. */
             initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
             clientLocked={isClientMember}
+            canPreviewEmail={isOperator}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>

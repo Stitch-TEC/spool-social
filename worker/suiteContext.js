@@ -305,14 +305,35 @@ export async function fetchClientPage(env, slug, url) {
 // Returns { status, body } so the route can pass Sender's outcome through HONESTLY: 200 =
 // { templateId, builderUrl, updated }, 409 = the client has no Sender tenant yet, 503 = a seam
 // key is missing somewhere. Throws only on network failure — the caller maps that to 502.
-export async function pushSenderTemplate(env, { slug, name, html, preheader, spoolPostId }) {
+export async function pushSenderTemplate(env, { slug, name, html, preheader, spoolPostId, force }) {
   if (!env || !env.CONTEXT_KEY) return { status: 503, body: { ok: false, error: 'not_configured' } };
   const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
   const res = await fetch(`${base}/sender/template`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
-    body: JSON.stringify({ slug, name, html, preheader, spoolPostId }),
+    // force = the operator's explicit "overwrite Sender-side edits" confirmation
+    // (Sender's clobber guard 409s without it when its copy was edited since
+    // the last push).
+    body: JSON.stringify({ slug, name, html, preheader, spoolPostId, ...(force ? { force: true } : {}) }),
     signal: AbortSignal.timeout(15000), // broker adds its own 10s Sender timeout inside this
+  });
+  const body = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
+  return { status: res.status, body };
+}
+
+// Render a draft's converted email HTML through Sender's REAL render pipeline (broker
+// POST /sender/render → Sender's read-only internal render route) so the editor's email
+// preview shows exactly what a push would send — tenant branding included. Returns
+// { status, body } passthrough; body carries { ok, html, tenant } on success (tenant:false =
+// the client has no Sender workspace yet, rendered with generic chrome).
+export async function renderSenderPreview(env, { slug, html, preheader }) {
+  if (!env || !env.CONTEXT_KEY) return { status: 503, body: { ok: false, error: 'not_configured' } };
+  const base = env.SUITE_FEEDBACK_URL || DEFAULT_URL;
+  const res = await fetch(`${base}/sender/render`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CONTEXT_KEY}` },
+    body: JSON.stringify({ slug, html, preheader }),
+    signal: AbortSignal.timeout(15000),
   });
   const body = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
   return { status: res.status, body };
