@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useDeferredValue } from 'react';
 import {
   X, Save, Wand2, Smartphone, Image as ImageIcon, Eye, Sparkles,
-  Trash2, UploadCloud, Calendar as CalendarIcon, Loader2
+  Trash2, UploadCloud, Calendar as CalendarIcon, Loader2, History
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
@@ -12,8 +12,10 @@ import MediaPicker from './MediaPicker';
 import SparkDeck from './SparkDeck';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
+import ConfirmModal from './ConfirmModal';
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
+import { replaceRange, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
 import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
 
@@ -23,6 +25,12 @@ const toLocalISOString = (date) => {
   const tzOffset = date.getTimezoneOffset() * 60000;
   return new Date(date.getTime() - tzOffset).toISOString().slice(0, 16);
 };
+
+// Fields that count as "the operator's work" for the unsaved-changes guard and
+// the local autosave. (Derived/readonly fields like source/approvalStatus are
+// deliberately excluded — they change underneath the operator without them typing.)
+const WORK_FIELDS = ['platform', 'content', 'title', 'altText', 'metaDescription', 'client', 'imageUrl', 'scheduledDate', 'status', 'tags', 'isTemplate'];
+const workSignature = (fd) => JSON.stringify(WORK_FIELDS.map((k) => fd[k]));
 
 // Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
 const PLATFORM_ACTIVE_CLASSES = {
@@ -73,11 +81,52 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const [previewMode, setPreviewMode] = useState(false);
   const [isSparkOpen, setIsSparkOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // What the media picker fills: the cover image slot, or an inline markdown
+  // image at the captured cursor position (toolbar image button, long-form).
+  const [pickerMode, setPickerMode] = useState('cover');
+  const inlineRangeRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [altLoading, setAltLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  // Locally-recovered unsaved work (see the autosave effects below).
+  const [recovered, setRecovered] = useState(null);
   const textareaRef = useRef(null);
+
+  // Last-saved (or loaded) snapshot — the unsaved-changes guard compares
+  // against this. Seeded from the first render's defaults; the post-load
+  // effect re-seeds it whenever a post is opened.
+  const pristineRef = useRef(null);
+  if (pristineRef.current === null) pristineRef.current = formData;
+
+  // Mirror of the current content for callbacks that fire from child components
+  // (AI results, Spark Deck) — reading state through a ref avoids acting on a
+  // stale closure when the reply lands after further typing.
+  const contentRef = useRef('');
+  contentRef.current = formData.content;
+
+  // Full form mirror for the flush paths (beforeunload, discard-confirm) whose
+  // handlers are mounted once and must still snapshot CURRENT values.
+  const formDataRef = useRef(formData);
+  formDataRef.current = formData;
+
+  // The Restore toast outlives this editor (the Toast is App-owned) — its
+  // action must know whether there is still an editor to restore into.
+  const editorAliveRef = useRef(true);
+  useEffect(() => {
+    editorAliveRef.current = true;
+    return () => { editorAliveRef.current = false; };
+  }, []);
+
+  // One local autosave slot per post, with separate slots for the two distinct
+  // "new" flows (New Thread vs New Template) so recovery can't offer a draft
+  // from the other flow. Not per-client on purpose: the point is crash/mis-click
+  // recovery of the LAST thing being written, not a drafts system.
+  const autosaveKey = `spool:autosave:${post?.id || (post?.isTemplate ? 'new-template' : 'new')}`;
+  // Bumped by clearAutosave so an in-flight debounced write can't resurrect a
+  // snapshot that a successful save just removed.
+  const autosaveGenRef = useRef(0);
 
   // --- Resizable preview panel (desktop) ---
   const PREVIEW_MIN = 320;
@@ -199,15 +248,114 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         tags: [],
         isTemplate: false
       };
-      setFormData({
+      const loaded = {
         ...defaultState,
         ...post,
         // A post with no client (e.g. "New template") still gets the caller's context.
         client: post.client || initialClient,
         scheduledDate: safeDateString
-      });
+      };
+      setFormData(loaded);
+      // The loaded post IS the saved state — re-arm the unsaved-changes guard from it.
+      pristineRef.current = loaded;
     }
   }, [post, initialClient]);
+
+  const isDirty = workSignature(formData) !== workSignature(pristineRef.current);
+  const isDirtyRef = useRef(false);
+  isDirtyRef.current = isDirty;
+
+  // Snapshot + write, shared by the debounced path and the synchronous flush
+  // paths. Reads through refs so once-mounted handlers see current values.
+  // Data-URL images are OMITTED (not blanked): a 500KB base64 blob would blow
+  // the localStorage budget, and omitting means a restore leaves whatever image
+  // the post currently has untouched.
+  const writeAutosaveNow = () => {
+    if (isReadOnly || !isDirtyRef.current) return;
+    const fd = formDataRef.current;
+    const snap = {};
+    for (const k of WORK_FIELDS) snap[k] = fd[k];
+    if (typeof snap.imageUrl === 'string' && snap.imageUrl.startsWith('data:')) delete snap.imageUrl;
+    snap.savedAt = Date.now();
+    try { window.localStorage?.setItem(autosaveKey, JSON.stringify(snap)); } catch { /* quota/private mode */ }
+  };
+
+  const clearAutosave = () => {
+    autosaveGenRef.current += 1; // invalidate any pending debounced write
+    try { window.localStorage?.removeItem(autosaveKey); } catch { /* private mode */ }
+  };
+
+  // Warn before the tab closes with unsaved edits — and flush the snapshot
+  // FIRST, so "a copy was auto-saved" is true even if the user closes anyway
+  // within the debounce window. (In-app close goes through the discard confirm.)
+  useEffect(() => {
+    const onBeforeUnload = (ev) => {
+      if (isDirtyRef.current) {
+        writeAutosaveNow();
+        ev.preventDefault();
+        ev.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    // writeAutosaveNow reads only refs + the stable autosaveKey — safe to mount once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --- Autosave: recover work lost to a crash, refresh, or stray click. ---
+  // Offer recovery when a local snapshot differs from what the post actually
+  // holds; silently clean up snapshots that match (i.e. the save went through).
+  // The comparison is field-wise over EVERYTHING the snapshot captured — a
+  // snapshot whose only divergence is schedule/status/tags/client must NOT be
+  // treated as "already saved" and deleted. Declared AFTER the post-load effect
+  // so pristineRef holds the loaded post when this runs.
+  useEffect(() => {
+    let saved = null;
+    try { saved = JSON.parse(window.localStorage?.getItem(autosaveKey) || 'null'); } catch { saved = null; }
+    if (!saved || typeof saved !== 'object' || typeof saved.content !== 'string') return;
+    const pristine = pristineRef.current || {};
+    const matchesLoaded = WORK_FIELDS.every((k) => {
+      if (!(k in saved)) return true;
+      // App trims content at save — don't let trailing whitespace alone summon a banner.
+      if (k === 'content') return String(saved[k] ?? '').trim() === String(pristine[k] ?? '').trim();
+      return JSON.stringify(saved[k] ?? null) === JSON.stringify(pristine[k] ?? null);
+    });
+    if (matchesLoaded) {
+      clearAutosave();
+      return;
+    }
+    setRecovered(saved);
+    // Keyed by the autosave slot: post identity is fixed for the life of this editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autosaveKey]);
+
+  // Debounced write while dirty; the generation check keeps a timer that was
+  // already queued when clearAutosave ran from resurrecting a stale snapshot.
+  useEffect(() => {
+    if (isReadOnly || !isDirty) return undefined;
+    const gen = autosaveGenRef.current;
+    const t = setTimeout(() => {
+      if (gen !== autosaveGenRef.current) return;
+      writeAutosaveNow();
+    }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData, isDirty, isReadOnly, autosaveKey]);
+
+  const restoreRecovered = () => {
+    if (!recovered) return;
+    setFormData(prev => {
+      const next = { ...prev };
+      for (const k of WORK_FIELDS) {
+        if (recovered[k] !== undefined) next[k] = recovered[k];
+      }
+      // A client member's posts stay pinned to their own client (save path
+      // enforces it anyway — don't even show a recovered foreign name).
+      if (clientLocked) next.client = prev.client;
+      return next;
+    });
+    setRecovered(null);
+  };
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -216,8 +364,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
 
   const currentPlatform = PLATFORMS[formData.platform] || PLATFORMS.gmb;
   const isLongForm = currentPlatform.longForm === true;
-  const wordCount = formData.content.length;
-  const isOverLimit = wordCount > currentPlatform.maxChars;
+  // X/Twitter counts URLs as 23 (t.co) and emoji/CJK as 2 — raw .length lies in
+  // both directions there. Everywhere else the raw length is the real limit.
+  const charCount = formData.platform === 'twitter' ? twitterLength(formData.content) : formData.content.length;
+  const isOverLimit = charCount > currentPlatform.maxChars;
 
   // ⚡ The live preview re-renders at DEFERRED priority: typing stays responsive
   // even while react-markdown re-parses a long blog post, and MobilePreview's memo
@@ -232,11 +382,59 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (isReadOnly || isOverLimit || !formData.content || isSaving) return;
     setIsSaving(true);
     try {
-      await onSave(formData);
+      // onSave returns true only when the write actually happened (validation
+      // failures toast and return false) — only then is the local autosave
+      // safety net obsolete.
+      const ok = await onSave(formData);
+      if (ok === true) {
+        pristineRef.current = formData;
+        clearAutosave();
+      }
     } finally {
       setIsSaving(false);
     }
   };
+
+  // Wholesale content replacement (AI draft/improve, Spark Deck). One click
+  // used to silently obliterate an hour of writing — now the previous version
+  // rides along on the toast's Restore button. The toast is App-owned and can
+  // outlive this editor (close right after replacing) — say so instead of
+  // silently no-oping a setState on an unmounted component.
+  const replaceContent = (txt) => {
+    const prevContent = contentRef.current;
+    setFormData(prev => ({ ...prev, content: txt }));
+    if (prevContent.trim() && prevContent.trim() !== String(txt || '').trim()) {
+      showToast?.('Content replaced', 'success', {
+        label: 'Restore previous',
+        onClick: () => {
+          if (!editorAliveRef.current) {
+            showToast?.('The editor was closed — reopen the draft to restore', 'error');
+            return;
+          }
+          setFormData(p => ({ ...p, content: prevContent }));
+        },
+      });
+    }
+  };
+
+  const requestCancel = () => {
+    if (isDirty && !isReadOnly) setShowDiscardConfirm(true);
+    else onCancel();
+  };
+
+  // Long-form drafts grow the textarea with the content (the surrounding pane
+  // scrolls) instead of squeezing a 1,200-word post into a fixed 15-line box.
+  // Social platforms keep the fixed height — their content is short by rule.
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    if (!isLongForm) {
+      ta.style.height = '';
+      return;
+    }
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.max(384, ta.scrollHeight + 2)}px`;
+  }, [formData.content, isLongForm, previewMode]);
 
   const handleAltText = async () => {
     if (altLoading || !formData.imageUrl) return;
@@ -275,8 +473,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       <div className={`flex-1 min-w-0 flex flex-col h-full border-r border-slate-200 ${previewMode ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex items-center gap-3">
-             <button onClick={onCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
+             <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
+             {isDirty && !isReadOnly && (
+               <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 uppercase tracking-wider" title="You have unsaved changes">
+                 Unsaved
+               </span>
+             )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -298,6 +501,23 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
+          {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
+          {recovered && !isReadOnly && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+              <History size={18} className="text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-amber-800">Unsaved work recovered</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  A draft auto-saved {recovered.savedAt ? `on ${new Date(recovered.savedAt).toLocaleString()} ` : ''}on this device differs from what&apos;s shown. Restore it, or dismiss to keep what&apos;s here.
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button onClick={restoreRecovered} className="px-3 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-full">Restore</button>
+                <button onClick={() => { setRecovered(null); clearAutosave(); }} className="px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 rounded-full">Dismiss</button>
+              </div>
+            </div>
+          )}
+
           {/* Platform Select */}
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform</label>
@@ -370,7 +590,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                   clientId={genClientId(formData.client)}
                   currentText={formData.content}
                   showToast={showToast}
-                  onResult={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
+                  onResult={replaceContent}
                   onAppend={(tags) => setFormData(prev => ({ ...prev, content: (prev.content.trim() + '\n\n' + tags).trim() }))}
                 />
               </div>
@@ -391,13 +611,18 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             {isLongForm && (
               <MarkdownToolbar
                 textareaRef={textareaRef}
-                value={formData.content}
-                onChange={(txt) => setFormData(prev => ({ ...prev, content: txt }))}
+                onImageRequest={!isReadOnly ? () => {
+                  // Capture where the cursor is NOW — opening the picker moves focus.
+                  const ta = textareaRef.current;
+                  inlineRangeRef.current = ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null;
+                  setPickerMode('inline');
+                  setPickerOpen(true);
+                } : undefined}
               />
             )}
             <textarea
                ref={textareaRef}
-               className={`w-full ${isLongForm ? 'h-96' : 'h-64'} p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
+               className={`w-full ${isLongForm ? 'min-h-96 overflow-hidden' : 'h-64'} p-4 rounded-xl border-2 text-base leading-relaxed resize-none focus:ring-0 transition-all ${isOverLimit ? 'border-rose-300 focus:border-rose-500 bg-rose-50' : 'border-slate-200 focus:border-indigo-500 bg-white'}`}
                placeholder={currentPlatform.placeholder}
                value={formData.content}
                onChange={(e) => setFormData({ ...formData, content: e.target.value })}
@@ -408,10 +633,21 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                  }
                }}
             />
+            {/* Soft correctness hints — never block, just tell the truth about the target. */}
+            {!isLongForm && looksLikeSocialMarkdown(formData.content) && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Markdown formatting (like **bold** or [links](…)) posts as literal characters on {currentPlatform.name} — write plain text here.
+              </p>
+            )}
+            {isLongForm && containsRawHtml(formData.content) && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                This draft contains raw HTML/JSX. The preview shows it as plain text, but the published site will interpret it — check the published result.
+              </p>
+            )}
             {/* ✅ RESTORED: Char Counter (hidden for long-form blog) */}
             {!isLongForm && (
               <div className="absolute bottom-16 right-4">
-                 <CharCountCircle current={wordCount} max={currentPlatform.maxChars} />
+                 <CharCountCircle current={charCount} max={currentPlatform.maxChars} />
               </div>
             )}
           </div>
@@ -616,7 +852,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         <SparkDeck
           onClose={() => setIsSparkOpen(false)}
           onSelect={(txt) => {
-            setFormData(prev => ({ ...prev, content: txt }));
+            replaceContent(txt);
             setIsSparkOpen(false);
           }}
         />
@@ -624,8 +860,23 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
 
       {pickerOpen && (
         <MediaPicker
-          onClose={() => setPickerOpen(false)}
-          onSelect={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
+          onClose={() => { setPickerOpen(false); setPickerMode('cover'); }}
+          onSelect={(url) => {
+            if (pickerMode === 'inline') {
+              // Insert a markdown image at the cursor position captured when the
+              // picker opened; caret lands in the alt-text brackets. Deferred a
+              // frame so the closing modal can't steal focus back.
+              const ta = textareaRef.current;
+              const r = inlineRangeRef.current;
+              if (ta && r) {
+                requestAnimationFrame(() => replaceRange(ta, r.start, r.end, `![](${url})`, r.start + 2, r.start + 2));
+              } else {
+                setFormData(prev => ({ ...prev, content: `${prev.content.replace(/\n+$/, '')}\n\n![](${url})` }));
+              }
+            } else {
+              setFormData(prev => ({ ...prev, imageUrl: url }));
+            }
+          }}
           showToast={showToast}
           /* The post's client resolved to the canonical SLUG (same genClientId chain the AI calls
              use: stamped id → clientIdByName → branding doc → slugify fallback) so the picker can
@@ -633,6 +884,25 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
           clientKey={genClientId(formData.client)}
           clientName={formData.client}
           clientImages={postImagesByClient[formData.client] || []}
+        />
+      )}
+
+      {/* Discard confirm — the only way an in-app close loses dirty edits is
+          through this explicit choice (the autosave still keeps a local copy). */}
+      {showDiscardConfirm && (
+        <ConfirmModal
+          type="danger"
+          title="Discard unsaved changes?"
+          message="This thread has edits that haven't been saved. A copy was auto-saved on this device, so you can recover it if you reopen the editor."
+          confirmLabel="Discard"
+          onCancel={() => setShowDiscardConfirm(false)}
+          onConfirm={() => {
+            // Flush the snapshot NOW — the debounced write is cancelled at
+            // unmount, and the modal just promised a local copy exists.
+            writeAutosaveNow();
+            setShowDiscardConfirm(false);
+            onCancel();
+          }}
         />
       )}
     </div>

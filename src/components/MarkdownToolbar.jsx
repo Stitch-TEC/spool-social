@@ -1,15 +1,23 @@
 import React from 'react';
-import { Bold, Italic, Heading2, List, Link2, Quote, Code } from 'lucide-react';
+import {
+  Bold, Italic, Heading1, Heading2, Heading3, List, ListOrdered, Link2, Quote,
+  Code, SquareCode, Table, Image as ImageIcon,
+} from 'lucide-react';
+import {
+  replaceRange, computeWrapToggle, computeLineToggle, computeCodeFence,
+  computeTableInsert, LINE_KINDS,
+} from '../utils/markdownEditing';
 
 // Lightweight "WYSIWYG-ish" toolbar: inserts Markdown at the cursor/selection.
-// Keeps content as portable Markdown (no heavy rich-text dependency).
+// Keeps content as portable Markdown (no heavy rich-text dependency). All ops
+// go through replaceRange (execCommand insertText) so ⌘Z undoes a toolbar
+// click the same as typing, and re-applying an op toggles it off.
 const WRAP = {
   bold: { before: '**', after: '**', ph: 'bold text' },
   italic: { before: '*', after: '*', ph: 'italic text' },
   code: { before: '`', after: '`', ph: 'code' },
   link: { before: '[', after: '](https://)', ph: 'link text' },
 };
-const LINE = { h2: '## ', ul: '- ', quote: '> ' };
 
 // Module-scope so it isn't recreated each render (react-hooks/static-components).
 // onMouseDown preventDefault keeps the textarea selection from clearing on click.
@@ -26,44 +34,44 @@ const Btn = ({ onClick, title, children }) => (
   </button>
 );
 
-const MarkdownToolbar = ({ textareaRef, value, onChange }) => {
-  const applyWrap = (cfg) => {
+const Divider = () => <span className="w-px h-4 bg-slate-300 mx-1" />;
+
+const MarkdownToolbar = ({ textareaRef, onImageRequest }) => {
+  // The textarea is controlled, so ta.value IS the current content — reading it
+  // directly avoids a stale `value` prop between fast consecutive clicks.
+  const run = (compute) => {
     const ta = textareaRef.current;
     if (!ta) return;
-    const s = ta.selectionStart, e = ta.selectionEnd;
-    const sel = value.slice(s, e) || cfg.ph;
-    const next = value.slice(0, s) + cfg.before + sel + cfg.after + value.slice(e);
-    onChange(next);
-    requestAnimationFrame(() => {
-      ta.focus();
-      const pos = s + cfg.before.length;
-      ta.setSelectionRange(pos, pos + sel.length);
-    });
+    const r = compute(ta.value, ta.selectionStart, ta.selectionEnd);
+    replaceRange(ta, r.start, r.end, r.text, r.selStart, r.selEnd);
   };
 
-  const applyLine = (prefix) => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    const s = ta.selectionStart;
-    const lineStart = value.lastIndexOf('\n', s - 1) + 1;
-    const next = value.slice(0, lineStart) + prefix + value.slice(lineStart);
-    onChange(next);
-    requestAnimationFrame(() => {
-      ta.focus();
-      ta.setSelectionRange(s + prefix.length, s + prefix.length);
-    });
-  };
+  const wrap = (cfg) => run((v, s, e) => computeWrapToggle(v, s, e, cfg));
+  const line = (kind) => run((v, s, e) => computeLineToggle(v, s, e, kind));
 
   return (
-    <div className="flex items-center gap-0.5 mb-2 p-1 bg-slate-100 border border-slate-200 rounded-lg w-fit">
-      <Btn onClick={() => applyLine(LINE.h2)} title="Heading"><Heading2 size={16} /></Btn>
-      <Btn onClick={() => applyWrap(WRAP.bold)} title="Bold"><Bold size={16} /></Btn>
-      <Btn onClick={() => applyWrap(WRAP.italic)} title="Italic"><Italic size={16} /></Btn>
-      <span className="w-px h-4 bg-slate-300 mx-1" />
-      <Btn onClick={() => applyLine(LINE.ul)} title="List"><List size={16} /></Btn>
-      <Btn onClick={() => applyLine(LINE.quote)} title="Quote"><Quote size={16} /></Btn>
-      <Btn onClick={() => applyWrap(WRAP.link)} title="Link"><Link2 size={16} /></Btn>
-      <Btn onClick={() => applyWrap(WRAP.code)} title="Inline code"><Code size={16} /></Btn>
+    <div className="flex flex-wrap items-center gap-0.5 mb-2 p-1 bg-slate-100 border border-slate-200 rounded-lg w-fit">
+      <Btn onClick={() => line(LINE_KINDS.h1)} title="Heading 1"><Heading1 size={16} /></Btn>
+      <Btn onClick={() => line(LINE_KINDS.h2)} title="Heading 2"><Heading2 size={16} /></Btn>
+      <Btn onClick={() => line(LINE_KINDS.h3)} title="Heading 3"><Heading3 size={16} /></Btn>
+      <Divider />
+      <Btn onClick={() => wrap(WRAP.bold)} title="Bold"><Bold size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAP.italic)} title="Italic"><Italic size={16} /></Btn>
+      <Divider />
+      <Btn onClick={() => line(LINE_KINDS.ul)} title="Bulleted list"><List size={16} /></Btn>
+      <Btn onClick={() => line(LINE_KINDS.ol)} title="Numbered list"><ListOrdered size={16} /></Btn>
+      <Btn onClick={() => line(LINE_KINDS.quote)} title="Quote"><Quote size={16} /></Btn>
+      <Divider />
+      <Btn onClick={() => wrap(WRAP.link)} title="Link"><Link2 size={16} /></Btn>
+      <Btn onClick={() => wrap(WRAP.code)} title="Inline code"><Code size={16} /></Btn>
+      <Btn onClick={() => run(computeCodeFence)} title="Code block"><SquareCode size={16} /></Btn>
+      <Btn onClick={() => run((v, s) => computeTableInsert(v, s))} title="Table"><Table size={16} /></Btn>
+      {onImageRequest && (
+        <>
+          <Divider />
+          <Btn onClick={onImageRequest} title="Insert image from library"><ImageIcon size={16} /></Btn>
+        </>
+      )}
     </div>
   );
 };

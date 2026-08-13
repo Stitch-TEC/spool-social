@@ -16,6 +16,8 @@ import { createAutomation, getAutomation, listAutomations, updateAutomation, del
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
 import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
+// Shared with the SPA editor (pure string helpers — no DOM at module scope).
+import { stripLeadingDuplicateH1 } from '../src/utils/markdownEditing.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push) --------------------------------
 // Deliberately a TINY markdown subset (headings, lists, bold/italic, links, images, paragraphs):
@@ -38,8 +40,11 @@ function mdInline(escaped) {
 function postToEmailHtml(post) {
   // Normalize CRLF/CR first — pasted content is often \r\n, and the \n-only block split below
   // would otherwise see the ENTIRE post as one giant paragraph.
-  const content = String(post?.content || '').replace(/\r\n?/g, '\n').trim();
+  let content = String(post?.content || '').replace(/\r\n?/g, '\n').trim();
   if (!content && !post?.title) return '';
+  // The title renders as its own <h1> below — a body that OPENS by repeating it
+  // (AI drafts are told to start with an H1) would put the headline in twice.
+  if (post?.title) content = stripLeadingDuplicateH1(content, post.title);
   const parts = [];
   if (post.title) parts.push(`<h1>${escapeHtml(post.title)}</h1>`);
   // Hero image: hosted /media URLs are already absolute; data URLs are fine (Sender re-hosts them).
@@ -77,6 +82,13 @@ const MAX_PROMPT = 2000;
 const PLATFORM_MAX = Object.fromEntries(
   Object.values(PLATFORM_META).map(p => [p.id, p.maxChars])
 );
+
+// Intake bound for draft content. X's REAL limit is weighted (URLs count 23,
+// emoji 2 — see src/utils/markdownEditing.js twitterLength), so slicing tweets
+// at the raw 280 can cut a URL in half on content the editor would accept
+// whole. Drafts are human-reviewed — the editor enforces the weighted limit at
+// save — so intake only bounds twitter with a generous raw backstop.
+const rawIntakeCap = (platform) => (platform === 'twitter' ? 1000 : (PLATFORM_MAX[platform] || 100000));
 
 // --- Automation config validation (shared by POST create + PATCH update) -----
 const AUTO_CONTENT_TYPES = ['text', 'image', 'text+image'];
@@ -1105,6 +1117,11 @@ export default {
       // newlines — a raw newline inside a double-quoted YAML scalar is invalid and would fail the
       // client site's build (review fix 2026-07-23).
       const yq = (s) => String(s).replace(/[\r\n]+/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // Frontmatter carries the title — a body that OPENS by repeating it as an
+      // H1 (AI drafts are told to start with one) would title the page twice.
+      // Only applies on the frontmatter-we-compose branch; a draft that brought
+      // its own frontmatter ships byte-identical.
+      const bodyMd = stripLeadingDuplicateH1(md, title);
       const content = md.startsWith('---\n')
         ? md
         : [
@@ -1114,7 +1131,7 @@ export default {
             `date: "${new Date().toISOString().slice(0, 10)}"`,
             '---',
             '',
-            md,
+            bodyMd,
           ].join('\n');
 
       try {
@@ -1166,7 +1183,7 @@ export default {
         if (request.method === 'PATCH') {
           let body;
           try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-          const max = PLATFORM_MAX[existing.platform] || 100000;
+          const max = rawIntakeCap(existing.platform);
           const patch = {};
           if (typeof body.content === 'string') patch.content = body.content.trim().slice(0, max);
           if (typeof body.title === 'string') patch.title = body.title.trim().slice(0, 200);
@@ -1282,7 +1299,7 @@ export default {
         // wrongly validate and let a junk platform through). PLATFORM_MAX is a plain object literal.
         if (!Object.prototype.hasOwnProperty.call(PLATFORM_MAX, platform)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
 
-        const content = (body?.content || '').toString().trim().slice(0, PLATFORM_MAX[platform]);
+        const content = (body?.content || '').toString().trim().slice(0, rawIntakeCap(platform));
         if (!content) return json({ error: 'content is required' }, 400, cors);
         const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);

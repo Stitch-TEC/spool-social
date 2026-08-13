@@ -2,7 +2,7 @@ import React from 'react';
 import { AlertTriangle, Layers } from 'lucide-react';
 import useEscapeKey from '../hooks/useEscapeKey';
 
-const ConfirmModal = ({ title, message, onConfirm, onCancel, type = 'action' }) => {
+const ConfirmModal = ({ title, message, onConfirm, onCancel, type = 'action', confirmLabel }) => {
   useEscapeKey(onCancel);
   return (
     <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
@@ -15,7 +15,7 @@ const ConfirmModal = ({ title, message, onConfirm, onCancel, type = 'action' }) 
         <div className="flex gap-3">
           <button onClick={onCancel} className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-medium rounded-xl hover:bg-slate-200 transition-colors">Cancel</button>
           <button onClick={onConfirm} className={`flex-1 py-2.5 text-white font-medium rounded-xl transition-colors ${type === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-            {type === 'danger' ? 'Delete' : 'Confirm'}
+            {confirmLabel || (type === 'danger' ? 'Delete' : 'Confirm')}
           </button>
         </div>
       </div>
