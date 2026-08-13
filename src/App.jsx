@@ -35,6 +35,7 @@ import MediaLibrary from './components/MediaLibrary';
 import ImportExportModal from './components/ImportExportModal';
 import PostControls from './components/PostControls';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
+import { twitterLength } from './utils/markdownEditing';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import ShareManager from './components/ShareManager';
@@ -206,7 +207,7 @@ const App = () => {
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData) => {
-    if (isReadOnly) return;
+    if (isReadOnly) return false;
 
     // 🔒 SECURITY: Input Validation & Sanitization. A client member can only
     // write to their OWN client (pinned); the operator picks the client. On a
@@ -227,10 +228,16 @@ const App = () => {
       .map(tag => String(tag).trim().slice(0, 20))
       .filter(Boolean);
 
-    if (!client) return showToast("Client name is required", "error");
-    if (!content) return showToast("Content cannot be empty", "error");
-    if (content.length > platform.maxChars) {
-      return showToast(`Content exceeds ${platform.name} limit (${platform.maxChars} chars)`, "error");
+    // Returns true only on a real write — the Editor keeps its local autosave
+    // safety net alive until then (validation failures toast and return false).
+    if (!client) { showToast("Client name is required", "error"); return false; }
+    if (!content) { showToast("Content cannot be empty", "error"); return false; }
+    // X/Twitter enforces its WEIGHTED count (URLs = 23, emoji/CJK = 2) — the
+    // same measure the Editor's counter shows — not the raw string length.
+    const effectiveLength = platformId === 'twitter' ? twitterLength(content) : content.length;
+    if (effectiveLength > platform.maxChars) {
+      showToast(`Content exceeds ${platform.name} limit (${platform.maxChars} chars)`, "error");
+      return false;
     }
 
     // Evergreen cap: block a NEW template (or flipping an existing post into one)
@@ -239,7 +246,8 @@ const App = () => {
     if (formData.isTemplate && !existingPost?.isTemplate) {
       const templateCount = postsRef.current.filter(p => p.isTemplate && p.client === client).length;
       if (templateCount >= TEMPLATE_LIMIT_PER_CLIENT) {
-        return showToast(`Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${client}. Delete one to add another.`, "error");
+        showToast(`Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${client}. Delete one to add another.`, "error");
+        return false;
       }
     }
 
@@ -327,9 +335,11 @@ const App = () => {
 
       setView('grid');
       setEditingPost(null);
+      return true;
     } catch (error) {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");
+      return false;
     }
   }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName]);
 
@@ -760,7 +770,11 @@ const App = () => {
         uid: OPERATOR_UID,
         clientId: isClientMember ? myClientId : clientIdFor(cName),
         client: cName,
-        content: (d.content || '').trim().slice(0, platform.maxChars),
+        // X's limit is WEIGHTED (URLs=23) — a raw 280-char slice can cut a URL
+        // in half on a tweet the editor would accept whole. Bound twitter with a
+        // generous raw backstop instead; the editor enforces the weighted limit
+        // before the draft can be saved onward.
+        content: (d.content || '').trim().slice(0, d.platform === 'twitter' ? 1000 : platform.maxChars),
         title: '',
         platform: d.platform,
         status: STATUS.DRAFT,
