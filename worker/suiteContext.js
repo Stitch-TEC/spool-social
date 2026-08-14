@@ -129,6 +129,9 @@ export async function fetchClientSignals(env, slug) {
           ? { ...d.site, index: Array.isArray(d.site.index) ? d.site.index : [] }
           : { pages: [], index: [] },
         repos: Array.isArray(d.repos) ? d.repos : [],
+        // GBP reviews (broker-synced, public data — they're on Google Maps): drafting material
+        // for the Ideas panel. Optional on old brokers (absent → no review ideas, nothing breaks).
+        reviews: Array.isArray(d.reviews) ? d.reviews : [],
       },
     };
   } catch (err) {
