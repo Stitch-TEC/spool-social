@@ -116,10 +116,12 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ))}
-              {/* Push to Sender (operator-only via handler presence): templates + blog/long-form
-                  become a campaign-ready email template in the client's Sender tenant. Hidden on
-                  suggestions (no tenant yet — promote first). */}
-              {!isSuggestion && onPushToSender && (post.isTemplate || post.platform === 'blog') && (
+              {/* Push to Sender (operator-only via handler presence): templates + APPROVED
+                  blog drafts become a campaign-ready email template in the client's Sender
+                  tenant (same review gate as publish-to-site; the worker enforces it too).
+                  Templates are exempt — the Templates library sits outside the review queue,
+                  so a client can never approve one. Hidden on suggestions (promote first). */}
+              {!isSuggestion && onPushToSender && (post.isTemplate || (post.platform === 'blog' && post.approvalStatus === APPROVAL_STATUS.APPROVED)) && (
                 <button onClick={(e) => { e.stopPropagation(); onPushToSender(post); }} title="Push to Sender (email template)" aria-label="Push to Sender (email template)" className="p-2 sm:p-1.5 text-slate-400 hover:text-violet-600 rounded-md"><Send size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               )}
               {/* Publish to site (operator-only via handler presence): APPROVED blog drafts stage
