@@ -945,6 +945,14 @@ export default {
       if (!post) return json({ error: 'Post not found' }, 404, cors);
       // A parked suggestion has no tenant — promote it first (the explicit gate stays load-bearing).
       if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
+      // Review gate (operator decision 2026-08-13, closing the §8 asymmetry with the publish
+      // lane): a DRAFT must finish the client review loop before it lands in the client's
+      // email tool. Reusable templates are exempt BY NECESSITY, not leniency — the Templates
+      // library is excluded from the drafts API / review queue by design, so a client can
+      // never approve one; gating them would dead-end every template push.
+      if (!post.isTemplate && post.approvalStatus !== 'approved') {
+        return json({ error: 'Only approved drafts can be pushed to Sender — get the draft approved first' }, 409, cors);
+      }
 
       // Resolve the ROSTER slug — never slugify a display name (the documented phantom-slug bug):
       // trust a stamped clientId only if the roster issued it; else match the display name.
@@ -1085,8 +1093,8 @@ export default {
       const post = await getPost(env, postId);
       if (!post) return json({ error: 'Post not found' }, 404, cors);
       if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
-      // STRICTER than the Sender push, deliberately: site publication is the client's public
-      // voice — only content that finished the review loop may stage.
+      // Same review gate as the Sender push (aligned 2026-08-13): only content that
+      // finished the review loop may stage — site publication is the client's public voice.
       if (post.approvalStatus !== 'approved') {
         return json({ error: 'Only approved drafts can be published to the site — get the draft approved first' }, 409, cors);
       }
