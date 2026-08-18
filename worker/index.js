@@ -5,14 +5,16 @@
 //   GET  /api/ideas?client=X                   -> { ok, slug, signals }  (site/repo idea signals)
 //   GET  /media/<key>                          -> the stored image
 //   GET  /api/health                           -> { ok: true }
+//   POST /api/client-rename | /api/client-purge -> internal-key only (broker client lifecycle)
 //   *                                          -> static assets (the Vite SPA)
 
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, countDraftSummary, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord } from './firestore.js';
+import { createPost, getPost, listPosts, countDraftSummary, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord , getDocRaw } from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
+import { listDocsWhere, batchUpdateDocs, batchDeleteDocs, mergeDocRaw } from './firestore.js';
 import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
 import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, renderSenderPreview, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
@@ -247,6 +249,132 @@ async function runGC(env) {
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
   console.log(`GC: deleted ${deleted} orphaned image(s), kept ${kept}.`);
+}
+
+// --- Client lifecycle (rename propagation + purge) — driven by the broker's /clients/lifecycle -----
+// Everything here is keyed by the SLUG field (clientId / forClientId) — the suite join key — never
+// by display name, so a doc from another tenant is never touched. Each store is a best-effort step
+// that reports its own count or error (never a silent success), mirroring the broker's
+// /people/propagate posture. Both flows are idempotent: a re-run finds nothing left to change.
+const SLUG_RE = /^[a-z0-9-]{1,64}$/;
+
+// Run one store step; record `count` on success or `count`-so-far + `error` on failure.
+async function lifecycleStep(results, store, fn) {
+  try { results.counts[store] = await fn(); }
+  catch (err) {
+    results.counts[store] = Number.isFinite(err?.committed) ? err.committed : 0;
+    results.errors.push({ store, error: err?.message || String(err) });
+    console.error(`[client-lifecycle] ${store} failed:`, err?.message || err);
+  }
+}
+
+// Tenant filter on a `field == slug` query result. For the clientId field the query already
+// guarantees the match (kept as a belt). For forClientId — suggestions (App.jsx:252-260 tenant
+// semantics: EMPTY clientId + forClientId = the client it's parked for) — only true suggestions
+// qualify; a promoted post carries clientId and is handled by the clientId pass, so nothing is
+// counted or touched twice.
+function ownedBy(docs, field, clientId) {
+  return docs.filter(d => (field === 'forClientId' ? !d.fields.clientId : d.fields.clientId === clientId));
+}
+
+// Relabel every owned doc in `collection` whose display name isn't already `to`.
+async function relabelWhere(env, collection, field, clientId, patch) {
+  const docs = await listDocsWhere(env, collection, field, clientId, { select: ['client', 'clientId'] });
+  const stale = ownedBy(docs, field, clientId).filter(d => d.fields.client !== patch.client).map(d => d.name);
+  const n = await batchUpdateDocs(env, stale, patch);
+  // A capped listing is a partial result — say so (the broker shows it), never claim completeness.
+  if (docs.truncated) { const e = new Error(`${collection}: listing capped — ${n} relabeled, re-run to continue`); e.committed = n; throw e; }
+  return n;
+}
+
+async function propagateClientRename(env, clientId, to) {
+  const results = { counts: {}, errors: [] };
+  const now = new Date().toISOString();
+  await lifecycleStep(results, 'posts', () => relabelWhere(env, 'posts', 'clientId', clientId, { client: to, updatedAt: now }));
+  await lifecycleStep(results, 'suggestions', () => relabelWhere(env, 'posts', 'forClientId', clientId, { client: to, updatedAt: now }));
+  await lifecycleStep(results, 'shares', () => relabelWhere(env, 'shares', 'clientId', clientId, { client: to }));
+  await lifecycleStep(results, 'automations', () => relabelWhere(env, 'automations', 'clientId', clientId, { client: to, updatedAt: now }));
+  // Branding docs are NAME-keyed (`${OWNER_UID}__${encodeURIComponent(name)}`, ClientSettingsModal)
+  // but found by the clientId FIELD (getClientSettings). Move every OWNER-workspace doc for this
+  // slug onto the new name key: lossless raw copy merged over any existing target, then delete
+  // the old key. A doc already on the target key only gets its `name` field corrected.
+  await lifecycleStep(results, 'branding', async () => {
+    const targetId = `${env.OWNER_UID}__${encodeURIComponent(to)}`;
+    // TENANT GUARD on the name-keyed target: another slug may already own `${OWNER}__${to}` (POM only
+    // advises on duplicate display names). Never merge over a doc whose clientId is a different slug.
+    const existingTarget = await getDocRaw(env, 'clients', targetId);
+    const targetOwner = existingTarget?.clientId?.stringValue || '';
+    if (existingTarget && targetOwner && targetOwner !== clientId) {
+      const e = new Error(`branding: target "${to}" is owned by ${targetOwner} — not moved (rename the other client or pick a distinct name)`);
+      e.committed = 0; throw e;
+    }
+    const docs = await listDocsWhere(env, 'clients', 'clientId', clientId);
+    let changed = 0;
+    for (const d of docs) {
+      if (!d.id.startsWith(`${env.OWNER_UID}__`)) continue; // another workspace's doc — not ours to move
+      if (d.id === targetId) {
+        if (d.fields.name !== to) { await batchUpdateDocs(env, [d.name], { name: to }); changed++; }
+        continue;
+      }
+      // If a target for THIS slug already exists, its (newer) fields win: merge the stale doc UNDER
+      // it (only keys the target lacks), then drop the stale key. Else a lossless move.
+      const under = existingTarget && targetOwner === clientId
+        ? Object.fromEntries(Object.entries(d.raw).filter(([k]) => !(k in existingTarget)))
+        : d.raw;
+      await mergeDocRaw(env, 'clients', targetId, { ...under, name: { stringValue: to }, clientId: { stringValue: clientId } });
+      await batchDeleteDocs(env, [d.name]);
+      changed++;
+    }
+    return changed;
+  });
+  return results;
+}
+
+// Delete every owned doc in `collection` (same tenant filter as relabelWhere).
+// `skip(doc)` may exclude a doc — the caller reports the skips as a note, never silently.
+async function deleteWhere(env, collection, field, clientId, skip) {
+  const docs = await listDocsWhere(env, collection, field, clientId, { select: ['clientId', 'roles'] });
+  const mine = ownedBy(docs, field, clientId);
+  const doomed = skip ? mine.filter(d => !skip(d)) : mine;
+  const deleted = await batchDeleteDocs(env, doomed.map(d => d.name));
+  return { deleted, skipped: mine.length - doomed.length };
+}
+
+// Delete every object under an R2 prefix (paged list, batched delete). Returns the count.
+async function purgeMediaPrefix(env, prefix) {
+  let deleted = 0, cursor;
+  do {
+    const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
+    const keys = listed.objects.map(o => o.key);
+    if (keys.length) { await env.MEDIA.delete(keys); deleted += keys.length; }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  return deleted;
+}
+
+async function purgeClient(env, clientId) {
+  const results = { counts: {}, errors: [], notes: [] };
+  const wipe = (store, collection, field, skip) => lifecycleStep(results, store, async () => {
+    const { deleted, skipped } = await deleteWhere(env, collection, field, clientId, skip);
+    if (skipped) results.notes.push(`${store}: left ${skipped} hand-managed super_admin doc(s) in place`);
+    return deleted;
+  });
+  await wipe('posts', 'posts', 'clientId');
+  await wipe('suggestions', 'posts', 'forClientId');
+  await wipe('shares', 'shares', 'clientId');
+  await wipe('automations', 'automations', 'clientId');
+  // A super_admin doc pinned to this slug is the OPERATOR's own record (bootstrap --client-id) —
+  // deleting it would lock a co-operator out. Same "privileged = hand-managed" line people-sync draws.
+  await wipe('users', 'users', 'clientId', d => (Array.isArray(d.fields.roles) ? d.fields.roles : []).includes('super_admin'));
+  await wipe('branding', 'clients', 'clientId');
+  await lifecycleStep(results, 'media', async () => {
+    if (!env.MEDIA) { results.notes.push('media: no MEDIA binding — R2 library not purged'); return 0; }
+    // The prefix uses the slug VERBATIM — a non-canonical slug (`a--b`) must never normalize onto
+    // another tenant's folder (`a-b`); the route rejects such ids before we get here (belt).
+    if (slugifyClient(clientId) !== clientId) throw new Error(`media: non-canonical slug "${clientId}" — refusing to purge a normalized prefix`);
+    return purgeMediaPrefix(env, `library/${env.OWNER_UID}/${clientId}/`);
+  });
+  return results;
 }
 
 export default {
@@ -620,6 +748,59 @@ export default {
         console.error('people-sync failed:', err?.message || err);
         return json({ ok: false, error: 'sync failed' }, 502, cors);
       }
+    }
+
+    // --- Client lifecycle (rename propagation + purge) — INTERNAL KEY ONLY (broker /clients/lifecycle). ---
+    // Same gate as /api/people-sync: internal key or nothing (401 unauthenticated / 403 non-key),
+    // rate-limited. Slug-keyed, tenant-isolated, idempotent, per-store reported (see the helpers).
+    //   POST /api/client-rename { clientId, from?, to }  → { ok, counts:{posts,suggestions,shares,automations,branding}, errors? }
+    //   POST /api/client-purge  { clientId }             → { ok, counts:{…, users, media}, notes[], errors? }
+    if (url.pathname === '/api/client-rename' || url.pathname === '/api/client-purge') {
+      const isPurge = url.pathname === '/api/client-purge';
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
+      const auth = await authenticate(request, env);
+      if (!auth) return json({ ok: false, error: 'Unauthorized' }, 401, cors);
+      if (auth.mode !== 'apikey') return json({ ok: false, error: 'internal key required' }, 403, cors);
+      const rl = await checkRateLimit(env, auth.principal, auth.mode, Date.now());
+      if (!rl.ok) {
+        return json({ ok: false, error: `Rate limit exceeded (max ${rl.limit}/${rl.scope}).` }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
+      }
+      if (!env.OWNER_UID) return json({ ok: false, error: 'OWNER_UID is not configured' }, 500, cors);
+
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: 'Invalid JSON' }, 400, cors); }
+      // Lowercase like people-sync (fail-safe backstop), then insist on a real slug — a display
+      // name here would silently match nothing (rename) or, worse, be slugified into a folder.
+      const clientId = String(body?.clientId || '').trim().toLowerCase();
+      if (!SLUG_RE.test(clientId)) return json({ ok: false, error: 'clientId must be a slug ([a-z0-9-], 1–64 chars)' }, 400, cors);
+      // Canonical form only: `a--b` / `-a` pass the regex but would normalize onto ANOTHER slug's
+      // R2 folder in the purge — refuse rather than guess.
+      if (slugifyClient(clientId) !== clientId) return json({ ok: false, error: 'clientId must be a canonical slug (no leading/trailing/double hyphens)' }, 400, cors);
+
+      const summarize = (r) => Object.entries(r.counts).map(([k, v]) => `${k}=${v}`).join(' ')
+        + (r.errors.length ? ` errors=${r.errors.map(e => e.store).join(',')}` : '');
+      const stores = (r) => Object.keys(r.counts).length;
+
+      if (!isPurge) {
+        const to = String(body?.to || '').trim();
+        const from = String(body?.from || '').trim().slice(0, 120);
+        if (!to || to.length > 120) return json({ ok: false, error: 'to must be 1–120 chars' }, 400, cors);
+        const r = await propagateClientRename(env, clientId, to);
+        console.log(`[client-rename] ${clientId}: ${JSON.stringify(from)} → ${JSON.stringify(to)} ${summarize(r)}`);
+        const allFailed = r.errors.length && r.errors.length === stores(r);
+        return json({
+          ok: r.errors.length === 0, clientId, to, counts: r.counts,
+          ...(r.errors.length ? { error: allFailed ? 'rename_failed' : 'partial_failure', errors: r.errors } : {}),
+        }, allFailed ? 502 : 200, cors);
+      }
+
+      const r = await purgeClient(env, clientId);
+      console.log(`[client-purge] ${clientId}: ${summarize(r)}${r.notes.length ? ` notes=${r.notes.length}` : ''}`);
+      const allFailed = r.errors.length && r.errors.length === stores(r);
+      return json({
+        ok: r.errors.length === 0, clientId, counts: r.counts, notes: r.notes,
+        ...(r.errors.length ? { error: allFailed ? 'purge_failed' : 'partial_failure', errors: r.errors } : {}),
+      }, allFailed ? 502 : 200, cors);
     }
 
     // --- Generation endpoints ---

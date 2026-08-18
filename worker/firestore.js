@@ -567,6 +567,119 @@ export async function resolveClientId(env, clientName) {
   }
 }
 
+// --- Client-lifecycle helpers (rename propagation + purge; internal-key routes only) --------
+//
+// Generic slug-scoped primitives for /api/client-rename + /api/client-purge. Every helper is
+// keyed by a doc's clientId-style FIELD (the suite join key), never by display name, and every
+// write goes through :commit with the doc's exact resource name (branding doc ids contain
+// percent-escapes, so building URL paths from ids is a footgun). Chunks are ≤400 writes
+// (Firestore's :commit cap is 500). Callers report per-store counts — a chunk failure throws an
+// Error carrying `.committed` (writes already applied) so the caller can still report honestly.
+
+const COMMIT_CHUNK = 400;
+
+export const docResourceName = (env, collectionId, id) =>
+  `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${collectionId}/${id}`;
+
+// Every doc in `collectionId` whose `fieldPath` string-equals `value`. Pages with a __name__
+// cursor (single-field equality + orderBy(__name__) rides the automatic index — no composite).
+// Returns [{ id, name, fields, raw }] — `fields` parsed to plain JS, `raw` the untouched REST
+// typed fields (for lossless copies). `cap` bounds a runaway tenant (default 5000).
+export async function listDocsWhere(env, collectionId, fieldPath, value, { pageSize = 300, cap = 5000, select } = {}) {
+  const token = await getAccessToken(env);
+  const out = [];
+  let startAfter = null;
+  for (;;) {
+    const structuredQuery = {
+      from: [{ collectionId }],
+      where: { fieldFilter: { field: { fieldPath }, op: 'EQUAL', value: { stringValue: String(value) } } },
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: pageSize
+    };
+    if (Array.isArray(select) && select.length) structuredQuery.select = { fields: select.map(fieldPath => ({ fieldPath })) };
+    if (startAfter) structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
+    const res = await fetch(`${FS_BASE(env)}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structuredQuery })
+    });
+    const data = await res.json().catch(() => ([]));
+    if (!res.ok) throw new Error(data?.error?.message || `${collectionId} query failed (${res.status})`);
+    const rows = (Array.isArray(data) ? data : []).filter(r => r.document);
+    for (const r of rows) {
+      const raw = r.document.fields || {};
+      out.push({ id: r.document.name.split('/').pop(), name: r.document.name, fields: fromFields(raw), raw });
+      if (out.length >= cap) { out.truncated = true; return out; } // caller MUST surface this — never a silent partial
+    }
+    if (rows.length < pageSize) return out;
+    startAfter = rows[rows.length - 1].document.name;
+  }
+}
+
+// One doc's raw fields by id (null when absent). Used to inspect a rename TARGET before merging.
+function docResourceUrl(env, collectionId, id) { return `${FS_BASE(env)}/${collectionId}/${encodeURIComponent(id)}`; }
+export async function getDocRaw(env, collectionId, id) {
+  const token = await getAccessToken(env);
+  const res = await fetch(docResourceUrl(env, collectionId, id), { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 404) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `${collectionId}/${id} read failed (${res.status})`);
+  return data.fields || {};
+}
+
+// :commit `writes` in ≤400-write chunks. Returns the number of writes applied. On a failed
+// chunk throws with `.committed` = writes applied by the earlier chunks.
+async function commitChunked(env, writes) {
+  if (!writes.length) return 0;
+  const token = await getAccessToken(env);
+  let committed = 0;
+  for (let i = 0; i < writes.length; i += COMMIT_CHUNK) {
+    const chunk = writes.slice(i, i + COMMIT_CHUNK);
+    const res = await fetch(`${FS_BASE(env)}:commit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ writes: chunk })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const err = new Error(data?.error?.message || `Commit failed (${res.status})`);
+      err.committed = committed;
+      throw err;
+    }
+    committed += chunk.length;
+  }
+  return committed;
+}
+
+// Masked update of the same `patch` on every doc (by exact resource name). `currentDocument.
+// exists=true` so a concurrently-deleted doc is never resurrected as a stub — the chunk fails
+// instead (reported, not silent). Returns the count applied.
+export async function batchUpdateDocs(env, docNames, patch) {
+  const fields = toFields(patch);
+  const updateMask = { fieldPaths: Object.keys(patch) };
+  return commitChunked(env, docNames.map(name => ({
+    update: { name, fields }, updateMask, currentDocument: { exists: true }
+  })));
+}
+
+// Delete every doc (by exact resource name). A delete of an absent doc is a no-op success in
+// :commit, so re-running is idempotent. Returns the count of delete writes applied.
+export async function batchDeleteDocs(env, docNames) {
+  return commitChunked(env, docNames.map(name => ({ delete: name })));
+}
+
+// Merge `rawFields` (REST typed fields, e.g. a doc's `raw` from listDocsWhere) into
+// `collectionId/{id}` — creates the doc if absent, overwrites only the listed fields if present
+// (SPA setDoc(..., {merge:true}) semantics). No precondition on purpose: this IS the upsert.
+export async function mergeDocRaw(env, collectionId, id, rawFields) {
+  const keys = Object.keys(rawFields);
+  if (!keys.length) return 0;
+  return commitChunked(env, [{
+    update: { name: docResourceName(env, collectionId, id), fields: rawFields },
+    updateMask: { fieldPaths: keys }
+  }]);
+}
+
 // All image URLs referenced by any post (for the orphan-image sweep). Paginates
 // with a __name__ cursor: a fixed single-page limit silently dropped references
 // once the posts collection outgrew it, and the GC would then delete images that
