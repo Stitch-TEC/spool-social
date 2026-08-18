@@ -1369,9 +1369,9 @@ export default {
       }
     }
 
-    //   GET    /api/drafts       list (filters: ?clientId= [slug, preferred] &client= [name, legacy] &platform= &status=)
+    //   GET    /api/drafts       list (filters: ?clientId= [slug, preferred] &client= [name, legacy] &platform= &status= &reviewStage=)
     //   GET    /api/drafts/:id    fetch one
-    //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags, approvalStatus+feedback)
+    //   PATCH  /api/drafts/:id    update (text, image, schedule, status, tags, approvalStatus+feedback, reviewStage)
     //   DELETE /api/drafts/:id    delete
     if (url.pathname === '/api/drafts' || url.pathname.startsWith('/api/drafts/')) {
       const auth = await authenticate(request, env);
@@ -1413,6 +1413,20 @@ export default {
             patch.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
           }
           if (['draft', 'scheduled', 'posted', 'archived'].includes(body.status)) patch.status = body.status;
+          // Staging axis (src/utils/review.js): 'private' keeps the draft off the client's
+          // review link, 'in_review' publishes it there. Sending also (re)arms the round —
+          // an undecided draft goes back to pending and gets a fresh sentForReviewAt, so
+          // POM's "waiting N days" is measured from the send, not from creation. An already
+          // APPROVED draft keeps its approval: that was the client's decision, not ours.
+          if (['private', 'in_review'].includes(body.reviewStage)) {
+            patch.reviewStage = body.reviewStage;
+            if (body.reviewStage === 'in_review') {
+              patch.sentForReviewAt = new Date().toISOString();
+              if (body.approvalStatus === undefined && existing.approvalStatus !== 'approved') {
+                patch.approvalStatus = 'pending';
+              }
+            }
+          }
           // Review verbs (POM's Content card via the feedback-worker broker): approvalStatus
           // transitions with an optional reviewer note. The note is appended SERVER-SIDE and
           // ATOMICALLY (updatePostWithAppend — a :commit array transform) so a concurrent in-app /
@@ -1483,6 +1497,12 @@ export default {
           }
         }
         try {
+          // Bound the response. This scanned every post the owner has ever created and
+          // returned FULL documents — content, base64-era imageUrl, whole feedbackThread
+          // arrays — so the payload grew without limit as the workspace did, on a route
+          // POM polls. ?limit= (default 300, max 1000) caps it, and the response says
+          // when it truncated so no caller can mistake a partial list for the whole set.
+          const reqLimit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '300', 10) || 300, 1), 1000);
           let drafts = await listPosts(env, env.OWNER_UID);
           // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: legacy
           // name-keyed callers join this list by display name (which suggestions carry), so
@@ -1491,6 +1511,10 @@ export default {
           drafts = drafts.filter(d => !d.isTemplate && d.source !== 'suggestion');
           const q = url.searchParams;
           const fc = q.get('client'), fcid = (q.get('clientId') || '').trim(), fp = q.get('platform'), fst = q.get('status');
+          // ?reviewStage=private|in_review — lets POM ask for "what's still on my desk"
+          // vs "what's with the client". Absent = every stage (the pre-existing behaviour,
+          // so no caller's list can shrink under it).
+          const frs = (q.get('reviewStage') || '').trim();
           // Slug-keyed join (2026-07-29): a caller that knows the immutable suite slug sends
           // ?clientId= and we filter on the stamped d.clientId, IGNORING the mutable display-name
           // param entirely — a roster rename can no longer empty the POM Content card's join.
@@ -1501,8 +1525,14 @@ export default {
           else if (fc) drafts = drafts.filter(d => d.client === fc);
           if (fp) drafts = drafts.filter(d => d.platform === fp);
           if (fst) drafts = drafts.filter(d => d.status === fst);
+          // ABSENT reviewStage reads as 'in_review' — the same legacy default the SPA applies.
+          if (frs) drafts = drafts.filter(d => (d.reviewStage || 'in_review') === frs);
           drafts.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-          return json({ drafts, count: drafts.length }, 200, cors);
+          // Newest-first, so a truncated page is still the page a caller wants.
+          const total = drafts.length;
+          const truncated = total > reqLimit;
+          if (truncated) drafts = drafts.slice(0, reqLimit);
+          return json({ drafts, count: drafts.length, total, truncated }, 200, cors);
         } catch (err) {
           console.error('Draft list failed:', err?.message || err);
           return json({ error: 'List failed' }, 502, cors);
@@ -1571,6 +1601,12 @@ export default {
             client, content, title, altText, metaDescription, slug,
             ...(clientId ? { clientId } : {}),
             platform, status: 'draft', approvalStatus: 'pending', feedback: '',
+            // API-created drafts land in STAGING by default: a draft arriving from POM or a
+            // skill is not something the client has been shown, and it used to appear on
+            // their live review link the instant it was written. Callers that genuinely want
+            // it in front of the client say so explicitly.
+            reviewStage: body?.reviewStage === 'in_review' ? 'in_review' : 'private',
+            ...(body?.reviewStage === 'in_review' ? { sentForReviewAt: nowIso } : {}),
             imageUrl, tags, scheduledDate,
             createdAt: nowIso, updatedAt: nowIso, source: 'api'
           });

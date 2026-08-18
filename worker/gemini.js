@@ -4,17 +4,35 @@
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+// Hard budget for a direct-Gemini call. Without one, a hung upstream held the
+// request open until the platform killed it — and in the CRON path that meant the
+// scheduled run could be re-entered and generate a SECOND draft for the same
+// automation. An explicit abort turns "hangs forever" into "fails fast", which the
+// caller already knows how to handle (AI fails OPEN by design).
+const GEMINI_TIMEOUT_MS = 60000;
+
 async function callGemini(env, model, body) {
   // Auth via the x-goog-api-key header (works for both legacy AIza... keys and
   // the newer AQ.... keys; keeps the key out of the request URL/logs).
-  const res = await fetch(`${BASE}/${model}:generateContent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': env.GEMINI_API_KEY
-    },
-    body: JSON.stringify(body)
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE}/${model}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': env.GEMINI_API_KEY
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS)
+    });
+  } catch (err) {
+    // Name the timeout explicitly — "TimeoutError" in a log is a very different
+    // diagnosis from a bad key or a malformed prompt.
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`Gemini timed out after ${GEMINI_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data?.error?.message || `Gemini error ${res.status}`);

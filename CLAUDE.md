@@ -43,7 +43,51 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   meter hole; image *generation* is gatewayed and honors the 429)**. Instant revert =
   `wrangler secret delete STITCH_AI_KEY` — but note that revert routes EVERYTHING through unmetered Gemini.
 - Auth **fails CLOSED**: anonymous/guest tokens are always rejected for generation + drafts.
+- `usePosts` RE-SUBSCRIBES on a retryable Firestore error (capped backoff) and reports
+  `isStalled` when it can't — Firestore terminates a listener on error and never re-attaches,
+  so the old "Retrying automatically…" banner was a lie. It also waits for `user` before
+  opening a clientId-scoped listener (the guest listener used to race sign-in and die denied).
+- **Known limit, not fixed:** the posts subscription is still UNBOUNDED — a cold load streams
+  every post in the workspace. Bounding it needs pagination that the whole-workspace facet
+  counts currently assume away. The grid window caps the RENDER cost, not the read.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
+
+## The review pipeline (2026-08-18 — read before touching the queue)
+Spool has THREE axes, and until this date the UI conflated the first two:
+- `status` — the WORKFLOW axis: `draft → scheduled → posted → archived`.
+- `approvalStatus` — the CLIENT axis: `pending / approved / changes_requested`.
+- **`reviewStage`** — the STAGING axis (new, additive): `private` | `in_review`.
+
+**`reviewStage` ABSENT === `in_review`.** That default is load-bearing: it is why no
+backfill was needed and why no live review link lost content. Never "normalize" it away.
+
+`src/utils/review.js` is the single derivation — `reviewStateOf()` folds the client-facing
+axes into the four buckets the UI triages by: `not_sent · awaiting · changes · approved`.
+An approval FACT (approved / changes_requested) outranks the stage, because it records
+something the client did; pulling a post back to staging must not erase it.
+
+- **New posts start `private`** (operator-authored; a client member's own post starts
+  `in_review`). So do imports, blasts, clones, repurposed drafts, promoted suggestions,
+  API-created drafts, and cron/automation output. Only the explicit **Send for review**
+  verb (or `PATCH {reviewStage:'in_review'}`) puts a post in front of a client.
+- **Guests never see staged posts** — enforced in `App.jsx`'s lane partition. Note this is
+  a WORKFLOW boundary, not a security one: the tenant boundary is still `clientId` in
+  `firestore.rules`, and a guest is already authorized for their own tenant's data.
+  Rules-level enforcement would need every post to carry the field (Firestore `==` skips
+  docs missing it), i.e. a backfill — deliberately not done.
+- **An edit invalidates an approval.** `handleSavePost` resets `approved → pending` when
+  content/title/image changed, and reads approval + feedback from the LIVE post (never
+  from the editor's stale formData). Both downstream gates (publish-to-site, push-to-Sender)
+  admit anything marked `approved` — that reset is what keeps them meaningful.
+- **Review state never crosses a tenant boundary**: bulk client-reassign and client MERGE
+  clear `approvalStatus`/`feedback`/`feedbackThread` and re-stage (a pure RENAME does not —
+  same client, new label).
+- `worker/firestore.js countDraftSummary` counts `staged` separately from `pendingReview`,
+  so POM's attention strip stops reporting drafts the client has never been shown.
+- `src/utils/readiness.js` derives per-post blockers/warnings (needs an image, over the
+  limit, no alt text, unscheduled, missing long-form fields). Memoized on post IDENTITY via
+  a WeakMap — that only works because `usePosts` hands out referentially stable post objects.
+  **Send for review refuses blockers, never warnings.**
 
 ## Suite invariants (load-bearing here)
 - Client **SLUG is the universal join key**. ONE canonical roster: **the LIVE roster is the
@@ -90,7 +134,12 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 ## File map
 - `src/main.jsx` `App.jsx` — SPA entry + root.
 - `src/components/` — UI (Editor, AIGenerate, MediaLibrary, CalendarView, AdminPanel,
-  AutomationsPanel, FeedbackWidget, LoginScreen, …).
+  AutomationsPanel, FeedbackWidget, LoginScreen, …). `FilterBar` is the grid toolbar
+  (review-state chips + facet selects; it composes `PostControls`). `PostGrid` WINDOWS the
+  list (48 at a time, IntersectionObserver sentinel) — its `resetKey` prop must carry the
+  filter context, never the list identity, or a snapshot yanks a scrolled operator to the top.
+- `src/utils/` — `review.js` (the review pipeline), `readiness.js` (per-post blockers),
+  `helpers.js` (sorts, date formatters), `facetStyles.js` (shared toolbar select styling).
 - `src/hooks/` — `useAuth` `usePosts` `useClients` `useToast`. `src/lib/` — `clientsClient.js`
   (roster pull), `feedbackClient.js`. `src/config/` — `firebase.js`, `roles.js`.
 - `src/generation/prompts.js` — AI prompt builders. `src/stitch-apps.js` — shared app registry.

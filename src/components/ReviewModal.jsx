@@ -9,7 +9,16 @@ const fmtDate = (iso) => {
   try { return DATE_FORMATTERS.full.format(new Date(iso)); } catch { return ''; }
 };
 
-const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, onClose }) => {
+// `by` is stored from the AUTHOR's point of view ('you' = the agency, 'client' =
+// the reviewer) — the worker's PATCH path writes the same two values. Rendering it
+// literally meant the CLIENT saw our internal notes labelled "You", i.e. attributed
+// to themselves. Labels are resolved against the VIEWER instead.
+const attribution = (by, viewerIsClient) =>
+  by === 'client'
+    ? (viewerIsClient ? 'You' : 'Client')
+    : (viewerIsClient ? 'Your team' : 'You');
+
+const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, onClose, viewerIsClient = true }) => {
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
@@ -73,7 +82,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                        {feedbackHistory.map((f, i) => (
                          <div key={i} className="p-3 bg-rose-50/60 rounded-xl border border-rose-100">
                            <div className="flex items-center justify-between mb-1">
-                             <span className="text-[11px] font-bold uppercase tracking-wider text-rose-600">{f.by === 'you' ? 'You' : 'Client'}</span>
+                             <span className="text-[11px] font-bold uppercase tracking-wider text-rose-600">{attribution(f.by, viewerIsClient)}</span>
                              {f.at && <span className="text-[11px] text-slate-400">{fmtDate(f.at)}</span>}
                            </div>
                            <p className="text-sm text-slate-700 whitespace-pre-wrap">{f.text}</p>

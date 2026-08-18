@@ -2,6 +2,7 @@ import React from 'react';
 import { ArrowUpDown, Layers, Tag } from 'lucide-react';
 import { PLATFORMS } from '../constants';
 import { SORT_ORDERS } from '../utils/helpers';
+import { SELECT_CLASS, activeSelectClass } from '../utils/facetStyles';
 
 // Sort choices, default (soonest-first) at top. CLIENT_AZ only makes sense for the
 // operator (a client member / guest sees one client), filtered out below when
@@ -26,9 +27,7 @@ const filterableTags = (tagCounts, active) => {
   return active && !shared.includes(active) ? [...shared, active] : shared;
 };
 
-const selectClass =
-  'appearance-none bg-white border border-slate-200 rounded-lg pl-8 pr-7 py-1.5 text-xs font-semibold text-slate-600 ' +
-  'hover:border-indigo-300 focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer transition-colors';
+const selectClass = SELECT_CLASS;
 
 /**
  * Compact sort + platform-filter controls for the post grid. Pure presentational —
@@ -62,7 +61,7 @@ const PostControls = ({
           value={filterPlatform || ''}
           onChange={(e) => onPlatformChange(e.target.value || null)}
           aria-label="Filter by platform"
-          className={selectClass}
+          className={activeSelectClass(!!filterPlatform)}
         >
           <option value="">All platforms</option>
           {platforms.map((p) => (
@@ -83,7 +82,7 @@ const PostControls = ({
             value={filterTag || ''}
             onChange={(e) => onTagChange(e.target.value || null)}
             aria-label="Filter by tag"
-            className={selectClass}
+            className={activeSelectClass(!!filterTag)}
           >
             <option value="">All tags</option>
             {tags.map((t) => (
@@ -113,7 +112,7 @@ const PostControls = ({
   );
 };
 
-const Chevron = () => (
+export const Chevron = () => (
   <svg className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
     <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>

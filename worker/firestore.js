@@ -183,7 +183,7 @@ export async function listPosts(env, uid, cap = Infinity) {
 export async function countDraftSummary(env, uid) {
   const token = await getAccessToken(env);
   const pageSize = 300;
-  let pendingReview = 0, changesRequested = 0, suggestions = 0;
+  let pendingReview = 0, changesRequested = 0, suggestions = 0, staged = 0;
   let startAfter = null;
   for (;;) {
     const structuredQuery = {
@@ -194,6 +194,7 @@ export async function countDraftSummary(env, uid) {
         { fieldPath: 'source' },
         { fieldPath: 'status' },
         { fieldPath: 'approvalStatus' },
+        { fieldPath: 'reviewStage' },
       ] },
       orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       limit: pageSize
@@ -213,13 +214,20 @@ export async function countDraftSummary(env, uid) {
       if ((f.source?.stringValue || '') === 'suggestion') { suggestions++; continue; }
       if ((f.status?.stringValue || '') === 'archived') continue;     // cleared → not review content
       const approval = f.approvalStatus?.stringValue || '';
+      // HONESTY FIX: 'pending' was the default on every draft from the moment it was
+      // created, so pendingReview counted drafts the client had never been shown — POM's
+      // attention strip reported work waiting on the client that was actually waiting on
+      // US. A staged draft is now counted separately. ABSENT reviewStage = in_review, so
+      // every pre-existing draft keeps counting exactly as it did before.
+      if ((f.reviewStage?.stringValue || 'in_review') === 'private') { staged++; continue; }
       if (approval === 'pending') pendingReview++;
       else if (approval === 'changes_requested') changesRequested++;
     }
     if (rows.length < pageSize) break;
     startAfter = rows[rows.length - 1].document.name;
   }
-  return { pendingReview, changesRequested, suggestions };
+  // `staged` is additive — consumers that don't know the field simply ignore it.
+  return { pendingReview, changesRequested, suggestions, staged };
 }
 
 export async function getPost(env, id) {
@@ -558,9 +566,18 @@ export async function getClientSettings(env, clientId) {
 export async function resolveClientId(env, clientName) {
   if (!clientName || !env.OWNER_UID) return null;
   try {
-    const posts = await listPosts(env, env.OWNER_UID);
-    const hit = posts.find(p => p.client === clientName && p.clientId);
-    return hit ? hit.clientId : null;
+    // This runs on EVERY draft + automation create, and it used to pull the entire
+    // posts collection (every field of every post across every client) to read one
+    // string off one document. A single-field equality query on `client` rides
+    // Firestore's automatic index — no composite index needed — and a small cap is
+    // plenty: we only need one post that already carries the tenant key.
+    const rows = await listDocsWhere(env, 'posts', 'client', clientName, {
+      pageSize: 40, cap: 40, select: ['uid', 'clientId'],
+    });
+    // Every Spool post is attributed to the owner uid by design; verify rather than
+    // assume, so a stray doc can never hand back another workspace's tenant key.
+    const hit = rows.find(r => r.fields?.uid === env.OWNER_UID && r.fields?.clientId);
+    return hit ? hit.fields.clientId : null;
   } catch (err) {
     console.error('resolveClientId failed:', err?.message || err);
     return null;
@@ -684,6 +701,11 @@ export async function mergeDocRaw(env, collectionId, id, rawFields) {
 // with a __name__ cursor: a fixed single-page limit silently dropped references
 // once the posts collection outgrew it, and the GC would then delete images that
 // are still in use. The sweep must see EVERY post or not run at all (it throws).
+// Every /media key referenced from a markdown body: the editor's toolbar image
+// button inserts images INLINE as ![alt](…/media/<key>), and long-form posts often
+// carry several. Those references live in `content`, not `imageUrl`.
+const MEDIA_REF_RE = /\/media\/[A-Za-z0-9._~%\-/]+/g;
+
 export async function listAllImageUrls(env, pageSize = 1000) {
   const token = await getAccessToken(env);
   const urls = new Set();
@@ -691,7 +713,11 @@ export async function listAllImageUrls(env, pageSize = 1000) {
   for (;;) {
     const structuredQuery = {
       from: [{ collectionId: 'posts' }],
-      select: { fields: [{ fieldPath: 'imageUrl' }] },
+      // `content` is projected too, because the GC deletes anything it can't see
+      // referenced: an inline markdown image was invisible here, so once it aged
+      // past the grace window the nightly sweep deleted a picture that was still
+      // published in a post. A larger projection is the cheap half of that trade.
+      select: { fields: [{ fieldPath: 'imageUrl' }, { fieldPath: 'content' }] },
       orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       limit: pageSize
     };
@@ -707,6 +733,8 @@ export async function listAllImageUrls(env, pageSize = 1000) {
     for (const r of rows) {
       const u = r.document?.fields?.imageUrl?.stringValue;
       if (u) urls.add(u);
+      const body = r.document?.fields?.content?.stringValue;
+      if (body) for (const m of body.match(MEDIA_REF_RE) || []) urls.add(m);
     }
     if (rows.length < pageSize) return urls;
     startAfter = rows[rows.length - 1].document.name;

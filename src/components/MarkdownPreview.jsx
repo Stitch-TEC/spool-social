@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -28,7 +28,24 @@ const components = {
   td: (p) => <td className="border border-slate-200 px-2 py-1" {...p} />,
 };
 
-const MarkdownPreview = ({ content = '', title = '', imageUrl = '' }) => (
+// Module constant, not a fresh literal per render — a new array identity would
+// bust ReactMarkdown's own internals and any memo placed around it.
+const REMARK_PLUGINS = [remarkGfm];
+
+// The markdown body is isolated behind its own memo, keyed ONLY on `content`.
+//
+// react-markdown v10 has no cache: every render re-parses the whole document. The
+// editor wraps the body in useDeferredValue precisely so a long blog post doesn't
+// block typing — but useDeferredValue renders TWICE per keystroke, and with nothing
+// memoized the urgent pass re-parsed the UNCHANGED string and threw the result away.
+// So the deferral doubled the work it was meant to hide. Title and imageUrl are
+// siblings in the same props object, so they have to sit OUTSIDE this boundary too:
+// otherwise every keystroke in the Title field re-parses the entire body.
+const MarkdownBody = memo(({ content }) => (
+  <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>{content}</ReactMarkdown>
+));
+
+const MarkdownPreview = memo(({ content = '', title = '', imageUrl = '' }) => (
   <div className="w-full max-w-none">
     {title && <h1 className="text-2xl font-black text-slate-900 mb-3">{title}</h1>}
     {imageUrl && (
@@ -39,11 +56,11 @@ const MarkdownPreview = ({ content = '', title = '', imageUrl = '' }) => (
       />
     )}
     {content ? (
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>
+      <MarkdownBody content={content} />
     ) : (
       <p className="text-slate-300 italic text-sm">Start writing to see a preview…</p>
     )}
   </div>
-);
+));
 
 export default MarkdownPreview;
