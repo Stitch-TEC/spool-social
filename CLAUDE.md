@@ -76,6 +76,16 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   the **suggestion/auto-draft lane** (`source:'suggestion'` + `forClientId` tenant-key semantics in
   `App.jsx:252-260` — load-bearing, don't break); **brainstorm/SparkDeck** (#76); the attention
   seam (`/api/drafts?summary=1`); **push-to-Sender** (`/api/sender-template`).
+- **Client lifecycle receivers (2026-08-17, internal key ONLY — same gate as `/api/people-sync`;
+  driven by the broker's `POST /clients/lifecycle`, never by the SPA):**
+  - `POST /api/client-rename {clientId, from?, to}` — relabels `posts.client` (+ `forClientId`
+    suggestions), `shares.client`, `automations.client` where `clientId==slug`, and moves the OWNER's
+    name-keyed branding doc to `clients/${OWNER_UID}__${encodeURIComponent(to)}`. Slug never changes.
+  - `POST /api/client-purge {clientId}` — deletes posts/suggestions/shares/automations/users
+    (super_admin docs left in place + noted)/branding for the slug + the R2 `library/<OWNER_UID>/<slug>/`
+    folder. HARD delete — the broker guards it (archived-first, no billing/connections/seed rows).
+  Both: slug-shaped `clientId` only, tenant-isolated by the `clientId` FIELD, idempotent, per-store
+  `counts` + `errors[]` (never a silent success), one log line each.
 
 ## File map
 - `src/main.jsx` `App.jsx` — SPA entry + root.
