@@ -1015,18 +1015,23 @@ const App = () => {
   // Stage 1 — lane partition. ONE pass splits the three mutually-exclusive lanes.
   // Suggestion beats template: a doc carrying both flags belongs to the more
   // restrictive lane (the same precedence PostCard applies to its action rows).
-  // A review GUEST never sees staged posts — that is the entire point of staging,
-  // and it is enforced here, before any other filter can be cleared.
+  //
+  // NOBODY BUT THE OPERATOR SEES STAGED POSTS. That is the entire point of staging,
+  // and it is enforced here, before any other filter can be cleared. The gate is
+  // "not the operator" rather than "is a review guest" on purpose: a client member
+  // (client / client_admin with a real login) is just as much the audience staging
+  // exists to hide unfinished work from as a share-link guest is. Their OWN posts
+  // are never affected — a member's writes are stamped in_review (handleSavePost).
   const lanes = useMemo(() => {
     const queue = [], templates = [], suggestions = [];
     for (const p of posts) {
       if (p.source === 'suggestion') { suggestions.push(p); continue; }
-      if (isReadOnly && isStaged(p)) continue;
+      if (!isOperator && isStaged(p)) continue;
       if (p.isTemplate) { templates.push(p); continue; }
       queue.push(p);
     }
     return { queue, templates, suggestions };
-  }, [posts, isReadOnly]);
+  }, [posts, isOperator]);
 
   const searchLower = useMemo(() => deferredSearchQuery.trim().toLowerCase(), [deferredSearchQuery]);
   const matchesSearch = useCallback(

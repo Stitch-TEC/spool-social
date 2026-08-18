@@ -70,7 +70,9 @@ something the client did; pulling a post back to staging must not erase it.
   `in_review`). So do imports, blasts, clones, repurposed drafts, promoted suggestions,
   API-created drafts, and cron/automation output. Only the explicit **Send for review**
   verb (or `PATCH {reviewStage:'in_review'}`) puts a post in front of a client.
-- **Guests never see staged posts** — enforced in `App.jsx`'s lane partition. Note this is
+- **Only the OPERATOR sees staged posts** — enforced in `App.jsx`'s lane partition, gated on
+  `!isOperator` (not `isReadOnly`): a client member with a real login is just as much the
+  audience staging hides unfinished work from as a share-link guest. Note this is
   a WORKFLOW boundary, not a security one: the tenant boundary is still `clientId` in
   `firestore.rules`, and a guest is already authorized for their own tenant's data.
   Rules-level enforcement would need every post to carry the field (Firestore `==` skips
