@@ -99,6 +99,39 @@ export const APPROVAL_STATUS = {
   CHANGES_REQUESTED: 'changes_requested'
 };
 
+// The staging axis (see src/utils/review.js for the full rationale). ADDITIVE:
+// a post with NO reviewStage field is treated as IN_REVIEW, so every pre-existing
+// post and every live review link behaves exactly as it did before this existed.
+export const REVIEW_STAGE = {
+  PRIVATE: 'private',     // staging — operator workspace only, kept off review links
+  IN_REVIEW: 'in_review'  // sent — the client sees it and can act on it
+};
+
+// The four mutually-exclusive triage buckets an operator actually works from,
+// derived from reviewStage + approvalStatus by reviewStateOf().
+export const REVIEW_STATE = {
+  NOT_SENT: 'not_sent',
+  AWAITING: 'awaiting',
+  CHANGES: 'changes',
+  APPROVED: 'approved'
+};
+
+// Media presence filter (the operator asked for "posts with or without media").
+export const MEDIA_FILTER = {
+  WITH: 'with',
+  WITHOUT: 'without'
+};
+
+// "Needs attention" facets — each is a derived predicate over the queue, not a
+// stored field, so nothing has to be backfilled for them to work.
+export const NEEDS_FILTER = {
+  IMAGE: 'image',        // the channel wants an image and there is none
+  NOT_READY: 'not_ready',// has a hard blocker (empty / over limit / image required)
+  FEEDBACK: 'feedback',  // carries client feedback
+  OVERDUE: 'overdue',    // scheduled in the past, still not marked posted
+  NO_DATE: 'no_date'     // unscheduled — invisible in Calendar view, easy to lose
+};
+
 export const SPARK_PROMPTS = [
   "Share a 'behind the scenes' photo of your workspace.",
   "Highlight a recent customer review or success story.",

@@ -1,19 +1,99 @@
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import {
   Clock, CheckCircle, AlertCircle, Layers, CopyPlus,
-  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X, Send, Zap, Sparkles, UploadCloud
+  Edit3, Trash2, Copy, ExternalLink, Archive, ArchiveRestore, Check, FilePlus, RefreshCw, X, Send, Zap, Sparkles, UploadCloud,
+  EyeOff, SendHorizontal, ImageOff
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
-import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
+import { PLATFORMS, STATUS, APPROVAL_STATUS, REVIEW_STATE } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
+import { reviewStateOf, daysAwaiting } from '../utils/review';
+import { readinessOf, READINESS_LABELS } from '../utils/readiness';
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+// One badge per review state — the answer to "where is this with the client?",
+// which the card previously left the operator to infer from two half-signals
+// (an approval pill that only appeared for two of the four states).
+const REVIEW_BADGES = {
+  [REVIEW_STATE.NOT_SENT]: { label: 'Not sent', icon: EyeOff, cls: 'text-slate-500 bg-slate-100 border-slate-200', rail: 'border-l-slate-300' },
+  [REVIEW_STATE.AWAITING]: { label: 'Awaiting', icon: Clock, cls: 'text-sky-700 bg-sky-50 border-sky-100', rail: 'border-l-sky-400' },
+  [REVIEW_STATE.CHANGES]: { label: 'Changes', icon: AlertCircle, cls: 'text-rose-600 bg-rose-50 border-rose-100', rail: 'border-l-rose-500' },
+  [REVIEW_STATE.APPROVED]: { label: 'Approved', icon: CheckCircle, cls: 'text-emerald-600 bg-emerald-50 border-emerald-100', rail: 'border-l-emerald-500' },
+};
+
+// The review conversation, from the operator's side of the card.
+//
+// Before this, the card showed only `post.feedback` — the LATEST note — and
+// "Back for review" clears that field by design. So the moment the operator acted
+// on feedback, the note describing what to fix vanished from every surface they
+// had: `feedbackThread` accumulates every round (atomically, via arrayUnion) but
+// nothing in the app ever rendered it outside the guest's review modal.
+const FeedbackTrail = ({ post }) => {
+  const [expanded, setExpanded] = useState(false);
+  const thread = Array.isArray(post.feedbackThread) ? post.feedbackThread : [];
+  // Fall back to the legacy single field for posts that predate threading.
+  const entries = thread.length ? thread : (post.feedback ? [{ text: post.feedback, by: 'client' }] : []);
+  if (entries.length === 0) return null;
+
+  const shown = expanded ? entries : entries.slice(-1);
+  const hidden = entries.length - shown.length;
+  return (
+    <div className="mb-4 space-y-1">
+      {shown.map((f, i) => (
+        <div key={i} className="p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900">
+          <span className="font-bold uppercase tracking-wider text-[10px] text-rose-600 mr-1">
+            {f.by === 'you' ? 'You' : 'Client'}
+          </span>
+          <span className="italic">“{f.text}”</span>
+        </div>
+      ))}
+      {(hidden > 0 || expanded) && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
+          className="text-[10px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+        >
+          {expanded ? 'Hide earlier notes' : `+${hidden} earlier note${hidden === 1 ? '' : 's'}`}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// Blockers read rose (can't go out), warnings slate (should be better). Capped at
+// three so a card can't turn into a wall of chips — the editor is where you fix them.
+const ReadinessChips = ({ post }) => {
+  const { blockers, warnings } = readinessOf(post);
+  const items = [
+    ...blockers.map((c) => ({ code: c, blocking: true })),
+    ...warnings.map((c) => ({ code: c, blocking: false })),
+  ].slice(0, 3);
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1 mb-3">
+      {items.map(({ code, blocking }) => (
+        <span
+          key={code}
+          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+            blocking ? 'text-rose-700 bg-rose-50 border-rose-100' : 'text-slate-500 bg-slate-50 border-slate-200'
+          }`}
+        >
+          {(code === 'image_missing' || code === 'image_suggested') && <ImageOff size={9} />}
+          {READINESS_LABELS[code]}
+        </span>
+      ))}
+    </div>
+  );
+};
+
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview, onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
   const [copied, setCopied] = useState(false);
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
   const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+  const reviewState = reviewStateOf(post);
+  const isNotSent = reviewState === REVIEW_STATE.NOT_SENT;
+  const waiting = daysAwaiting(post);
   // Parked automation suggestion (operator-only lane) — swaps the status row for the
   // promote/dismiss pair. Handler presence doubles as the operator gate.
   const isSuggestion = post.source === 'suggestion' && !!onPromoteSuggestion && !!onDismissSuggestion;
@@ -53,13 +133,15 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
      });
   }, []);
 
+  // The left rail encodes the REVIEW state (not the workflow status): scanning a
+  // mixed grid, "where is this with the client?" is the question that decides what
+  // to do next. Templates have no review lane, so they keep the plain card.
   const getStatusColor = () => {
       // Parked suggestions get an amber rail so they're distinguishable at a glance in a mixed grid.
       if (isSuggestion) return 'border-l-4 border-l-amber-400';
-      if (post.approvalStatus === APPROVAL_STATUS.APPROVED) return 'border-l-4 border-l-emerald-500';
-      if (post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) return 'border-l-4 border-l-rose-500';
-      if (isPosted) return 'opacity-90';
-      return '';
+      if (post.isTemplate) return isPosted ? 'opacity-90' : '';
+      const rail = REVIEW_BADGES[reviewState]?.rail;
+      return `${rail ? `border-l-4 ${rail}` : ''}${isPosted ? ' opacity-90' : ''}`.trim();
   };
 
   const toggle = () => onToggleSelect?.(post.id);
@@ -103,8 +185,23 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             </div>
           </div>
           
-          {post.approvalStatus === APPROVAL_STATUS.APPROVED && <div className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded flex items-center gap-1"><CheckCircle size={12} /> Approved</div>}
-          {post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED && <div className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded flex items-center gap-1"><AlertCircle size={12} /> Review</div>}
+          {/* Templates and parked suggestions sit outside the review loop entirely —
+              a review badge on either would assert a state that doesn't exist. */}
+          {!isSuggestion && !post.isTemplate && (() => {
+            const badge = REVIEW_BADGES[reviewState];
+            const BadgeIcon = badge.icon;
+            return (
+              <div
+                className={`text-xs font-bold px-2 py-1 rounded border flex items-center gap-1 shrink-0 ${badge.cls}`}
+                title={isNotSent ? 'In staging — the client cannot see this yet' : undefined}
+              >
+                {BadgeIcon && <BadgeIcon size={12} />} {badge.label}
+                {/* How long it's been sitting with the client — operator-only: it's a
+                    nudge for us, and would read as pressure on the client's own view. */}
+                {!isReadOnly && waiting > 0 && <span className="font-semibold opacity-70 tabular-nums">{waiting}d</span>}
+              </div>
+            );
+          })()}
 
           {!isReadOnly && !selectable && (
             <div className="flex gap-1 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
@@ -116,6 +213,11 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               ))}
+              {/* Pull a sent post back off the client's review link. Only meaningful once
+                  it's actually out there, so it's hidden while the post is still staged. */}
+              {!isSuggestion && !post.isTemplate && !isNotSent && onHoldFromReview && (
+                <button onClick={(e) => { e.stopPropagation(); onHoldFromReview(post); }} title="Move to staging (hide from the client)" aria-label="Move to staging" className="p-2 sm:p-1.5 text-slate-400 hover:text-slate-700 rounded-md"><EyeOff size={16} className="sm:w-3.5 sm:h-3.5" /></button>
+              )}
               {/* Push to Sender (operator-only via handler presence): templates + APPROVED
                   blog drafts become a campaign-ready email template in the client's Sender
                   tenant (same review gate as publish-to-site; the worker enforces it too).
@@ -146,7 +248,16 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           {post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt={post.altText || 'Asset'} className="w-full h-full object-cover" loading="lazy" /></div>}
         </div>
         
-        {post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">"{post.feedback}"</div>}
+        {/* What's still missing, so "is this finishable?" is answerable from the grid
+            instead of by opening every card. Not shown to review guests — alt text and
+            meta descriptions are our craft problems, not theirs. */}
+        {!isReadOnly && !selectable && <ReadinessChips post={post} />}
+
+        {/* Guests keep the single latest note (their own words, no history UI needed
+            on a card — the review modal shows them the full thread). */}
+        {isReadOnly
+          ? (post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">“{post.feedback}”</div>)
+          : <FeedbackTrail post={post} />}
 
         {/* Template card: primary action is "Use as draft" (clone into a new post).
             !isSuggestion keeps the action rows mutually exclusive — a bad doc carrying both
@@ -238,6 +349,17 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                 className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
                 <RefreshCw size={13} /> Back for review
+              </button>
+            ) : isNotSent && onSendForReview ? (
+              /* A staged post's only meaningful next step is showing it to the client —
+                 so that's the button, in place of a status dropdown that changes nothing
+                 the client can see. */
+              <button
+                onClick={(e) => { e.stopPropagation(); onSendForReview(post); }}
+                title="Make this visible on the client's review link"
+                className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+              >
+                <SendHorizontal size={13} /> Send for review
               </button>
             ) : (
               <select

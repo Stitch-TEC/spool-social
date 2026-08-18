@@ -274,6 +274,13 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       platform,
       status: 'draft',
       approvalStatus: 'pending',
+      // Machine output lands in STAGING, never straight onto the client's review link.
+      // 'suggest' mode was already operator-only via the empty clientId; 'auto' mode used
+      // to publish an unreviewed AI draft to the client the moment the cron fired. Both
+      // now wait for the operator's explicit "Send for review" (see src/utils/review.js).
+      // ADDITIVE + back-compatible: absent reviewStage still reads as in_review, so every
+      // pre-existing draft is untouched.
+      reviewStage: 'private',
       feedback: '',
       imageUrl,
       tags: suggest ? ['suggested'] : [],

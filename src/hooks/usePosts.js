@@ -1,7 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { OPERATOR_UID } from '../config/roles';
+
+// Firestore TERMINATES a listener when it errors and never re-attaches it. The
+// dashboard's banner promised "Retrying automatically…" and nothing was: one
+// transient blip (or a listener that raced ahead of the guest's sign-in) froze the
+// workspace on stale data until a manual reload, with a message actively saying
+// otherwise. These are the codes that can clear on their own — a permission error
+// never will, so retrying it would just be a hot loop against the rules engine.
+const RETRYABLE_CODES = new Set(['unavailable', 'resource-exhausted', 'aborted', 'internal', 'deadline-exceeded']);
+const MAX_RETRIES = 6;
 
 /**
  * Real-time posts + client-branding subscriptions for a workspace.
@@ -18,6 +27,15 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
   const [clientMap, setClientMap] = useState({});
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState(null);
+  // Bumping this re-runs the subscribe effect — the re-attach Firestore won't do.
+  const [retryTick, setRetryTick] = useState(0);
+  // Live updates have stopped for good: either the error can't clear on its own
+  // (permission-denied — a revoked share link, a withdrawn grant) or the backoff
+  // ladder ran out. State, not a derived ref read, so the UI actually re-renders
+  // when it flips — and so it can offer a reload instead of a reassuring lie.
+  const [isStalled, setIsStalled] = useState(false);
+  const retriesRef = useRef(0);
+  const retryTimerRef = useRef(null);
 
   // The operator query pins to the CANONICAL owner uid, not the signer's. Every post in Spool is
   // stamped `uid: OPERATOR_UID` by design (App.jsx — one attribution so the operator query and the
@@ -34,7 +52,14 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
   // 🔒 SECURITY: a guest with no clientId scope (e.g. a legacy ?uid= link, or a
   // link minted before the clientId re-key) reads nothing.
   const guestBlocked = isGuest && !shareClientId;
-  const shouldSubscribe = !guestBlocked && (scopeClientId ? true : (!isGuest && !!targetUid));
+  // A CLIENTID-SCOPED subscription needs a signed-in principal for the rules to
+  // resolve against. useAuth sets the share scope BEFORE signInWithCustomToken
+  // resolves, so this used to open the guest listener while auth.currentUser was
+  // still null: Firestore denied it, terminated the listener, and none of the
+  // effect's deps changed when the guest actually signed in — a permanently empty
+  // review page. Gating on `user` (with user.uid in the deps below) makes the
+  // listener wait for the session it needs.
+  const shouldSubscribe = !guestBlocked && (scopeClientId ? !!user : (!isGuest && !!targetUid));
 
   useEffect(() => {
     if (!shouldSubscribe) {
@@ -113,11 +138,20 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
       });
 
       setError(null);
+      setIsStalled(false);
       setHasLoaded(true);
+      retriesRef.current = 0; // a good snapshot clears the backoff ladder
     }, (err) => {
       console.error("🔥 Firestore Error:", err);
       setError(err);
       setHasLoaded(true);
+      // Re-attach on codes that can clear by themselves, with capped exponential
+      // backoff (1s → 30s, ~6 attempts). Anything else is left terminal and the UI
+      // says so rather than claiming a retry that will never succeed.
+      if (!RETRYABLE_CODES.has(err?.code) || retriesRef.current >= MAX_RETRIES) { setIsStalled(true); return; }
+      const delay = Math.min(30000, 1000 * 2 ** retriesRef.current);
+      retriesRef.current += 1;
+      retryTimerRef.current = setTimeout(() => setRetryTick(t => t + 1), delay);
     });
 
     // 🔒 Client branding scoped to the workspace owner (multi-tenant isolation).
@@ -150,11 +184,15 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
       });
     }, (err) => console.error("🔥 Clients fetch error:", err));
 
-    return () => { unsubscribe(); clientUnsub(); };
-  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId, isGuest, isOperator]);
+    return () => {
+      unsubscribe();
+      clientUnsub();
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+    };
+  }, [shouldSubscribe, guestBlocked, targetUid, scopeClientId, isGuest, isOperator, user?.uid, retryTick]);
 
   // Loading = an active subscription that hasn't delivered its first snapshot.
   const isLoading = shouldSubscribe && !hasLoaded;
 
-  return { posts, clientMap, isLoading, error };
+  return { posts, clientMap, isLoading, error, isStalled };
 }

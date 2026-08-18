@@ -1,9 +1,15 @@
 # Spool Drafts API — push content in from anywhere
 
 Create review-ready drafts in Spool from any tool (Claude Code/Cowork, scripts,
-Zapier). Drafts land in your dashboard as **draft / pending** for your normal
-review + client-approval flow. Drop this file in a Claude project and say e.g.
-*"draft these into Spool."*
+Zapier). Drop this file in a Claude project and say e.g. *"draft these into Spool."*
+
+> **⚠️ Changed 2026-08-18 — drafts now land in STAGING, not on the client's review
+> link.** A draft created here arrives as `draft / pending / reviewStage:"private"`:
+> it is in your dashboard (and in POM's Content card) immediately, but the client
+> cannot see it until you press **Send for review** — or until a caller asks for it
+> explicitly with `"reviewStage": "in_review"`. Previously every API-created draft
+> was visible to the client on their live review link the instant it was written.
+> Pre-existing drafts are unaffected: a missing `reviewStage` still means *in review*.
 
 - **Base URL:** `https://spool.stitchtec.dev`
 - **Auth:** `Authorization: Bearer <INTERNAL_API_KEY>` — **server-side only**, never in browser/client code.
@@ -21,6 +27,7 @@ review + client-approval flow. Drop this file in a Claude project and say e.g.
 | `tags` | – | array of strings (max 10) |
 | `scheduledDate` | – | ISO 8601 string |
 | `image` | – | one of `{ "prompt": "..." }` (generate) · `{ "url": "..." }` (reference) · `{ "base64": "data:image/png;base64,..." }` (upload) |
+| `reviewStage` | – | `private` (default — lands in staging) or `in_review` (goes straight onto the client's review link) |
 
 **Returns** `201` → `{ "id": "...", "status": "draft", "reviewUrl": "https://spool.stitchtec.dev/?uid=...&client=..." }`
 
@@ -53,9 +60,9 @@ to have Spool generate one, or `image.url` to reference a hosted image.
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/drafts` | List drafts. Filters: `?clientId=` (canonical slug — preferred; when present the name filter is ignored) `?client=` (display name, legacy) `?platform=` `?status=`. Returns `{drafts:[…],count}` with all fields incl. `scheduledDate`. |
+| `GET /api/drafts` | List drafts. Filters: `?clientId=` (canonical slug — preferred; when present the name filter is ignored) `?client=` (display name, legacy) `?platform=` `?status=` `?reviewStage=` (`private` = still on your desk, `in_review` = with the client). `?limit=` caps the page (default **300**, max 1000). Returns `{drafts:[…],count,total,truncated}` — check `truncated` before treating a page as the whole set. |
 | `GET /api/drafts/{id}` | Fetch one draft. |
-| `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Only the fields you send change. |
+| `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), `reviewStage` (`private`/`in_review`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Only the fields you send change. Setting `reviewStage:"in_review"` **is** the send: it stamps `sentForReviewAt` and re-arms an undecided draft to `pending` (an already-approved draft keeps its approval). |
 | `DELETE /api/drafts/{id}` | Delete a draft. |
 | `GET /api/media` | List reusable stored images (`{media:[{key,url,size,uploaded}],count}`) — pick one and set it via `PATCH imageUrl` instead of regenerating. |
 
@@ -63,6 +70,15 @@ to have Spool generate one, or `image.url` to reference a hosted image.
 # List blog drafts for a client
 curl -sS "https://spool.stitchtec.dev/api/drafts?client=Acme&platform=blog" \
   -H "Authorization: Bearer $SPOOL_API_KEY"
+
+# What's still on my desk (staged, not yet shown to the client)?
+curl -sS "https://spool.stitchtec.dev/api/drafts?clientId=acme&reviewStage=private" \
+  -H "Authorization: Bearer $SPOOL_API_KEY"
+
+# Send a staged draft to the client's review link
+curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
+  -H "Authorization: Bearer $SPOOL_API_KEY" -H "Content-Type: application/json" \
+  -d '{"reviewStage":"in_review"}'
 
 # Attach an existing/known image to a draft
 curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \

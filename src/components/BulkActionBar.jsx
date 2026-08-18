@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
-  X, Tag, Users, CheckSquare, Archive, Trash2, Download, Plus, Minus, ChevronUp
+  X, Tag, Users, CheckSquare, Archive, Trash2, Download, Plus, Minus, ChevronUp,
+  SendHorizontal, EyeOff
 } from 'lucide-react';
 import { STATUS } from '../constants';
 
@@ -23,6 +24,8 @@ const BulkActionBar = ({
   onAddTags,
   onRemoveTags,
   onSetStatus,
+  onSendForReview,
+  onHold,
   onArchive,
   onDelete,
   onExport,
@@ -105,6 +108,15 @@ const BulkActionBar = ({
           <button onClick={() => openPanel('addTags')} className={`${btn} text-slate-200 hover:bg-slate-700`}><Plus size={13} /><Tag size={13} /> Tags</button>
           <button onClick={() => openPanel('removeTags')} className={`${btn} text-slate-200 hover:bg-slate-700`}><Minus size={13} /><Tag size={13} /></button>
           <button onClick={() => openPanel('status')} className={`${btn} text-slate-200 hover:bg-slate-700`}><CheckSquare size={14} /> Status</button>
+          {/* The review verbs lead the bar: working a batch of staged drafts out to the
+              client (and pulling one back) is the loop this screen exists for. Send is
+              accented — it's the only action here the client actually sees. */}
+          {onSendForReview && (
+            <button onClick={onSendForReview} title="Send the selected staged drafts to the client" className={`${btn} bg-indigo-500 text-white hover:bg-indigo-400`}><SendHorizontal size={14} /> Send for review</button>
+          )}
+          {onHold && (
+            <button onClick={onHold} title="Pull the selected posts off the client's review link" className={`${btn} text-slate-200 hover:bg-slate-700`}><EyeOff size={14} /> Staging</button>
+          )}
           <button onClick={onArchive} className={`${btn} text-slate-200 hover:bg-slate-700`}><Archive size={14} /> Archive</button>
           <button onClick={onExport} className={`${btn} text-slate-200 hover:bg-slate-700`}><Download size={14} /> Export</button>
           <button onClick={onDelete} className={`${btn} text-rose-300 hover:bg-rose-500/20`}><Trash2 size={14} /> Delete</button>

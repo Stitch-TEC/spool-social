@@ -111,3 +111,96 @@ describe('PostCard', () => {
     expect(screen.getByText('Use this')).toBeInTheDocument();
   });
 });
+
+describe('PostCard — the review pipeline', () => {
+  it('badges a staged post "Not sent" and offers Send instead of a status dropdown', () => {
+    // A staged draft's only meaningful next step is showing it to the client, so the
+    // status dropdown (which changes nothing the client can see) gives way to it.
+    const onSendForReview = vi.fn();
+    const staged = { ...basePost, reviewStage: 'private' };
+    render(<PostCard post={staged} onEdit={() => {}} onStatusChange={() => {}} onSendForReview={onSendForReview} />);
+    expect(screen.getByText('Not sent')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Set post status')).toBeNull();
+    fireEvent.click(screen.getByText('Send for review'));
+    expect(onSendForReview).toHaveBeenCalledWith(staged);
+  });
+
+  it('treats a post with NO reviewStage as already in review (legacy back-compat)', () => {
+    render(<PostCard post={basePost} onEdit={() => {}} onStatusChange={() => {}} onSendForReview={() => {}} />);
+    expect(screen.getByText('Awaiting')).toBeInTheDocument();
+    expect(screen.queryByText('Send for review')).toBeNull();
+    expect(screen.getByLabelText('Set post status')).toBeInTheDocument();
+  });
+
+  it('lets an approval outrank the stage — pulling an approved post back still reads Approved', () => {
+    render(<PostCard post={{ ...basePost, reviewStage: 'private', approvalStatus: 'approved' }} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('Approved')).toBeInTheDocument();
+    expect(screen.queryByText('Not sent')).toBeNull();
+  });
+
+  it('offers "Move to staging" only for a post that is actually with the client', () => {
+    const onHoldFromReview = vi.fn();
+    const { rerender } = render(<PostCard post={basePost} onEdit={() => {}} onStatusChange={() => {}} onHoldFromReview={onHoldFromReview} />);
+    fireEvent.click(screen.getByLabelText('Move to staging'));
+    expect(onHoldFromReview).toHaveBeenCalledWith(basePost);
+    rerender(<PostCard post={{ ...basePost, reviewStage: 'private' }} onEdit={() => {}} onStatusChange={() => {}} onHoldFromReview={onHoldFromReview} />);
+    expect(screen.queryByLabelText('Move to staging')).toBeNull();
+  });
+
+  it('shows no review badge on a template or a parked suggestion (neither is in the loop)', () => {
+    const { rerender } = render(<PostCard post={{ ...basePost, isTemplate: true }} onEdit={() => {}} onUseTemplate={() => {}} />);
+    expect(screen.queryByText('Awaiting')).toBeNull();
+    rerender(
+      <PostCard post={{ ...basePost, source: 'suggestion' }} onEdit={() => {}} onPromoteSuggestion={() => {}} onDismissSuggestion={() => {}} />
+    );
+    expect(screen.queryByText('Awaiting')).toBeNull();
+  });
+});
+
+describe('PostCard — readiness', () => {
+  it('names what is missing, to the operator only', () => {
+    const gap = { ...basePost, platform: 'instagram', imageUrl: '', scheduledDate: null };
+    const { rerender } = render(<PostCard post={gap} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('Needs an image')).toBeInTheDocument();
+    expect(screen.getByText('Not scheduled')).toBeInTheDocument();
+    // A review guest sees the post, not our production checklist.
+    rerender(<PostCard post={gap} onEdit={() => {}} onStatusChange={() => {}} isReadOnly />);
+    expect(screen.queryByText('Needs an image')).toBeNull();
+  });
+});
+
+describe('PostCard — feedback history', () => {
+  const threaded = {
+    ...basePost,
+    approvalStatus: 'pending',
+    feedback: '',
+    feedbackThread: [
+      { text: 'Too formal', by: 'client', at: '2026-08-01T00:00:00Z' },
+      { text: 'Reworked the opener', by: 'you', at: '2026-08-02T00:00:00Z' },
+      { text: 'Better — tighten the CTA', by: 'client', at: '2026-08-03T00:00:00Z' },
+    ],
+  };
+
+  it('survives "Back for review" clearing the latest-note field', () => {
+    // `feedback` is cleared on resubmit by design; before this the operator lost every
+    // trace of what the client had asked for the moment they acted on it.
+    render(<PostCard post={threaded} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('“Better — tighten the CTA”')).toBeInTheDocument();
+  });
+
+  it('collapses earlier rounds behind a disclosure', () => {
+    render(<PostCard post={threaded} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.queryByText('“Too formal”')).toBeNull();
+    fireEvent.click(screen.getByText('+2 earlier notes'));
+    expect(screen.getByText('“Too formal”')).toBeInTheDocument();
+    expect(screen.getByText('“Reworked the opener”')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Hide earlier notes'));
+    expect(screen.queryByText('“Too formal”')).toBeNull();
+  });
+
+  it('falls back to the legacy single field for posts that predate threading', () => {
+    render(<PostCard post={{ ...basePost, feedback: 'Wrong photo' }} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('“Wrong photo”')).toBeInTheDocument();
+    expect(screen.queryByText(/earlier note/)).toBeNull();
+  });
+});

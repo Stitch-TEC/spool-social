@@ -877,7 +877,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             )}
             <button onClick={() => setPreviewMode(!previewMode)} title="Close Preview" aria-label="Close Preview" className="md:hidden p-2 text-slate-500 hover:bg-slate-200 rounded-lg"><X size={20}/></button>
          </div>
-         <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 backdrop-blur-3xl overflow-hidden">
+         {/* No backdrop-blur here: the pane sits on a flat surface, so a 64px Gaussian
+             blur produced no visible difference while forcing a full-pane GPU repaint on
+             every keystroke. The translucent tint alone renders identically. */}
+         <div className="flex-1 flex items-center justify-center p-6 bg-slate-100/50 overflow-hidden">
             {activeTab === 'email' ? (
               <SenderEmailPreview
                 // Keyed by client: switching the client dropdown must re-render

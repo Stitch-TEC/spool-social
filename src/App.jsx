@@ -12,7 +12,12 @@ import {
 } from 'firebase/firestore';
 
 import { db } from './config/firebase';
-import { STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT } from './constants';
+import {
+  STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT,
+  REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER
+} from './constants';
+import { reviewStageOf, isStaged, reviewStateOf, hasFeedback } from './utils/review';
+import { needsImage, hasBlockers, isOverdue, readinessOf, READINESS_LABELS } from './utils/readiness';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
@@ -24,36 +29,51 @@ import Sidebar from './components/Sidebar';
 import DashboardHeader from './components/DashboardHeader';
 import BrandFooter from './components/BrandFooter';
 import PostGrid from './components/PostGrid';
-import StatusFilterChips from './components/StatusFilterChips';
+import FilterBar, { SUGGESTIONS_LANE } from './components/FilterBar';
 import Toast from './components/Toast';
 import FeedbackWidget from './components/FeedbackWidget';
 import ConfirmModal from './components/ConfirmModal';
 import ReviewModal from './components/ReviewModal';
-import CalendarView from './components/CalendarView';
-import ClientSettingsModal from './components/ClientSettingsModal';
-import MediaLibrary from './components/MediaLibrary';
-import ImportExportModal from './components/ImportExportModal';
-import PostControls from './components/PostControls';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
-import ShareManager from './components/ShareManager';
-import AdminPanel from './components/AdminPanel';
-import AutomationsPanel from './components/AutomationsPanel';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
 
+// ⚡ Everything below opens on demand (a modal, or the non-default view). Keeping
+// them out of the entry chunk is what makes the dashboard's first paint cheap —
+// AdminPanel/AutomationsPanel/MediaLibrary/ImportExportModal alone are ~1.3k lines
+// the operator may never open in a session.
 const Editor = lazy(() => import('./components/Editor'));
+const CalendarView = lazy(() => import('./components/CalendarView'));
+const ClientSettingsModal = lazy(() => import('./components/ClientSettingsModal'));
+const MediaLibrary = lazy(() => import('./components/MediaLibrary'));
+const ImportExportModal = lazy(() => import('./components/ImportExportModal'));
+const ShareManager = lazy(() => import('./components/ShareManager'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
+const AutomationsPanel = lazy(() => import('./components/AutomationsPanel'));
+
+// Suspense fallback for the lazily-loaded modals — a modal-shaped shimmer beats a
+// blank screen while its chunk lands.
+const ModalFallback = () => (
+  <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[70] flex items-center justify-center" role="status" aria-label="Loading">
+    <Loader2 className="w-8 h-8 text-white animate-spin" />
+  </div>
+);
 
 // Case/whitespace-insensitive key for roster display-name lookups (rename drift is usually
 // casing/spacing: "OMNI  nde" must still find "OMNI NDE"'s canonical slug).
 const normClientName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+// Stable empty list: a fresh [] per render would give every non-operator session a
+// new identity each pass and cascade through the memo chain the file relies on.
+const EMPTY_POSTS = Object.freeze([]);
+
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
   const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError, isStalled: postsStalled } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
   const isLoading = authLoading || postsLoading;
 
   // Canonical POM roster — the ONE fetch (see useClients). Operator-gated: the Worker's
@@ -71,9 +91,15 @@ const App = () => {
   const [view, setView] = useState('grid'); // 'grid' | 'calendar' | 'editor'
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [filterClient, setFilterClient] = useState(clientParam);
-  const [filterStatus, setFilterStatus] = useState(null); // null | status | 'changes_requested'
+  // The PRIMARY axis: where a post sits in the client review loop (see utils/review.js).
+  // null = all · REVIEW_STATE value · 'suggestions' (the operator-only parked lane).
+  const [filterReview, setFilterReview] = useState(null);
+  // The workflow axis, now genuinely separate from review state: null | draft | scheduled | posted.
+  const [filterStatus, setFilterStatus] = useState(null);
   const [filterPlatform, setFilterPlatform] = useState(null); // null | platform id
   const [filterTag, setFilterTag] = useState(null); // null | tag string
+  const [filterMedia, setFilterMedia] = useState(null); // null | MEDIA_FILTER value
+  const [filterNeeds, setFilterNeeds] = useState(null); // null | NEEDS_FILTER value
   // Default: what's coming up soonest sits at the top (the next thing to handle).
   const [sortBy, setSortBy] = useState(SORT_ORDERS.SCHEDULED_ASC); // grid sort order
   const [showArchived, setShowArchived] = useState(false);
@@ -96,6 +122,16 @@ const App = () => {
   // Session-level dismissal for the "N suggestions parked" nudge — so it isn't naggy, but returns
   // next session (and the Suggestions chip stays as the always-available entry point regardless).
   const [suggestionsBannerDismissed, setSuggestionsBannerDismissed] = useState(false);
+
+  // Coarse clock for the time-dependent facets (overdue, "waiting N days"). Ticked
+  // every 5 minutes rather than read inline, so those readouts can't go stale on a
+  // tab left open — and so the filter memo has an explicit, honest dependency
+  // instead of a hidden Date.now() that React can't invalidate.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
   const postsRef = useRef([]);
@@ -262,7 +298,31 @@ const App = () => {
 
       // 🔒 EXPLICIT MAPPING to prevent mass assignment
       const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
-      const approvalStatus = Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING;
+      const title = (formData.title || "").trim().slice(0, 200);
+
+      // approvalStatus + feedback belong to the CLIENT — they are never authored in
+      // the editor, and formData is a snapshot taken when the editor OPENED. Writing
+      // them back therefore silently reverted any review that landed in the meantime:
+      // a client approval, or a reviewer note from POM, quietly undone by an unrelated
+      // typo fix. Read them from the LIVE post instead (postsRef tracks the snapshot).
+      const liveApproval = Object.values(APPROVAL_STATUS).includes(existingPost?.approvalStatus)
+        ? existingPost.approvalStatus
+        : APPROVAL_STATUS.PENDING;
+
+      // An APPROVED post that gets rewritten is no longer the post the client approved.
+      // Both downstream gates — publish-to-site and push-to-Sender — admit anything
+      // marked `approved`, so carrying the approval across a rewrite walked unreviewed
+      // copy straight through the check that exists to prevent exactly that.
+      const rewritten = !!existingPost && (
+        (existingPost.content || '') !== content ||
+        (existingPost.title || '') !== title ||
+        (existingPost.imageUrl || '') !== imageUrl
+      );
+      const approvalReset = liveApproval === APPROVAL_STATUS.APPROVED && rewritten;
+      const approvalStatus = existingPost
+        ? (approvalReset ? APPROVAL_STATUS.PENDING : liveApproval)
+        : (Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING);
+      const feedback = existingPost ? (existingPost.feedback || '') : '';
 
       // Saving a parked suggestion must NOT silently promote it: stamping a clientId is
       // exactly what makes a post client-visible, so keep it empty — promotion is the
@@ -270,6 +330,23 @@ const App = () => {
       // and the incoming form data, so an id-stripped copy (duplicate) of a suggestion
       // stays a suggestion instead of minting a live draft.
       const isSuggestion = (existingPost ?? formData)?.source === 'suggestion';
+
+      // Staging axis (utils/review.js). Editing NEVER moves a post between stages —
+      // only the explicit Send / Hold verbs do — so an existing post keeps whatever
+      // stage it has, and a post whose stage predates this field keeps behaving as
+      // in_review. A NEW operator post starts in STAGING: that is the whole point of
+      // the change (typing into a client with a live review link no longer publishes
+      // the half-written draft to them the instant it saves). A client member's own
+      // post has no staging concept — it's already their content — so it goes
+      // straight to in_review. Suggestions are pinned private: they aren't client
+      // content at all until promoted.
+      const reviewStage = isSuggestion
+        ? REVIEW_STAGE.PRIVATE
+        : existingPost
+          ? reviewStageOf(existingPost)
+          : (isClientMember || formData.reviewStage === REVIEW_STAGE.IN_REVIEW
+            ? REVIEW_STAGE.IN_REVIEW
+            : REVIEW_STAGE.PRIVATE);
 
       // Swap a bulky base64 data URL for a small hosted /media URL (content-addressed
       // in R2, so a reused photo keeps one URL). Also opportunistically migrates
@@ -286,14 +363,14 @@ const App = () => {
       const postData = {
         client,
         content,
-        title: (formData.title || "").trim().slice(0, 200),
+        title,
         altText: (formData.altText || "").trim().slice(0, 300),
         metaDescription: (formData.metaDescription || "").trim().slice(0, 200),
         slug: (formData.title || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
         platform: platformId,
         status,
         approvalStatus,
-        feedback: (formData.feedback || "").trim().slice(0, 500),
+        feedback,
         imageUrl: imageUrl.slice(0, 500000),
         tags,
         // Evergreen flag: templates live in the posts collection but are excluded
@@ -301,6 +378,7 @@ const App = () => {
         // Forced off for suggestions: a suggestion-template hybrid would sit in two lanes
         // with two conflicting action rows.
         isTemplate: isSuggestion ? false : !!formData.isTemplate,
+        reviewStage,
         // All posts are attributed to the operator uid (so the operator's query
         // + the single per-client review token resolve across multi-author
         // content); clientId is the immutable tenant key.
@@ -327,7 +405,11 @@ const App = () => {
 
       if (formData.id) {
         await updateDoc(doc(db, 'posts', formData.id), postData);
-        showToast("Thread updated");
+        // Never silent: losing an approval is exactly the kind of thing an operator
+        // must be told about the moment it happens, not discover at the publish gate.
+        showToast(approvalReset
+          ? "Thread updated — approval cleared, the content changed since the client signed off"
+          : "Thread updated");
       } else {
         await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
         showToast("New thread created!");
@@ -378,6 +460,9 @@ const App = () => {
               metaDescription: (post.metaDescription || '').slice(0, 200),
               slug: (post.slug || '').slice(0, 80),
               isTemplate: !!post.isTemplate,
+              // Restore the staging axis verbatim — an undone staged draft must not
+              // reappear on the client's review link.
+              reviewStage: reviewStageOf(post),
               feedbackThread: Array.isArray(post.feedbackThread) ? post.feedbackThread : [],
               platform: post.platform || 'gmb',
               status: Object.values(STATUS).includes(post.status) ? post.status : STATUS.DRAFT,
@@ -441,9 +526,15 @@ const App = () => {
     // An operator setting "Scheduled" from the card just changes the workflow
     // status — it doesn't stand in for the client's approval.
     const markApproved = isApproving && isReadOnly;
+    // A client's approval is a statement about the CONTENT, not about our publishing
+    // workflow — but it used to force status='scheduled' unconditionally, so approving
+    // an already-POSTED thread rewound it to Scheduled (it then read as unpublished and
+    // reappeared as upcoming work). Only advance a post that is still a plain draft.
+    const current = markApproved ? postsRef.current.find(p => p.id === postId) : null;
+    const advanceStatus = !markApproved || !current || current.status === STATUS.DRAFT;
     try {
       await updateDoc(doc(db, 'posts', postId), {
-        status: newStatus,
+        ...(advanceStatus ? { status: newStatus } : {}),
         updatedAt: new Date().toISOString(),
         ...(markApproved ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
       });
@@ -464,44 +555,74 @@ const App = () => {
   // file can never land content in another tenant.
   const handleImportRows = useCallback(async (rows) => {
     if (isReadOnly || !user || !rows?.length) return false;
+
+    const now = new Date().toISOString();
+    // Firestore caps a commit at 500 OPS *and* ~10 MiB. Chunking on ops alone was
+    // enough for tiny rows, but an import carrying data-URL images (each up to
+    // 500 KB — see the imageUrl cap on the save path) blows the byte cap long
+    // before op 450, and the commit REJECTS. Earlier batches are already durable at
+    // that point, so the operator got a flat "Import failed" on a half-imported
+    // file. Flush BEFORE adding a row that would cross the line; checking after the
+    // fact still lets one oversized row straddle it.
+    const MAX_OPS = 450;
+    const MAX_BYTES = 8 * 1024 * 1024; // headroom under the 10 MiB commit cap
+    let committed = 0;
+    let batch = writeBatch(db);
+    let ops = 0, bytes = 0;
+    const flush = async () => {
+      if (ops === 0) return;
+      await batch.commit();
+      committed += ops;
+      batch = writeBatch(db);
+      ops = 0; bytes = 0;
+    };
+
     try {
-      const now = new Date().toISOString();
-      const CHUNK = 450; // Firestore writeBatch hard limit is 500 ops
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const batch = writeBatch(db);
-        rows.slice(i, i + CHUNK).forEach(item => {
-          const client = isClientMember ? (myClientName || myClientId) : item.client;
-          batch.set(doc(collection(db, 'posts')), {
-            uid: OPERATOR_UID,
-            clientId: isClientMember ? myClientId : clientIdFor(item.client),
-            client,
-            content: item.content,
-            title: item.title || '',
-            altText: item.altText || '',
-            metaDescription: item.metaDescription || '',
-            slug: item.slug || '',
-            platform: item.platform,
-            status: item.status,
-            approvalStatus: item.approvalStatus,
-            feedback: item.feedback || '',
-            imageUrl: item.imageUrl || '',
-            tags: item.tags || [],
-            // Preserve templates through a backup → restore round-trip (otherwise a
-            // full-backup import floods the dated queue with evergreen content).
-            isTemplate: !!item.isTemplate,
-            scheduledDate: item.scheduledDate || null,
-            createdAt: now,
-            updatedAt: now,
-            source: 'import'
-          });
+      for (const item of rows) {
+        const size = (item.imageUrl?.length || 0) + (item.content?.length || 0) + 512;
+        if (ops >= MAX_OPS || (ops > 0 && bytes + size > MAX_BYTES)) await flush();
+        const client = isClientMember ? (myClientName || myClientId) : item.client;
+        batch.set(doc(collection(db, 'posts')), {
+          uid: OPERATOR_UID,
+          clientId: isClientMember ? myClientId : clientIdFor(item.client),
+          client,
+          content: item.content,
+          title: item.title || '',
+          altText: item.altText || '',
+          metaDescription: item.metaDescription || '',
+          slug: item.slug || '',
+          platform: item.platform,
+          status: item.status,
+          approvalStatus: item.approvalStatus,
+          feedback: item.feedback || '',
+          imageUrl: item.imageUrl || '',
+          tags: item.tags || [],
+          // Preserve templates through a backup → restore round-trip (otherwise a
+          // full-backup import floods the dated queue with evergreen content).
+          isTemplate: !!item.isTemplate,
+          // A bulk import lands in STAGING, never straight onto the client's review
+          // link — restoring a 400-row backup used to flood it in one commit.
+          reviewStage: REVIEW_STAGE.PRIVATE,
+          scheduledDate: item.scheduledDate || null,
+          createdAt: now,
+          updatedAt: now,
+          source: 'import'
         });
-        await batch.commit();
+        ops++; bytes += size;
       }
+      await flush();
       showToast(`Imported ${rows.length} thread${rows.length === 1 ? '' : 's'}! 🚀`);
       return true;
     } catch (err) {
+      // Report what ACTUALLY landed. A flat "Import failed" after 900 of 1200 rows
+      // were already durable sent the operator to re-run the file and duplicate them.
       console.error("Import error:", err);
-      showToast("Import failed. Please try again.", "error");
+      showToast(
+        committed > 0
+          ? `Imported ${committed} of ${rows.length} — the rest failed. Re-import only the remaining rows.`
+          : "Import failed. Please try again.",
+        "error"
+      );
       return false;
     }
   }, [isReadOnly, user, isClientMember, myClientName, myClientId, showToast, clientIdFor]);
@@ -515,11 +636,57 @@ const App = () => {
       await updateDoc(doc(db, 'posts', postId), {
         approvalStatus: APPROVAL_STATUS.PENDING,
         feedback: '',
+        // "Back for review" is a SEND. If the operator pulled the post into staging
+        // to rework it, leaving the stage alone would reset the badge to "awaiting"
+        // while the client still couldn't see it — a silent dead end.
+        reviewStage: REVIEW_STAGE.IN_REVIEW,
+        sentForReviewAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });
       showToast("Sent back for review 🔁");
     } catch {
       showToast("Couldn't update — please try again", "error");
+    }
+  }, [isReadOnly, showToast]);
+
+  // Send a staged draft to the client: the one verb that makes a post visible on the
+  // review link. Refuses posts with hard blockers (nothing to read, over the platform
+  // limit, no image on an image-first channel) — sending one of those wastes a review
+  // round. Warnings never block: asking a client about an unfinished idea is legitimate.
+  const handleSendForReview = useCallback(async (post) => {
+    if (isReadOnly) return;
+    const { blockers } = readinessOf(post);
+    if (blockers.length) {
+      return showToast(`Not ready to send — ${READINESS_LABELS[blockers[0]].toLowerCase()}`, "error");
+    }
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        reviewStage: REVIEW_STAGE.IN_REVIEW,
+        // Re-arm the review round. An already-approved post keeps its approval (the
+        // client's decision stands); only an undecided one is (re)armed as pending.
+        ...(post.approvalStatus === APPROVAL_STATUS.APPROVED ? {} : { approvalStatus: APPROVAL_STATUS.PENDING }),
+        sentForReviewAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      showToast("Sent for review — it's on the client's link now ✓");
+    } catch {
+      showToast("Couldn't send for review", "error");
+    }
+  }, [isReadOnly, showToast]);
+
+  // The inverse: pull a post OFF the client's review link and back into staging.
+  // Its approval history is left untouched — reviewStateOf keeps showing what the
+  // client actually decided, because that happened whether or not we hold the post now.
+  const handleHoldFromReview = useCallback(async (post) => {
+    if (isReadOnly) return;
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        reviewStage: REVIEW_STAGE.PRIVATE,
+        updatedAt: new Date().toISOString()
+      });
+      showToast("Moved to staging — the client can no longer see it");
+    } catch {
+      showToast("Couldn't move to staging", "error");
     }
   }, [isReadOnly, showToast]);
 
@@ -539,6 +706,10 @@ const App = () => {
       await updateDoc(doc(db, 'posts', post.id), {
         clientId: target,
         source: 'automation',
+        // Promoting adopts the suggestion as REAL client content — but into STAGING,
+        // not straight onto the client's review link. The operator reads it once more
+        // (and usually adds the image) before "Send for review".
+        reviewStage: REVIEW_STAGE.PRIVATE,
         tags: (post.tags || []).filter(t => t !== 'suggested'),
         // Promote always lands a LIVE pending draft — un-archive and clear any template
         // flag so the client actually sees what the success toast promises.
@@ -546,7 +717,7 @@ const App = () => {
         ...(post.isTemplate ? { isTemplate: false } : {}),
         updatedAt: new Date().toISOString()
       });
-      showToast(`Added to ${post.client || 'the client'}'s review queue ✓`);
+      showToast(`Moved into ${post.client || 'the client'}'s staging area — send it when it's ready ✓`);
     } catch (error) {
       console.error("Promote Error:", error);
       showToast("Couldn't use the suggestion", "error");
@@ -719,6 +890,9 @@ const App = () => {
               platform: post.platform || 'gmb',
               status: STATUS.DRAFT,
               approvalStatus: APPROVAL_STATUS.PENDING,
+              // A blast fans one draft into every tenant at once — it lands in each
+              // client's STAGING area so the operator tailors it before anyone sees it.
+              reviewStage: REVIEW_STAGE.PRIVATE,
               feedback: "",
               imageUrl: (post.imageUrl || '').slice(0, 500000),
               tags: post.tags || [],
@@ -738,6 +912,13 @@ const App = () => {
     });
   }, [isReadOnly, isOperator, uniqueClients, showToast, clientIdFor]);
 
+  // Stable identity matters: an inline arrow here handed memo(PostGrid) a new prop
+  // on every single App render, so the memo never bailed and all N cards re-rendered.
+  const handleCreateNew = useCallback(() => {
+    setEditingPost(null);
+    setView('editor');
+  }, []);
+
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
       setReviewingPost(p);
@@ -756,6 +937,9 @@ const App = () => {
       id: undefined,
       status: STATUS.DRAFT,
       approvalStatus: APPROVAL_STATUS.PENDING,
+      // A clone is a fresh draft, so it starts in staging even when its source was
+      // already approved and live on the client's link.
+      reviewStage: REVIEW_STAGE.PRIVATE,
       feedback: '',
       isTemplate: false
     });
@@ -772,6 +956,7 @@ const App = () => {
       isTemplate: false,
       status: STATUS.DRAFT,
       approvalStatus: APPROVAL_STATUS.PENDING,
+      reviewStage: REVIEW_STAGE.PRIVATE,
       feedback: '',
       scheduledDate: null
     });
@@ -803,6 +988,7 @@ const App = () => {
         platform: d.platform,
         status: STATUS.DRAFT,
         approvalStatus: APPROVAL_STATUS.PENDING,
+        reviewStage: REVIEW_STAGE.PRIVATE,
         feedback: '',
         imageUrl: '',
         tags: [],
@@ -815,25 +1001,117 @@ const App = () => {
     return valid.length;
   }, [isReadOnly, user, isClientMember, myClientName, myClientId, clientIdFor]);
 
-  // Client/archive/search scope — the set BEFORE the platform + status filters.
-  // Platform-filter counts derive from here so every platform with posts in the
-  // current context is offered (and the count reflects client/search/archive).
-  const scopedPosts = useMemo(() => {
-    const searchLower = deferredSearchQuery.toLowerCase();
+  // ===========================================================================
+  // THE QUEUE PIPELINE
+  //
+  // Rebuilt as three memo stages whose FINAL stage emits the visible list and
+  // every facet count from the SAME walk. Two things this buys:
+  //   • correctness — a count can never disagree with the grid it labels, and
+  //     each axis is counted against every OTHER active filter ("all but self"),
+  //     so clicking a chip that says 12 always yields 12 cards, never 0;
+  //   • cost — the old cascade re-walked the snapshot ~8 times per keystroke.
+  // ===========================================================================
 
-    return posts.filter(post => {
-      if (post.isTemplate) return false; // templates live in their own view, not the queue
-      if (post.source === 'suggestion') return false; // parked suggestions have their own lane below
-      const matchesClient = filterClient ? post.client === filterClient : true;
-      const matchesArchive = showArchived ? post.status === STATUS.ARCHIVED : post.status !== STATUS.ARCHIVED;
-      const matchesSearch =
-        !searchLower ||
-        post._searchContent?.includes(searchLower) ||
-        post._searchClient?.includes(searchLower);
+  // Stage 1 — lane partition. ONE pass splits the three mutually-exclusive lanes.
+  // Suggestion beats template: a doc carrying both flags belongs to the more
+  // restrictive lane (the same precedence PostCard applies to its action rows).
+  //
+  // NOBODY BUT THE OPERATOR SEES STAGED POSTS. That is the entire point of staging,
+  // and it is enforced here, before any other filter can be cleared. The gate is
+  // "not the operator" rather than "is a review guest" on purpose: a client member
+  // (client / client_admin with a real login) is just as much the audience staging
+  // exists to hide unfinished work from as a share-link guest is. Their OWN posts
+  // are never affected — a member's writes are stamped in_review (handleSavePost).
+  const lanes = useMemo(() => {
+    const queue = [], templates = [], suggestions = [];
+    for (const p of posts) {
+      if (p.source === 'suggestion') { suggestions.push(p); continue; }
+      if (!isOperator && isStaged(p)) continue;
+      if (p.isTemplate) { templates.push(p); continue; }
+      queue.push(p);
+    }
+    return { queue, templates, suggestions };
+  }, [posts, isOperator]);
 
-      return matchesClient && matchesArchive && matchesSearch;
-    });
-  }, [posts, filterClient, showArchived, deferredSearchQuery]);
+  const searchLower = useMemo(() => deferredSearchQuery.trim().toLowerCase(), [deferredSearchQuery]);
+  const matchesSearch = useCallback(
+    (p) => !searchLower || p._searchContent?.includes(searchLower) || p._searchClient?.includes(searchLower),
+    [searchLower]
+  );
+
+  // Stage 2 — client / archive / search scope. The platform + tag menus enumerate
+  // from HERE, so every platform with content in the current context is offered
+  // with a count that already respects client, search and archive.
+  const scopedPosts = useMemo(() => lanes.queue.filter(p =>
+    (filterClient ? p.client === filterClient : true) &&
+    (showArchived ? p.status === STATUS.ARCHIVED : p.status !== STATUS.ARCHIVED) &&
+    matchesSearch(p)
+  ), [lanes.queue, filterClient, showArchived, matchesSearch]);
+
+  const { platformCounts, tagCounts } = useMemo(() => {
+    const platformCounts = {}, tagCounts = {};
+    for (const p of scopedPosts) {
+      platformCounts[p.platform] = (platformCounts[p.platform] || 0) + 1;
+      for (const t of (p.tags || [])) tagCounts[t] = (tagCounts[t] || 0) + 1;
+    }
+    return { platformCounts, tagCounts };
+  }, [scopedPosts]);
+
+  // Stage 3 — the facet pass.
+  const { visiblePosts, reviewCounts, statusCounts, mediaCounts, needsCounts } = useMemo(() => {
+    const out = [];
+    const reviewCounts = {
+      all: 0,
+      [REVIEW_STATE.NOT_SENT]: 0,
+      [REVIEW_STATE.AWAITING]: 0,
+      [REVIEW_STATE.CHANGES]: 0,
+      [REVIEW_STATE.APPROVED]: 0,
+    };
+    const statusCounts = { [STATUS.DRAFT]: 0, [STATUS.SCHEDULED]: 0, [STATUS.POSTED]: 0 };
+    const mediaCounts = { [MEDIA_FILTER.WITH]: 0, [MEDIA_FILTER.WITHOUT]: 0 };
+    const needsCounts = {
+      [NEEDS_FILTER.IMAGE]: 0,
+      [NEEDS_FILTER.NOT_READY]: 0,
+      [NEEDS_FILTER.FEEDBACK]: 0,
+      [NEEDS_FILTER.OVERDUE]: 0,
+      [NEEDS_FILTER.NO_DATE]: 0,
+    };
+
+    for (const p of scopedPosts) {
+      // Platform + tag gate first: they scope the menus above, so nothing past this
+      // point should count content the operator has already filtered away.
+      if (filterPlatform && p.platform !== filterPlatform) continue;
+      if (filterTag && !(p.tags || []).includes(filterTag)) continue;
+
+      const state = reviewStateOf(p);
+      const withMedia = !!p.imageUrl;
+      // readinessOf is memoized on post identity (utils/readiness.js) — stable post
+      // objects from usePosts mean this is a map lookup after the first evaluation.
+      const flags = {
+        [NEEDS_FILTER.IMAGE]: needsImage(p),
+        [NEEDS_FILTER.NOT_READY]: hasBlockers(p),
+        [NEEDS_FILTER.FEEDBACK]: hasFeedback(p),
+        [NEEDS_FILTER.OVERDUE]: isOverdue(p, nowTick),
+        // Calendar view silently drops undated posts (they have nowhere to sit), so
+        // without this facet a draft with no date could sit unnoticed forever.
+        [NEEDS_FILTER.NO_DATE]: !p.scheduledDate,
+      };
+
+      const okStatus = !filterStatus || p.status === filterStatus;
+      const okReview = !filterReview || state === filterReview;
+      const okMedia = !filterMedia || (filterMedia === MEDIA_FILTER.WITH) === withMedia;
+      const okNeeds = !filterNeeds || flags[filterNeeds];
+
+      // Each axis counts itself against all the OTHERS, never against itself.
+      if (okStatus && okMedia && okNeeds) { reviewCounts.all++; reviewCounts[state]++; }
+      if (okReview && okMedia && okNeeds && statusCounts[p.status] !== undefined) statusCounts[p.status]++;
+      if (okStatus && okReview && okNeeds) mediaCounts[withMedia ? MEDIA_FILTER.WITH : MEDIA_FILTER.WITHOUT]++;
+      if (okStatus && okReview && okMedia) for (const k in flags) if (flags[k]) needsCounts[k]++;
+
+      if (okStatus && okReview && okMedia && okNeeds) out.push(p);
+    }
+    return { visiblePosts: out, reviewCounts, statusCounts, mediaCounts, needsCounts };
+  }, [scopedPosts, filterPlatform, filterTag, filterStatus, filterReview, filterMedia, filterNeeds, nowTick]);
 
   // Distinct images already used on each client's posts (incl. templates) — so the
   // editor's media picker can offer "reuse an image from this client" without any
@@ -854,93 +1132,50 @@ const App = () => {
   // them — for non-operators this list is empty by construction). Client + search scoped like
   // the queue; surfaced via the Suggestions chip and promoted/dismissed from the card.
   const suggestionPosts = useMemo(() => {
-    if (!isOperator) return [];
-    const searchLower = deferredSearchQuery.toLowerCase();
-    return posts.filter(post =>
-      post.source === 'suggestion' &&
-      (filterClient ? post.client === filterClient : true) &&
-      (!searchLower || post._searchContent?.includes(searchLower) || post._searchClient?.includes(searchLower))
+    if (!isOperator) return EMPTY_POSTS;
+    return lanes.suggestions.filter(p =>
+      (filterClient ? p.client === filterClient : true) && matchesSearch(p)
     );
-  }, [isOperator, posts, filterClient, deferredSearchQuery]);
+  }, [isOperator, lanes.suggestions, filterClient, matchesSearch]);
 
   // Evergreen templates (client/search scoped, newest first). Their own area.
-  const templatesList = useMemo(() => {
-    const searchLower = deferredSearchQuery.toLowerCase();
-    return posts.filter(post =>
-      post.isTemplate &&
-      post.source !== 'suggestion' && // a bad doc must never sit in two lanes at once
-      (filterClient ? post.client === filterClient : true) &&
-      (!searchLower || post._searchContent?.includes(searchLower) || post._searchClient?.includes(searchLower))
-    );
-  }, [posts, filterClient, deferredSearchQuery]);
+  const templatesList = useMemo(() => lanes.templates.filter(p =>
+    (filterClient ? p.client === filterClient : true) && matchesSearch(p)
+  ), [lanes.templates, filterClient, matchesSearch]);
 
-  const platformCounts = useMemo(() => {
-    const counts = {};
-    for (const p of scopedPosts) counts[p.platform] = (counts[p.platform] || 0) + 1;
-    return counts;
-  }, [scopedPosts]);
-
-  // Tag counts across the scope (a post carries several tags → counted once each).
-  const tagCounts = useMemo(() => {
-    const counts = {};
-    for (const p of scopedPosts) for (const t of (p.tags || [])) counts[t] = (counts[t] || 0) + 1;
-    return counts;
-  }, [scopedPosts]);
-
-  // Add the platform + tag filters. Status chips + their counts are applied on
-  // top of this, so a chip count reflects the selected platform/tag too.
-  const baseFilteredPosts = useMemo(
-    () => scopedPosts.filter(p =>
-      (!filterPlatform || p.platform === filterPlatform) &&
-      (!filterTag || (p.tags || []).includes(filterTag))
-    ),
-    [scopedPosts, filterPlatform, filterTag]
+  // The Suggestions chip swaps in the parked lane wholesale (its verbs are
+  // promote/dismiss, so the queue facets don't apply and the FilterBar hides them).
+  const filteredPosts = useMemo(
+    () => sortPosts(filterReview === SUGGESTIONS_LANE ? suggestionPosts : visiblePosts, sortBy),
+    [filterReview, suggestionPosts, visiblePosts, sortBy]
   );
 
-  const statusCounts = useMemo(() => {
-    const counts = {
-      all: baseFilteredPosts.length,
-      [STATUS.DRAFT]: 0,
-      [STATUS.SCHEDULED]: 0,
-      [STATUS.POSTED]: 0,
-      [APPROVAL_STATUS.CHANGES_REQUESTED]: 0,
-      // Not a status — the parked-suggestions lane's count for its chip (excluded from `all`
-      // above because suggestions are filtered out of the queue scope entirely).
-      suggestions: suggestionPosts.length
-    };
-    baseFilteredPosts.forEach(p => {
-      if (counts[p.status] !== undefined) counts[p.status]++;
-      if (p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) counts[APPROVAL_STATUS.CHANGES_REQUESTED]++;
-    });
-    return counts;
-  }, [baseFilteredPosts, suggestionPosts]);
-
-  const filteredPosts = useMemo(() => {
-    // The Suggestions chip swaps in the parked lane (operator-only; platform/tag filters don't
-    // apply — their counts derive from the queue scope, which excludes suggestions).
-    if (filterStatus === 'suggestions') return sortPosts(suggestionPosts, sortBy);
-    let result = baseFilteredPosts;
-    if (filterStatus === APPROVAL_STATUS.CHANGES_REQUESTED) {
-      result = baseFilteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED);
-    } else if (filterStatus) {
-      result = baseFilteredPosts.filter(p => p.status === filterStatus);
-    }
-    return sortPosts(result, sortBy);
-  }, [baseFilteredPosts, suggestionPosts, filterStatus, sortBy]);
-
   const calendarPosts = useMemo(() => {
-    if (view !== 'calendar') return [];
+    if (view !== 'calendar') return EMPTY_POSTS;
     return filteredPosts.filter(p => p.scheduledDate instanceof Date);
   }, [filteredPosts, view]);
 
-  // Guest review progress ("5 of 8 approved").
+  // Guest review progress ("5 of 8 approved"). One pass, not three.
   const approvalProgress = useMemo(() => {
     if (!isReadOnly) return null;
+    let approved = 0, changes = 0;
+    for (const p of filteredPosts) {
+      if (p.approvalStatus === APPROVAL_STATUS.APPROVED) approved++;
+      else if (p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED) changes++;
+    }
     const total = filteredPosts.length;
-    const approved = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.APPROVED).length;
-    const changes = filteredPosts.filter(p => p.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED).length;
     return { total, approved, changes, pending: Math.max(0, total - approved - changes) };
   }, [isReadOnly, filteredPosts]);
+
+  // Any facet beyond the sidebar's client scope — drives the "Clear filters" affordance.
+  const activeFilterCount =
+    (filterReview ? 1 : 0) + (filterStatus ? 1 : 0) + (filterPlatform ? 1 : 0) +
+    (filterTag ? 1 : 0) + (filterMedia ? 1 : 0) + (filterNeeds ? 1 : 0);
+
+  const clearFilters = useCallback(() => {
+    setFilterReview(null); setFilterStatus(null); setFilterPlatform(null);
+    setFilterTag(null); setFilterMedia(null); setFilterNeeds(null);
+  }, []);
 
   const handleExport = useCallback((mode, format = 'csv') => {
     let exportPosts = [];
@@ -978,7 +1213,7 @@ const App = () => {
 
   // Apply a per-post patch to the whole selection (skips unchanged posts).
   // `mutate(post)` returns a patch object or null to skip that post.
-  const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false } = {}) => {
+  const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false, emptyMsg } = {}) => {
     if (isReadOnly || !user) return;
     const byId = new Map(postsRef.current.map(p => [p.id, p]));
     const now = new Date().toISOString();
@@ -991,7 +1226,9 @@ const App = () => {
       const patch = mutate(post);
       if (patch) updates.push([id, { ...patch, updatedAt: now }]);
     });
-    if (updates.length === 0) return showToast("No changes to apply");
+    // `emptyMsg` exists so a bulk verb that SKIPPED work can say why, instead of
+    // reporting the generic no-op and leaving the operator guessing.
+    if (updates.length === 0) return showToast(emptyMsg ? emptyMsg() : "No changes to apply", emptyMsg ? "error" : "success");
     try {
       const CHUNK = 450;
       for (let i = 0; i < updates.length; i += CHUNK) {
@@ -1012,7 +1249,24 @@ const App = () => {
     if (!c) return;
     // Posts may leave the current client filter — clear selection after.
     // Move the immutable clientId alongside the display name.
-    commitBulk(() => ({ client: c, clientId: clientIdFor(c) }), n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}"`, { clearAfter: true });
+    //
+    // 🔒 A reassignment crosses a TENANT boundary, so the review state cannot ride
+    // along. Client A's approval says nothing about client B's content, and A's
+    // private feedback ("our CEO hated this angle") would land verbatim on B's
+    // review link — a real cross-client disclosure. The moved posts arrive in B's
+    // staging area as fresh, unreviewed drafts, which is what they are.
+    commitBulk(
+      () => ({
+        client: c,
+        clientId: clientIdFor(c),
+        approvalStatus: APPROVAL_STATUS.PENDING,
+        reviewStage: REVIEW_STAGE.PRIVATE,
+        feedback: '',
+        feedbackThread: [],
+      }),
+      n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}" — review state reset`,
+      { clearAfter: true }
+    );
   }, [commitBulk, clientIdFor]);
 
   const handleBulkAddTags = useCallback((tags) => {
@@ -1035,6 +1289,39 @@ const App = () => {
   const handleBulkStatus = useCallback((status) => {
     if (!Object.values(STATUS).includes(status)) return;
     commitBulk(() => ({ status }), n => `Set ${n} thread${n === 1 ? '' : 's'} to ${status}`, { clearAfter: status === STATUS.ARCHIVED });
+  }, [commitBulk]);
+
+  // Bulk send: the verb that makes a whole batch visible to the client at once —
+  // the realistic way to work a week of drafts. Posts with hard blockers are SKIPPED,
+  // not silently included, and the toast names how many and why.
+  const handleBulkSendForReview = useCallback(() => {
+    let blocked = 0;
+    const now = new Date().toISOString();
+    commitBulk((post) => {
+      if (post.isTemplate) return null;      // templates sit outside the review loop
+      if (!isStaged(post)) return null;      // already with the client
+      if (hasBlockers(post)) { blocked++; return null; }
+      return {
+        reviewStage: REVIEW_STAGE.IN_REVIEW,
+        ...(post.approvalStatus === APPROVAL_STATUS.APPROVED ? {} : { approvalStatus: APPROVAL_STATUS.PENDING }),
+        sentForReviewAt: now,
+      };
+    },
+    n => `Sent ${n} for review${blocked ? ` · skipped ${blocked} that aren’t ready` : ''} ✓`,
+    {
+      clearAfter: true,
+      emptyMsg: () => blocked
+        ? `Nothing sent — ${blocked} ${blocked === 1 ? 'post isn’t' : 'posts aren’t'} ready (empty, over the limit, or missing a required image)`
+        : 'Nothing to send — these are already with the client',
+    });
+  }, [commitBulk]);
+
+  const handleBulkHold = useCallback(() => {
+    commitBulk(
+      (post) => (post.isTemplate || isStaged(post)) ? null : { reviewStage: REVIEW_STAGE.PRIVATE },
+      n => `Moved ${n} thread${n === 1 ? '' : 's'} to staging`,
+      { clearAfter: true, emptyMsg: () => 'Nothing to move — these are already in staging' }
+    );
   }, [commitBulk]);
 
   const handleBulkArchive = useCallback(() => {
@@ -1117,7 +1404,20 @@ const App = () => {
           isMerge
             ? (p.source === 'suggestion'
               ? { client: to, forClientId: targetClientId || '', updatedAt: now }
-              : { client: to, clientId: targetClientId, updatedAt: now })
+              // A MERGE moves content to a DIFFERENT tenant, so its review state must
+              // not follow: the source client's approval doesn't bind the target, and
+              // the source's private feedback would surface on the target's review
+              // link. (A pure RENAME is the same client under a new label — nothing
+              // below this line applies to it, and nothing there is touched.)
+              : {
+                client: to,
+                clientId: targetClientId,
+                approvalStatus: APPROVAL_STATUS.PENDING,
+                reviewStage: REVIEW_STAGE.PRIVATE,
+                feedback: '',
+                feedbackThread: [],
+                updatedAt: now,
+              })
             // Pure rename: display name ONLY. Leaving clientId/forClientId alone keeps every
             // thread on the tenant it already belongs to — which is what a rename means.
             : { client: to, updatedAt: now }));
@@ -1143,7 +1443,11 @@ const App = () => {
       }
 
       if (filterClient === from) setFilterClient(to);
-      showToast(`${isMerge ? 'Merged' : 'Renamed'} "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`);
+      showToast(
+        isMerge
+          ? `Merged "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'}) — review state reset, they're in staging`
+          : `Renamed "${from}" → "${to}" (${affected.length} thread${affected.length === 1 ? '' : 's'})`
+      );
     } catch (err) {
       console.error("Merge client error:", err);
       showToast("Couldn't rename/merge client", "error");
@@ -1241,9 +1545,9 @@ const App = () => {
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
             showArchived={showArchived}
-            onShowArchived={(v) => { setShowArchived(v); setShowTemplates(false); setFilterStatus(null); }}
+            onShowArchived={(v) => { setShowArchived(v); setShowTemplates(false); clearFilters(); }}
             showTemplates={showTemplates}
-            onShowTemplates={(v) => { setShowTemplates(v); if (v) { setShowArchived(false); setFilterStatus(null); exitSelectionMode(); } }}
+            onShowTemplates={(v) => { setShowTemplates(v); if (v) { setShowArchived(false); clearFilters(); exitSelectionMode(); } }}
             filterClient={filterClient}
             onFilterClient={setFilterClient}
             uniqueClients={uniqueClients}
@@ -1267,16 +1571,27 @@ const App = () => {
             onToggleSidebar={() => setSidebarOpen(o => !o)}
             onShare={handleOpenShare}
             filterClient={filterClient}
-            onNew={() => setView('editor')}
+            onNew={handleCreateNew}
             onSignOut={signOutAndExit}
             userEmail={user?.email || ''}
             role={role}
           />
 
+          {/* Two DIFFERENT situations, and the banner used to claim the recoverable one
+              for both: a transient blip that usePosts really is retrying, versus a
+              terminated listener (revoked link, withdrawn grant, backoff exhausted)
+              where nothing will change until the page reloads. */}
           {postsError && (
-            <div className="bg-rose-50 border-b border-rose-100 px-4 sm:px-6 py-2 text-sm text-rose-700 font-medium text-center" role="alert">
-              Connection issue — live updates may be delayed. Retrying automatically…
-            </div>
+            postsStalled ? (
+              <div className="bg-rose-50 border-b border-rose-100 px-4 sm:px-6 py-2 text-sm text-rose-700 font-medium text-center flex items-center justify-center gap-3" role="alert">
+                <span>Live updates stopped — what you see may be out of date.</span>
+                <button onClick={() => window.location.reload()} className="underline font-bold hover:text-rose-900">Reload</button>
+              </div>
+            ) : (
+              <div className="bg-amber-50 border-b border-amber-100 px-4 sm:px-6 py-2 text-sm text-amber-800 font-medium text-center" role="alert">
+                Connection issue — live updates may be delayed. Retrying automatically…
+              </div>
+            )
           )}
 
           <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
@@ -1289,7 +1604,7 @@ const App = () => {
               </h2>
               {/* Selection/bulk actions stay off the suggestions lane — bulk verbs (reassign,
                   status, archive) would side-step the explicit promote/dismiss flow. */}
-              {isOperator && view === 'grid' && !showTemplates && filterStatus !== 'suggestions' && filteredPosts.length > 0 && (
+              {isOperator && view === 'grid' && !showTemplates && filterReview !== SUGGESTIONS_LANE && filteredPosts.length > 0 && (
                 <button
                   onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
                   className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold border transition-colors ${selectionMode ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
@@ -1315,12 +1630,18 @@ const App = () => {
                     <p className="text-slate-500 mt-2">Please open the specific review link your team shared with you.</p>
                   </div>
                 ) : view === 'calendar' ? (
-                  <CalendarView
-                    posts={calendarPosts}
-                    currentDate={currentDate}
-                    onDateChange={setCurrentDate}
-                    onEdit={handleSelectPost}
-                  />
+                  <Suspense fallback={
+                    <div className="flex items-center justify-center h-64" role="status" aria-label="Loading calendar">
+                      <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                    </div>
+                  }>
+                    <CalendarView
+                      posts={calendarPosts}
+                      currentDate={currentDate}
+                      onDateChange={setCurrentDate}
+                      onEdit={handleSelectPost}
+                    />
+                  </Suspense>
                 ) : (
                   <>
                   {isReadOnly && approvalProgress && approvalProgress.total > 0 && (
@@ -1345,19 +1666,19 @@ const App = () => {
                       suggestions invisible unless the operator happened to notice the chip. Operator-
                       only (suggestionPosts is empty for everyone else), hidden on the lane itself and
                       on templates/archived, one click into the lane, session-dismissible. */}
-                  {isOperator && !showTemplates && !showArchived && filterStatus !== 'suggestions' && statusCounts.suggestions > 0 && !suggestionsBannerDismissed && (
+                  {isOperator && !showTemplates && !showArchived && filterReview !== SUGGESTIONS_LANE && suggestionPosts.length > 0 && !suggestionsBannerDismissed && (
                     <div className="mb-6 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-3 sm:p-4">
                       <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
                         <Lightbulb size={18} className="text-amber-600" />
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-bold text-amber-900">
-                          {statusCounts.suggestions} AI {statusCounts.suggestions === 1 ? 'suggestion is' : 'suggestions are'} parked for your review
+                          {suggestionPosts.length} AI {suggestionPosts.length === 1 ? 'suggestion is' : 'suggestions are'} parked for your review
                         </p>
                         <p className="text-xs text-amber-700/80">From your automations — promote the good ones into a client&rsquo;s queue.</p>
                       </div>
                       <button
-                        onClick={() => { setFilterStatus('suggestions'); exitSelectionMode(); }}
+                        onClick={() => { setFilterReview(SUGGESTIONS_LANE); exitSelectionMode(); }}
                         className="shrink-0 flex items-center gap-1.5 bg-amber-500 text-white px-3 py-2 rounded-xl font-bold text-xs shadow-sm hover:bg-amber-600 transition-colors"
                       >
                         Review
@@ -1398,34 +1719,42 @@ const App = () => {
                       })()}
                     </div>
                   ) : (
-                    <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-                      {!showArchived
-                        ? <StatusFilterChips
-                            value={filterStatus}
-                            /* Entering the suggestions lane drops any in-flight selection —
-                               ids selected in the queue must not ride into a lane whose only
-                               verbs are promote/dismiss. */
-                            onChange={(v) => { setFilterStatus(v); if (v === 'suggestions') exitSelectionMode(); }}
-                            counts={statusCounts}
-                            /* Operator-only, and only once the lane has (or is showing) content —
-                               no point advertising an empty lane to a chip row. */
-                            showSuggestions={isOperator && (statusCounts.suggestions > 0 || filterStatus === 'suggestions')}
-                          />
-                        : <span />}
-                      <PostControls
-                        sortBy={sortBy}
-                        onSortChange={setSortBy}
+                    <div className="mb-6">
+                      <FilterBar
+                        filterReview={filterReview}
+                        /* Entering the suggestions lane drops any in-flight selection —
+                           ids selected in the queue must not ride into a lane whose only
+                           verbs are promote/dismiss. */
+                        onReviewChange={(v) => { setFilterReview(v); if (v === SUGGESTIONS_LANE) exitSelectionMode(); }}
+                        reviewCounts={reviewCounts}
+                        /* Operator-only, and only once the lane has (or is showing) content —
+                           no point advertising an empty lane to a chip row. */
+                        showSuggestions={isOperator && (suggestionPosts.length > 0 || filterReview === SUGGESTIONS_LANE)}
+                        suggestionCount={suggestionPosts.length}
+                        filterStatus={filterStatus}
+                        onStatusChange={setFilterStatus}
+                        statusCounts={statusCounts}
+                        filterMedia={filterMedia}
+                        onMediaChange={setFilterMedia}
+                        mediaCounts={mediaCounts}
+                        filterNeeds={filterNeeds}
+                        onNeedsChange={setFilterNeeds}
+                        needsCounts={needsCounts}
                         filterPlatform={filterPlatform}
                         onPlatformChange={setFilterPlatform}
                         platformCounts={platformCounts}
                         filterTag={filterTag}
                         onTagChange={setFilterTag}
                         tagCounts={tagCounts}
+                        sortBy={sortBy}
+                        onSortChange={setSortBy}
                         showClientSort={isOperator}
-                        /* Platform/tag filters don't apply on the Suggestions lane (filteredPosts
+                        /* The queue facets don't apply on the Suggestions lane (filteredPosts
                            short-circuits before them) — hide the dead controls so their counts
                            can't mismatch the lane or silently carry a stale filter back out. */
-                        showFilters={filterStatus !== 'suggestions'}
+                        showFacets={filterReview !== SUGGESTIONS_LANE}
+                        activeFilterCount={activeFilterCount}
+                        onClearFilters={clearFilters}
                       />
                     </div>
                   )}
@@ -1442,16 +1771,22 @@ const App = () => {
                     onRestore={handleRestorePost}
                     onUseTemplate={showTemplates ? handleUseTemplate : undefined}
                     onResubmit={handleResubmitForReview}
+                    onSendForReview={!isReadOnly ? handleSendForReview : undefined}
+                    onHoldFromReview={!isReadOnly ? handleHoldFromReview : undefined}
                     onPromoteSuggestion={isOperator ? handlePromoteSuggestion : undefined}
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
                     onPushToSender={isOperator ? handlePushToSender : undefined}
                     onPublishToSite={isOperator ? handlePublishToSite : undefined}
-                    isSuggestionLane={filterStatus === 'suggestions'}
+                    isSuggestionLane={filterReview === SUGGESTIONS_LANE}
                     /* Operators see machine-provenance badges (Auto/Suggested + source page);
                        clients & guests never do — matches the caution on machine-derived labels. */
                     showProvenance={isOperator}
-                    onCreate={() => setView('editor')}
-                    selectable={!isReadOnly && !showTemplates && filterStatus !== 'suggestions' && selectionMode}
+                    onCreate={handleCreateNew}
+                    /* Collapses PostGrid's window back to page one whenever the CONTEXT
+                       changes — but not on a mere data refresh, which would yank a
+                       scrolled operator back to the top on every Firestore snapshot. */
+                    resetKey={`${showTemplates}|${showArchived}|${filterClient}|${filterReview}|${filterStatus}|${filterPlatform}|${filterTag}|${filterMedia}|${filterNeeds}|${sortBy}|${searchLower}`}
+                    selectable={!isReadOnly && !showTemplates && filterReview !== SUGGESTIONS_LANE && selectionMode}
                     selectedIds={selectedIds}
                     onToggleSelect={toggleSelect}
                   />
@@ -1483,9 +1818,12 @@ const App = () => {
           onClose={() => setReviewingPost(null)}
           onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
           onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
+          /* The modal is the CLIENT's review surface today; the flag keeps the
+             feedback attribution resolved against the viewer, not the author. */
+          viewerIsClient={isReadOnly}
         />
       )}
-      {isOperator && !showTemplates && filterStatus !== 'suggestions' && selectionMode && selectedIds.size > 0 && (
+      {isOperator && !showTemplates && filterReview !== SUGGESTIONS_LANE && selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
           count={selectedIds.size}
           totalFiltered={filteredPosts.length}
@@ -1494,6 +1832,8 @@ const App = () => {
           onAddTags={handleBulkAddTags}
           onRemoveTags={handleBulkRemoveTags}
           onSetStatus={handleBulkStatus}
+          onSendForReview={handleBulkSendForReview}
+          onHold={handleBulkHold}
           onArchive={handleBulkArchive}
           onDelete={handleBulkDelete}
           onExport={() => handleExport('selected', 'csv')}
@@ -1502,63 +1842,75 @@ const App = () => {
         />
       )}
       {isClientSettingsOpen && isOperator && (
-        <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={isOperator ? OPERATOR_UID : user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} clientIdFor={clientIdFor} />
+        <Suspense fallback={<ModalFallback />}>
+          <ClientSettingsModal onClose={() => setIsClientSettingsOpen(false)} uniqueClients={uniqueClients} clientMap={clientMap} uid={isOperator ? OPERATOR_UID : user?.uid} isReadOnly={isReadOnly} onMergeClient={handleMergeClient} clientIdFor={clientIdFor} />
+        </Suspense>
       )}
       {isShareOpen && !isReadOnly && (
-        <ShareManager
-          onClose={() => setIsShareOpen(false)}
-          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
-          initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
-          /* The SAME roster-aware resolver drafts are stamped with (member names pin to their
-             own clientId, as MediaLibrary does) — the review token must bind to the tenant key
-             the drafts actually carry, or the review page comes up permanently empty. */
-          clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
-          showToast={showToast}
-        />
+        <Suspense fallback={<ModalFallback />}>
+          <ShareManager
+            onClose={() => setIsShareOpen(false)}
+            uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+            initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+            /* The SAME roster-aware resolver drafts are stamped with (member names pin to their
+               own clientId, as MediaLibrary does) — the review token must bind to the tenant key
+               the drafts actually carry, or the review page comes up permanently empty. */
+            clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
+            showToast={showToast}
+          />
+        </Suspense>
       )}
       {isMediaOpen && (isOperator || isClientMember) && (
-        <MediaLibrary
-          onClose={() => setIsMediaOpen(false)}
-          /* Client members get the library too, pinned to their own client (the
-             worker enforces the same tenant boundary server-side). */
-          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
-          initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
-          /* A member's display name may drift from their hand-authored slug —
-             resolve their own name straight to their pinned clientId. */
-          clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
-          postImagesByClient={postImagesByClient}
-          showToast={showToast}
-        />
+        <Suspense fallback={<ModalFallback />}>
+          <MediaLibrary
+            onClose={() => setIsMediaOpen(false)}
+            /* Client members get the library too, pinned to their own client (the
+               worker enforces the same tenant boundary server-side). */
+            uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+            initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+            /* A member's display name may drift from their hand-authored slug —
+               resolve their own name straight to their pinned clientId. */
+            clientIdFor={isOperator ? clientIdFor : ((name) => (name === myClientName ? myClientId : clientIdFor(name)))}
+            postImagesByClient={postImagesByClient}
+            showToast={showToast}
+          />
+        </Suspense>
       )}
       {isAdminOpen && isOperator && (
-        <AdminPanel
-          onClose={() => setIsAdminOpen(false)}
-          currentEmail={user?.email || ''}
-          showToast={showToast}
-          /* The App-level roster (single fetch — see useClients) drives the picker. */
-          clients={rosterClients}
-          clientsLoading={rosterLoading}
-        />
+        <Suspense fallback={<ModalFallback />}>
+          <AdminPanel
+            onClose={() => setIsAdminOpen(false)}
+            currentEmail={user?.email || ''}
+            showToast={showToast}
+            /* The App-level roster (single fetch — see useClients) drives the picker. */
+            clients={rosterClients}
+            clientsLoading={rosterLoading}
+          />
+        </Suspense>
       )}
       {isAutomationsOpen && isOperator && (
-        <AutomationsPanel
-          onClose={() => setIsAutomationsOpen(false)}
-          uniqueClients={uniqueClients}
-          initialClient={filterClient || ''}
-          clientIdByName={clientIdByName}
-          showToast={showToast}
-        />
+        <Suspense fallback={<ModalFallback />}>
+          <AutomationsPanel
+            onClose={() => setIsAutomationsOpen(false)}
+            uniqueClients={uniqueClients}
+            initialClient={filterClient || ''}
+            clientIdByName={clientIdByName}
+            showToast={showToast}
+          />
+        </Suspense>
       )}
       {isDataOpen && !isReadOnly && (isOperator || isClientMember) && (
-        <ImportExportModal
-          posts={posts}
-          uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
-          isOperator={isOperator}
-          scopeClient={isOperator ? null : (myClientName || myClientId)}
-          onImport={handleImportRows}
-          onClose={() => setIsDataOpen(false)}
-          showToast={showToast}
-        />
+        <Suspense fallback={<ModalFallback />}>
+          <ImportExportModal
+            posts={posts}
+            uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
+            isOperator={isOperator}
+            scopeClient={isOperator ? null : (myClientName || myClientId)}
+            onImport={handleImportRows}
+            onClose={() => setIsDataOpen(false)}
+            showToast={showToast}
+          />
+        </Suspense>
       )}
     </ErrorBoundary>
   );

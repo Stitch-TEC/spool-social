@@ -26,13 +26,34 @@ function b64urlToString(s) {
 
 // Cache Google's signing keys in-isolate (~1h) to avoid refetching every request.
 let jwkCache = { exp: 0, keys: null };
+
+// This fetch sits in front of EVERY Firebase-authenticated request. It had no
+// timeout and no error handling, so a slow or failing googleapis.com turned every
+// authed route into a hung request or a 500 — a Google blip took the whole app
+// down, including for tokens whose signing key we already had cached. Now: a hard
+// 5s budget, and on any failure we serve the STALE cached keys rather than throwing.
+// Signing keys rotate on the order of days, so stale keys still verify correctly;
+// only a genuinely-unknown kid falls through to a clean rejection.
+const JWK_TIMEOUT_MS = 5000;
+
 async function getJwks(force) {
   const now = Date.now();
   if (!force && jwkCache.keys && now < jwkCache.exp) return jwkCache.keys;
-  const res = await fetch(JWK_URL);
-  const data = await res.json();
-  jwkCache = { exp: now + 60 * 60 * 1000, keys: data.keys || [] };
-  return jwkCache.keys;
+  try {
+    const res = await fetch(JWK_URL, { signal: AbortSignal.timeout(JWK_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`JWK fetch failed (${res.status})`);
+    const data = await res.json();
+    const keys = data.keys || [];
+    // An empty key set is a bad response, not a valid rotation — keep what we have.
+    if (!keys.length) throw new Error('JWK response carried no keys');
+    jwkCache = { exp: now + 60 * 60 * 1000, keys };
+    return jwkCache.keys;
+  } catch (err) {
+    console.error('JWK refresh failed:', err?.message || err);
+    // Fail SOFT to whatever we last saw; only a cold isolate has nothing to serve,
+    // and then verification rejects cleanly (401) instead of 500-ing the route.
+    return jwkCache.keys || [];
+  }
 }
 
 export async function verifyFirebaseToken(token, projectId) {
