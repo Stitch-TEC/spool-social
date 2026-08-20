@@ -132,6 +132,22 @@ export const NEEDS_FILTER = {
   NO_DATE: 'no_date'     // unscheduled — invisible in Calendar view, easy to lose
 };
 
+// Feed DENSITY — how much of each post the grid shows. The queue routinely holds
+// hundreds of posts per workspace, and a 400px-tall card meant ~6 posts fit a
+// 1600x1200 screen: scanning "what needs me today" cost a dozen scroll gestures.
+// Density is a pure VIEW concern (no stored field, no filter semantics) and is
+// remembered per browser, so an operator picks their scanning mode once.
+//   cards   — the original card: full-width image, 3 lines of copy. Best for 1-2 screens.
+//   compact — same information, thumbnail beside 2 lines. ~2x the posts per screen.
+//   list    — one row per post: platform, copy, client, date, review state. ~7x.
+export const DENSITY = {
+  CARDS: 'cards',
+  COMPACT: 'compact',
+  LIST: 'list'
+};
+
+export const DENSITY_VALUES = Object.freeze([DENSITY.CARDS, DENSITY.COMPACT, DENSITY.LIST]);
+
 export const SPARK_PROMPTS = [
   "Share a 'behind the scenes' photo of your workspace.",
   "Highlight a recent customer review or success story.",

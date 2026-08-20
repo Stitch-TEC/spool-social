@@ -49,8 +49,15 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   opening a clientId-scoped listener (the guest listener used to race sign-in and die denied).
 - **Known limit, not fixed:** the posts subscription is still UNBOUNDED — a cold load streams
   every post in the workspace. Bounding it needs pagination that the whole-workspace facet
-  counts currently assume away. The grid window caps the RENDER cost, not the read.
+  counts currently assume away. The grid window + density cap the RENDER cost, not the read.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
+- **Tailwind 4 emits arbitrary media variants BEFORE the named breakpoint scale**, so
+  `min-[1600px]:grid-cols-4` silently loses to `xl:grid-cols-3` at every width where both
+  match. Wide layout steps must use REGISTERED breakpoints — `@theme { --breakpoint-3xl }`
+  in `src/index.css` (`3xl` = 1600px, `4xl` = 1920px) — which sort by value alongside sm–2xl.
+- An `appearance-none` `<select>` keeps a UA-internal box that is TALLER than its padding
+  in Safari (the label renders clipped by the bottom border). Every toolbar select goes
+  through `SELECT_CLASS` in `src/utils/facetStyles.js`, which pins an explicit `h-8 py-0`.
 
 ## The review pipeline (2026-08-18 — read before touching the queue)
 Spool has THREE axes, and until this date the UI conflated the first two:
@@ -137,11 +144,33 @@ something the client did; pulling a post back to staging must not erase it.
 - `src/main.jsx` `App.jsx` — SPA entry + root.
 - `src/components/` — UI (Editor, AIGenerate, MediaLibrary, CalendarView, AdminPanel,
   AutomationsPanel, FeedbackWidget, LoginScreen, …). `FilterBar` is the grid toolbar
-  (review-state chips + facet selects; it composes `PostControls`). `PostGrid` WINDOWS the
-  list (48 at a time, IntersectionObserver sentinel) — its `resetKey` prop must carry the
-  filter context, never the list identity, or a snapshot yanks a scrolled operator to the top.
+  (review-state chips + facet selects; it composes `PostControls` and hosts `DensityToggle`).
+  `PostGrid` WINDOWS the list (page size per density: 48 cards / 72 compact / 150 rows,
+  IntersectionObserver sentinel) — its `resetKey` prop must carry the filter context AND the
+  density, never the list identity, or a snapshot yanks a scrolled operator to the top.
+- **Feed DENSITY** (`constants.DENSITY`, `2026-08-20`): `cards` | `compact` | `list`. A pure
+  VIEW preference — no stored field, no filter semantics — persisted per browser in
+  `localStorage['spool.feedDensity']` (every access try/caught: Safari private windows throw).
+  `compact` is `PostCard` with a 56px thumbnail beside two lines; `list` is its own component
+  (`PostRow`, ~48px a row) which deliberately drops the verbs you'd only use after reading the
+  whole post (clone-to-all, duplicate, hold, push-to-Sender, publish) — the row click opens the
+  editor. **Review guests are pinned to `cards`** in BOTH App (the control is hidden) and
+  PostGrid (the value is coerced): a one-line row invites approving copy the client only
+  skimmed, so PostRow never has to reason about a read-only viewer.
+- **Group headings** (`src/utils/grouping.js`): sticky month / client / platform runs over a
+  long feed, on above `GROUP_MIN_POSTS` (12) posts and 2+ runs, else the grid renders flat.
+  The group key MUST be the key the SORT orders by — that's what makes runs contiguous. In
+  particular the scheduled sorts group by `scheduledDate || createdAt` (exactly usePosts'
+  `_sortTs`); keying off `scheduledDate` alone dropped undated posts into an island that split
+  a month into two identically-labelled runs. A heading's count is the run's TRUE size even
+  when the window has only mounted part of it.
+- `PostCard`'s hover action cluster is ABSOLUTE on `[@media(pointer:fine)]` and in flow on
+  touch: eight `opacity-0` icon buttons still RESERVE ~190px of the header row, which is what
+  used to wrap the platform/date/client onto three lines (and makes a 300px compact card
+  impossible). Don't put it back in flow without re-checking the header at 300px.
 - `src/utils/` — `review.js` (the review pipeline), `readiness.js` (per-post blockers),
-  `helpers.js` (sorts, date formatters), `facetStyles.js` (shared toolbar select styling).
+  `helpers.js` (sorts, date formatters), `grouping.js` (feed group headings),
+  `facetStyles.js` (shared toolbar select styling).
 - `src/hooks/` — `useAuth` `usePosts` `useClients` `useToast`. `src/lib/` — `clientsClient.js`
   (roster pull), `feedbackClient.js`. `src/config/` — `firebase.js`, `roles.js`.
 - `src/generation/prompts.js` — AI prompt builders. `src/stitch-apps.js` — shared app registry.

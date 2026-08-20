@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import FilterBar from './FilterBar';
 import { SORT_ORDERS } from '../utils/helpers';
-import { REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, STATUS } from '../constants';
+import { REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, STATUS, DENSITY } from '../constants';
 
 const base = {
   filterReview: null,
@@ -129,5 +129,28 @@ describe('FilterBar — clear', () => {
     rerender(<FilterBar {...base} activeFilterCount={3} onClearFilters={onClearFilters} />);
     fireEvent.click(screen.getByText('Clear 3'));
     expect(onClearFilters).toHaveBeenCalled();
+  });
+});
+
+describe('FilterBar — density', () => {
+  it('offers the three densities and reports the chosen one', () => {
+    const onDensityChange = vi.fn();
+    render(<FilterBar {...base} density={DENSITY.CARDS} onDensityChange={onDensityChange} />);
+    const group = screen.getByRole('group', { name: 'Feed density' });
+    expect(within(group).getAllByRole('button')).toHaveLength(3);
+    expect(screen.getByLabelText('Cards view')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByLabelText('List view'));
+    expect(onDensityChange).toHaveBeenCalledWith(DENSITY.LIST);
+  });
+
+  it('is hidden for a review guest — their surface is for reading the copy, not scanning it', () => {
+    render(<FilterBar {...base} density={DENSITY.CARDS} onDensityChange={() => {}} showDensity={false} />);
+    expect(screen.queryByRole('group', { name: 'Feed density' })).toBeNull();
+  });
+
+  it('stays out of the way when no handler is wired', () => {
+    render(<FilterBar {...base} />);
+    expect(screen.queryByRole('group', { name: 'Feed density' })).toBeNull();
   });
 });
