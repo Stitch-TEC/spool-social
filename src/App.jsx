@@ -14,7 +14,7 @@ import {
 import { db } from './config/firebase';
 import {
   STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT,
-  REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER
+  REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, DENSITY, DENSITY_VALUES
 } from './constants';
 import { reviewStageOf, isStaged, reviewStateOf, hasFeedback } from './utils/review';
 import { needsImage, hasBlockers, isOverdue, readinessOf, READINESS_LABELS } from './utils/readiness';
@@ -30,6 +30,7 @@ import DashboardHeader from './components/DashboardHeader';
 import BrandFooter from './components/BrandFooter';
 import PostGrid from './components/PostGrid';
 import FilterBar, { SUGGESTIONS_LANE } from './components/FilterBar';
+import DensityToggle from './components/DensityToggle';
 import Toast from './components/Toast';
 import FeedbackWidget from './components/FeedbackWidget';
 import ConfirmModal from './components/ConfirmModal';
@@ -69,6 +70,21 @@ const normClientName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/
 // new identity each pass and cascade through the memo chain the file relies on.
 const EMPTY_POSTS = Object.freeze([]);
 
+// Feed density belongs to the PERSON scanning, not to the workspace's data — so it
+// lives in localStorage, not Firestore: no write path, no tenant question, and an
+// operator who works in list mode gets list mode again tomorrow. Every access is
+// guarded because a Safari private window throws on localStorage, and a view
+// preference must never be able to take the dashboard down with it.
+const DENSITY_KEY = 'spool.feedDensity';
+const readStoredDensity = () => {
+  try {
+    const v = localStorage.getItem(DENSITY_KEY);
+    return DENSITY_VALUES.includes(v) ? v : DENSITY.CARDS;
+  } catch {
+    return DENSITY.CARDS;
+  }
+};
+
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
@@ -102,6 +118,8 @@ const App = () => {
   const [filterNeeds, setFilterNeeds] = useState(null); // null | NEEDS_FILTER value
   // Default: what's coming up soonest sits at the top (the next thing to handle).
   const [sortBy, setSortBy] = useState(SORT_ORDERS.SCHEDULED_ASC); // grid sort order
+  // How much of each post the feed shows (cards | compact | list) — see constants.DENSITY.
+  const [density, setDensityState] = useState(readStoredDensity);
   const [showArchived, setShowArchived] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false); // Templates (evergreen) view
   const [searchQuery, setSearchQuery] = useState('');
@@ -1177,6 +1195,12 @@ const App = () => {
     setFilterTag(null); setFilterMedia(null); setFilterNeeds(null);
   }, []);
 
+  const setDensity = useCallback((v) => {
+    if (!DENSITY_VALUES.includes(v)) return;
+    setDensityState(v);
+    try { localStorage.setItem(DENSITY_KEY, v); } catch { /* no storage — the choice just won't outlive the tab */ }
+  }, []);
+
   const handleExport = useCallback((mode, format = 'csv') => {
     let exportPosts = [];
     if (mode === 'current') exportPosts = filteredPosts;
@@ -1594,10 +1618,21 @@ const App = () => {
             )
           )}
 
-          <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
+          {/* Wider than the old max-w-7xl (1280px): at the 1614px window this pass was
+              reported from, the 1280px cap left ~80px of dead gutter AND held the grid to
+              three columns. 1700px is where a fourth card column lands at the same card
+              width the third one has today (see PostGrid's GRID_CLASS). */}
+          <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-[1700px] mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
             <div className="flex items-center justify-between mb-6 gap-3">
               <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
                 <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
+                {/* How big is this list, actually? The chip row answers it per review
+                    state; nothing answered it for the list you are actually looking at. */}
+                {view === 'grid' && !isLoading && (
+                  <span className="shrink-0 text-sm font-bold text-slate-400 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-0.5 tabular-nums">
+                    {showTemplates ? templatesList.length : filteredPosts.length}
+                  </span>
+                )}
                 {filterClient && isOperator && (
                   <button onClick={() => setFilterClient(null)} title="Clear Filter" aria-label="Clear Filter" className="text-slate-400 hover:text-rose-500 shrink-0"><X size={20}/></button>
                 )}
@@ -1704,19 +1739,24 @@ const App = () => {
                         </h3>
                         <p className="text-xs text-slate-400 mt-0.5">Reusable evergreen content — “Use as draft” spins off a new post to tweak &amp; schedule.</p>
                       </div>
-                      {!isReadOnly && (() => {
-                        const atLimit = !!filterClient && templatesList.length >= TEMPLATE_LIMIT_PER_CLIENT;
-                        return (
-                          <button
-                            onClick={() => { setEditingPost({ isTemplate: true }); setView('editor'); }}
-                            disabled={atLimit}
-                            title={atLimit ? `Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${filterClient}` : 'New template'}
-                            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          >
-                            <Plus size={16} /> New template
-                          </button>
-                        );
-                      })()}
+                      {/* The Templates view swaps out the FilterBar, so the density control
+                          has to live here too — otherwise it disappears while still applying. */}
+                      <div className="flex items-center gap-3">
+                        {!isReadOnly && <DensityToggle value={density} onChange={setDensity} />}
+                        {!isReadOnly && (() => {
+                          const atLimit = !!filterClient && templatesList.length >= TEMPLATE_LIMIT_PER_CLIENT;
+                          return (
+                            <button
+                              onClick={() => { setEditingPost({ isTemplate: true }); setView('editor'); }}
+                              disabled={atLimit}
+                              title={atLimit ? `Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${filterClient}` : 'New template'}
+                              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Plus size={16} /> New template
+                            </button>
+                          );
+                        })()}
+                      </div>
                     </div>
                   ) : (
                     <div className="mb-6">
@@ -1749,6 +1789,12 @@ const App = () => {
                         sortBy={sortBy}
                         onSortChange={setSortBy}
                         showClientSort={isOperator}
+                        density={density}
+                        onDensityChange={setDensity}
+                        /* Review guests stay on cards: their surface exists for READING the
+                           copy before they sign off on it, and a one-line row invites
+                           approving something you only skimmed. PostGrid pins it too. */
+                        showDensity={!isReadOnly}
                         /* The queue facets don't apply on the Suggestions lane (filteredPosts
                            short-circuits before them) — hide the dead controls so their counts
                            can't mismatch the lane or silently carry a stale filter back out. */
@@ -1782,10 +1828,17 @@ const App = () => {
                        clients & guests never do — matches the caution on machine-derived labels. */
                     showProvenance={isOperator}
                     onCreate={handleCreateNew}
+                    density={density}
+                    /* Only for the group headings — they have to follow the ordering or
+                       their runs wouldn't be contiguous (see utils/grouping.js). */
+                    sortBy={sortBy}
                     /* Collapses PostGrid's window back to page one whenever the CONTEXT
                        changes — but not on a mere data refresh, which would yank a
-                       scrolled operator back to the top on every Firestore snapshot. */
-                    resetKey={`${showTemplates}|${showArchived}|${filterClient}|${filterReview}|${filterStatus}|${filterPlatform}|${filterTag}|${filterMedia}|${filterNeeds}|${sortBy}|${searchLower}`}
+                       scrolled operator back to the top on every Firestore snapshot.
+                       `density` is in here because each mode has its own page size: going
+                       from 150 mounted rows straight to 150 mounted CARDS is precisely the
+                       main-thread stall the window exists to prevent. */
+                    resetKey={`${showTemplates}|${showArchived}|${filterClient}|${filterReview}|${filterStatus}|${filterPlatform}|${filterTag}|${filterMedia}|${filterNeeds}|${sortBy}|${density}|${searchLower}`}
                     selectable={!isReadOnly && !showTemplates && filterReview !== SUGGESTIONS_LANE && selectionMode}
                     selectedIds={selectedIds}
                     onToggleSelect={toggleSelect}

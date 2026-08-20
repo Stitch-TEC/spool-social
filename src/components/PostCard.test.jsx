@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import PostCard from './PostCard';
+import { DENSITY } from '../constants';
 
 const basePost = {
   id: 'p1',
@@ -202,5 +203,54 @@ describe('PostCard — feedback history', () => {
     render(<PostCard post={{ ...basePost, feedback: 'Wrong photo' }} onEdit={() => {}} onStatusChange={() => {}} />);
     expect(screen.getByText('“Wrong photo”')).toBeInTheDocument();
     expect(screen.queryByText(/earlier note/)).toBeNull();
+  });
+});
+
+describe('PostCard — compact density', () => {
+  // Compact keeps every verb the card has; what it gives up is vertical space, so
+  // anything that can grow without bound (tags, readiness chips) gets a tighter cap
+  // and an honest "+N" rather than being allowed to wrap.
+  const blogGaps = { ...basePost, platform: 'blog', imageUrl: '', scheduledDate: null };
+
+  it('keeps every card action, as icons without their labels', () => {
+    render(<PostCard post={basePost} onEdit={() => {}} onStatusChange={() => {}} density={DENSITY.COMPACT} />);
+    expect(screen.getByLabelText('Open platform app')).toBeInTheDocument();
+    expect(screen.getByLabelText('Copy content to clipboard')).toBeInTheDocument();
+    expect(screen.getByLabelText('Set post status')).toBeInTheDocument();
+    // The labels are what a 300px card cannot afford — they wrapped the footer.
+    expect(screen.queryByText('Open App')).toBeNull();
+  });
+
+  it('caps the tag row and says how many it folded', () => {
+    const tagged = { ...basePost, tags: ['pillar', 'series', 'cal-9931', 'import'] };
+    const { rerender } = render(<PostCard post={tagged} onEdit={() => {}} onStatusChange={() => {}} density={DENSITY.COMPACT} />);
+    expect(screen.getByText('pillar')).toBeInTheDocument();
+    expect(screen.getByText('series')).toBeInTheDocument();
+    expect(screen.queryByText('cal-9931')).toBeNull();
+    expect(screen.getByTitle('cal-9931 · import')).toHaveTextContent('+2');
+
+    // Cards has the room, so it shows them all.
+    rerender(<PostCard post={tagged} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('cal-9931')).toBeInTheDocument();
+    expect(screen.queryByText('+2')).toBeNull();
+  });
+
+  it('caps readiness chips at two, against three on a full card', () => {
+    // A blog draft with no image, no date, no title and no meta description: four gaps.
+    const { rerender } = render(<PostCard post={blogGaps} onEdit={() => {}} onStatusChange={() => {}} density={DENSITY.COMPACT} />);
+    expect(screen.getByText('No image')).toBeInTheDocument();
+    expect(screen.getByText('Not scheduled')).toBeInTheDocument();
+    expect(screen.queryByText('No title')).toBeNull();
+    expect(screen.getByTitle('No title · No meta description')).toHaveTextContent('+2');
+
+    rerender(<PostCard post={blogGaps} onEdit={() => {}} onStatusChange={() => {}} />);
+    expect(screen.getByText('No title')).toBeInTheDocument();
+    expect(screen.getByTitle('No meta description')).toHaveTextContent('+1');
+  });
+
+  it('still renders the image, as a thumbnail beside the copy', () => {
+    const withImage = { ...basePost, imageUrl: 'https://example.com/a.jpg', altText: 'Studio' };
+    render(<PostCard post={withImage} onEdit={() => {}} onStatusChange={() => {}} density={DENSITY.COMPACT} />);
+    expect(screen.getByAltText('Studio')).toHaveAttribute('src', 'https://example.com/a.jpg');
   });
 });

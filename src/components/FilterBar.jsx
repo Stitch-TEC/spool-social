@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { Lightbulb, CheckSquare, Image as ImageIcon, AlertTriangle, FilterX } from 'lucide-react';
 import { STATUS, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER } from '../constants';
 import PostControls, { Chevron } from './PostControls';
+import DensityToggle from './DensityToggle';
 import { activeSelectClass } from '../utils/facetStyles';
 
 // The parked-suggestions lane rides the same control as the review states but is
@@ -103,6 +104,9 @@ const FilterBar = memo(({
   filterPlatform, onPlatformChange, platformCounts,
   filterTag, onTagChange, tagCounts,
   sortBy, onSortChange, showClientSort = true,
+  // How much of each post the grid shows. A view preference, so it sits apart from
+  // the filters — right-aligned at the end of the row, like the header's view switch.
+  density, onDensityChange, showDensity = true,
   // The suggestions lane short-circuits every queue facet — hide them there rather
   // than show dead controls whose counts describe a different list.
   showFacets = true,
@@ -180,6 +184,12 @@ const FilterBar = memo(({
           >
             <FilterX size={13} /> Clear {activeFilterCount}
           </button>
+        )}
+
+        {showDensity && onDensityChange && (
+          <div className="ml-auto">
+            <DensityToggle value={density} onChange={onDensityChange} />
+          </div>
         )}
       </div>
     </div>

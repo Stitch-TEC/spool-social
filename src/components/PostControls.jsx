@@ -51,8 +51,12 @@ const PostControls = ({
   const tags = filterableTags(tagCounts, filterTag);
   const sortOptions = SORT_OPTIONS.filter((o) => !o.operatorOnly || showClientSort);
 
+  // The row is NOT shrink-0: as a flex item inside FilterBar's row, shrink-0 pinned
+  // this box to its max-content width (~618px — the sum of all three selects), so its
+  // own flex-wrap never got the chance to wrap and the whole PAGE scrolled sideways on
+  // a phone. Letting it shrink is what lets the controls wrap instead.
   return (
-    <div className="flex flex-wrap items-center gap-2 shrink-0" role="group" aria-label="Sort and filter posts">
+    <div className="flex flex-wrap items-center gap-2 min-w-0" role="group" aria-label="Sort and filter posts">
       {/* Platform filter */}
       {showFilters && (
       <div className="relative">

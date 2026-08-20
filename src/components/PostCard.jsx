@@ -5,7 +5,7 @@ import {
   EyeOff, SendHorizontal, ImageOff
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
-import { PLATFORMS, STATUS, APPROVAL_STATUS, REVIEW_STATE } from '../constants';
+import { PLATFORMS, STATUS, APPROVAL_STATUS, REVIEW_STATE, DENSITY } from '../constants';
 import { DATE_FORMATTERS } from '../utils/helpers';
 import { reviewStateOf, daysAwaiting } from '../utils/review';
 import { readinessOf, READINESS_LABELS } from '../utils/readiness';
@@ -20,6 +20,51 @@ const REVIEW_BADGES = {
   [REVIEW_STATE.APPROVED]: { label: 'Approved', icon: CheckCircle, cls: 'text-emerald-600 bg-emerald-50 border-emerald-100', rail: 'border-l-emerald-500' },
 };
 
+// The two card densities, as one table instead of a dozen inline ternaries.
+//
+// COMPACT is the same card with the same information and the same verbs — it just
+// stops spending a full-width 128px image band and three lines of copy on every
+// post. That band is what made ~6 posts a screenful at 1600x1200; moving it to a
+// 56px thumbnail beside two lines roughly doubles the posts per screen without
+// giving up the visual recognition ("the one with the recording-studio photo")
+// that makes a thumbnail worth showing at all.
+const DENSITY_STYLES = {
+  [DENSITY.CARDS]: {
+    accent: 'h-1.5', pad: 'p-5', headerMb: 'mb-3', platformText: 'text-sm', platformIcon: 28,
+    badgeText: 'text-xs', tagMax: Infinity, tagMb: 'mb-3', bodyMb: 'mb-4', clamp: 'line-clamp-3',
+    chipMax: 3, chipMb: 'mb-3', feedbackMb: 'mb-4', footerPt: 'pt-3', actionLabels: true,
+  },
+  [DENSITY.COMPACT]: {
+    accent: 'h-1', pad: 'p-3.5', headerMb: 'mb-2', platformText: 'text-xs', platformIcon: 22,
+    badgeText: 'text-[10px]', tagMax: 2, tagMb: 'mb-2', bodyMb: 'mb-2.5', clamp: 'line-clamp-2',
+    chipMax: 2, chipMb: 'mb-2', feedbackMb: 'mb-2', footerPt: 'pt-2.5',
+    // Icon-only in compact: "Copy" + "Open App" cost ~90px, which is exactly what a
+    // narrower card doesn't have — with them, "Send for review" wrapped onto two lines
+    // and dragged the whole footer with it. Both buttons keep their title + aria-label.
+    actionLabels: false,
+  },
+};
+
+// The hover action cluster.
+//
+// Eight icon buttons at ~28px each RESERVE ~190px of the header row even while
+// they're invisible — `opacity-0` hides them but keeps their layout. That is what
+// squeezed the header into three wrapped lines on a 400px card, and it makes a
+// 300px compact card impossible. On pointer devices the cluster therefore leaves
+// the flow entirely and floats over the card's top-right corner on hover, handing
+// the whole header row back to the platform, date and client.
+//
+// On TOUCH it stays exactly where it was: `[@media(pointer:fine)]` guards every
+// rule, and a device with no hover has no way to reveal an overlay.
+const ACTIONS_CLS = [
+  'flex gap-1 transition-opacity',
+  '[@media(pointer:fine)]:absolute [@media(pointer:fine)]:top-2 [@media(pointer:fine)]:right-2 [@media(pointer:fine)]:z-10',
+  '[@media(pointer:fine)]:rounded-lg [@media(pointer:fine)]:border [@media(pointer:fine)]:border-slate-100',
+  '[@media(pointer:fine)]:bg-white/95 [@media(pointer:fine)]:backdrop-blur-sm [@media(pointer:fine)]:shadow-sm [@media(pointer:fine)]:p-0.5',
+  '[@media(pointer:fine)]:opacity-0',
+  '[@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100',
+].join(' ');
+
 // The review conversation, from the operator's side of the card.
 //
 // Before this, the card showed only `post.feedback` — the LATEST note — and
@@ -27,7 +72,7 @@ const REVIEW_BADGES = {
 // on feedback, the note describing what to fix vanished from every surface they
 // had: `feedbackThread` accumulates every round (atomically, via arrayUnion) but
 // nothing in the app ever rendered it outside the guest's review modal.
-const FeedbackTrail = ({ post }) => {
+const FeedbackTrail = ({ post, className = 'mb-4' }) => {
   const [expanded, setExpanded] = useState(false);
   const thread = Array.isArray(post.feedbackThread) ? post.feedbackThread : [];
   // Fall back to the legacy single field for posts that predate threading.
@@ -37,7 +82,7 @@ const FeedbackTrail = ({ post }) => {
   const shown = expanded ? entries : entries.slice(-1);
   const hidden = entries.length - shown.length;
   return (
-    <div className="mb-4 space-y-1">
+    <div className={`${className} space-y-1`}>
       {shown.map((f, i) => (
         <div key={i} className="p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900">
           <span className="font-bold uppercase tracking-wider text-[10px] text-rose-600 mr-1">
@@ -58,17 +103,20 @@ const FeedbackTrail = ({ post }) => {
   );
 };
 
-// Blockers read rose (can't go out), warnings slate (should be better). Capped at
-// three so a card can't turn into a wall of chips — the editor is where you fix them.
-const ReadinessChips = ({ post }) => {
+// Blockers read rose (can't go out), warnings slate (should be better). Capped (at
+// three, two when compact) so a card can't turn into a wall of chips — the editor is
+// where you fix them. `+N` keeps the cap honest when there are more.
+const ReadinessChips = ({ post, max = 3, className = 'mb-3' }) => {
   const { blockers, warnings } = readinessOf(post);
-  const items = [
+  const all = [
     ...blockers.map((c) => ({ code: c, blocking: true })),
     ...warnings.map((c) => ({ code: c, blocking: false })),
-  ].slice(0, 3);
+  ];
+  const items = all.slice(0, max);
+  const hidden = all.length - items.length;
   if (items.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-1 mb-3">
+    <div className={`flex flex-wrap gap-1 ${className}`}>
       {items.map(({ code, blocking }) => (
         <span
           key={code}
@@ -80,12 +128,24 @@ const ReadinessChips = ({ post }) => {
           {READINESS_LABELS[code]}
         </span>
       ))}
+      {hidden > 0 && (
+        <span
+          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border text-slate-400 bg-slate-50 border-slate-200"
+          title={all.slice(max).map((i) => READINESS_LABELS[i.code] || i.code).join(' · ')}
+        >
+          +{hidden}
+        </span>
+      )}
     </div>
   );
 };
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview, onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview, onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect, density = DENSITY.CARDS }) => {
   const [copied, setCopied] = useState(false);
+  // LIST density has its own component (PostRow) — anything that isn't COMPACT falls
+  // back to the original card, so an unknown value can never render a broken layout.
+  const compact = density === DENSITY.COMPACT;
+  const D = compact ? DENSITY_STYLES[DENSITY.COMPACT] : DENSITY_STYLES[DENSITY.CARDS];
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isScheduled = post.status === STATUS.SCHEDULED;
   const isPosted = post.status === STATUS.POSTED;
@@ -160,13 +220,18 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           {selected && <Check size={15} strokeWidth={3} />}
         </div>
       )}
-      <div className={`h-1.5 w-full ${isPosted ? 'bg-indigo-500' : isScheduled ? 'bg-amber-400' : 'bg-slate-300'}`} />
-      <div className="p-5 flex-1 flex flex-col">
-        <div className={`flex justify-between items-start mb-3 ${selectable ? 'pl-7' : ''}`}>
-          <div className="flex items-center gap-2">
-            <PlatformIcon platformId={post.platform} size={28} />
-            <div>
-                <h4 className="font-semibold text-slate-800 text-sm">{platform.name}</h4>
+      <div className={`${D.accent} w-full ${isPosted ? 'bg-indigo-500' : isScheduled ? 'bg-amber-400' : 'bg-slate-300'}`} />
+      <div className={`${D.pad} flex-1 flex flex-col`}>
+        <div className={`flex justify-between items-start ${D.headerMb} ${selectable ? 'pl-7' : ''}`}>
+          {/* min-w-0 here as well as on the text column: without it this flex item can't
+              shrink past its min-content width, and it pushed the review badge out of
+              the card (which is overflow-hidden, so the badge lost its last character). */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <PlatformIcon platformId={post.platform} size={D.platformIcon} />
+            {/* min-w-0 + truncate: without them this column can't shrink, so a narrow
+                card broke "X / Twitter" and "Jul 1, 12:00 PM" across lines instead. */}
+            <div className="min-w-0">
+                <h4 title={platform.name} className={`font-semibold text-slate-800 truncate ${D.platformText}`}>{platform.name}</h4>
                 <div className="flex items-center gap-2 flex-wrap">
                     {post.source === 'suggestion'
                       ? <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded inline-flex items-center gap-1"><Sparkles size={9} /> Suggested</span>
@@ -177,7 +242,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                           {/* Auto-generated drafts get a distinct 'Auto' badge (operator-only) so a
                               machine draft is never mistaken for a hand-written one in the queue. */}
                           {isAutomationDraft && <span className="text-[10px] font-bold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-100 px-1.5 py-0.5 rounded inline-flex items-center gap-1"><Zap size={9} /> Auto</span>}
-                          <div className="flex items-center gap-1 text-xs text-slate-400"><Clock size={10} /><span>{formattedDate}</span></div>
+                          <div className="flex items-center gap-1 text-xs text-slate-400 whitespace-nowrap"><Clock size={10} /><span>{formattedDate}</span></div>
                         </div>
                       )}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
@@ -192,7 +257,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             const BadgeIcon = badge.icon;
             return (
               <div
-                className={`text-xs font-bold px-2 py-1 rounded border flex items-center gap-1 shrink-0 ${badge.cls}`}
+                className={`${D.badgeText} font-bold px-2 py-1 rounded border flex items-center gap-1 shrink-0 ${badge.cls}`}
                 title={isNotSent ? 'In staging — the client cannot see this yet' : undefined}
               >
                 {BadgeIcon && <BadgeIcon size={12} />} {badge.label}
@@ -204,7 +269,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           })()}
 
           {!isReadOnly && !selectable && (
-            <div className="flex gap-1 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
+            <div className={ACTIONS_CLS}>
               {/* Suggestion cards keep only Edit + Delete: Archive is a dead end for a parked
                   post, and Duplicate / Clone-to-All mint client-visible drafts — the ONLY way
                   off the suggestions lane is the explicit "Use this" promote below. */}
@@ -240,41 +305,61 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           )}
         </div>
 
-        {post.tags && post.tags.length > 0 && <div className="flex flex-wrap gap-1 mb-3">{post.tags.map((tag, i) => <span key={i} className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-500 border border-slate-200">{tag}</span>)}</div>}
+        {/* Compact caps the tag row: a post with eight traceability tags would otherwise
+            spend the line the thumbnail just bought back. `+N` keeps the count honest. */}
+        {post.tags && post.tags.length > 0 && (
+          <div className={`flex flex-wrap gap-1 ${D.tagMb}`}>
+            {post.tags.slice(0, D.tagMax).map((tag, i) => <span key={i} className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-500 border border-slate-200">{tag}</span>)}
+            {post.tags.length > D.tagMax && (
+              <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-50 text-slate-400 border border-slate-200" title={post.tags.slice(D.tagMax).join(' · ')}>
+                +{post.tags.length - D.tagMax}
+              </span>
+            )}
+          </div>
+        )}
         {/* ⚡ OPTIMIZATION: Use native browser-level lazy loading for post images to reduce initial network and memory usage for off-screen items. */}
-        <div className={`mb-4 flex-1 ${selectable ? '' : 'cursor-pointer'}`} onClick={selectable ? undefined : () => onEdit(post)}>
-          {post.title && <h5 className="font-bold text-slate-800 text-sm mb-1 line-clamp-1">{post.title}</h5>}
-          <p className="text-slate-600 text-sm line-clamp-3 leading-relaxed font-medium">{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
-          {post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt={post.altText || 'Asset'} className="w-full h-full object-cover" loading="lazy" /></div>}
+        <div className={`${D.bodyMb} flex-1 ${compact ? 'flex gap-2.5' : ''} ${selectable ? '' : 'cursor-pointer'}`} onClick={selectable ? undefined : () => onEdit(post)}>
+          {/* Compact: the image becomes a 56px square BESIDE the copy rather than a
+              128px band under it — same recognition cue, a third of the height. */}
+          {compact && post.imageUrl && (
+            <div className="h-14 w-14 shrink-0 bg-slate-50 rounded-lg overflow-hidden border border-slate-100">
+              <img src={post.imageUrl} alt={post.altText || 'Asset'} className="w-full h-full object-cover" loading="lazy" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            {post.title && <h5 className="font-bold text-slate-800 text-sm mb-1 line-clamp-1">{post.title}</h5>}
+            <p className={`text-slate-600 text-sm ${D.clamp} leading-relaxed font-medium`}>{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
+          </div>
+          {!compact && post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt={post.altText || 'Asset'} className="w-full h-full object-cover" loading="lazy" /></div>}
         </div>
         
         {/* What's still missing, so "is this finishable?" is answerable from the grid
             instead of by opening every card. Not shown to review guests — alt text and
             meta descriptions are our craft problems, not theirs. */}
-        {!isReadOnly && !selectable && <ReadinessChips post={post} />}
+        {!isReadOnly && !selectable && <ReadinessChips post={post} max={D.chipMax} className={D.chipMb} />}
 
         {/* Guests keep the single latest note (their own words, no history UI needed
             on a card — the review modal shows them the full thread). */}
         {isReadOnly
-          ? (post.feedback && <div className="mb-4 p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic">“{post.feedback}”</div>)
-          : <FeedbackTrail post={post} />}
+          ? (post.feedback && <div className={`${D.feedbackMb} p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic`}>“{post.feedback}”</div>)
+          : <FeedbackTrail post={post} className={D.feedbackMb} />}
 
         {/* Template card: primary action is "Use as draft" (clone into a new post).
             !isSuggestion keeps the action rows mutually exclusive — a bad doc carrying both
             flags renders the suggestion row (its lane is the more restrictive one). */}
         {!isReadOnly && !selectable && onUseTemplate && !isSuggestion && (
-          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
               title="Copy content to clipboard" aria-label="Copy content to clipboard"
             >
               {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
-              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
+              {D.actionLabels && <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>}
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onUseTemplate(post); }}
-              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              className="flex-1 flex items-center justify-center gap-1.5 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
             >
               <FilePlus size={14} /> Use as draft
             </button>
@@ -310,7 +395,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           </div>
         )}
         {!isReadOnly && !selectable && isSuggestion && (
-          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); onDismissSuggestion(post); }}
               className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full px-3 py-2 transition-colors"
@@ -320,7 +405,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onPromoteSuggestion(post); }}
-              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              className="flex-1 flex items-center justify-center gap-1.5 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
               title="Move this draft into the client's review queue" aria-label="Use this suggestion"
             >
               <CheckCircle size={14} /> Use this
@@ -329,7 +414,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         )}
 
         {!isReadOnly && !selectable && !onUseTemplate && !isSuggestion && (
-          <div className="flex items-center justify-between pt-3 border-t border-slate-50 mt-auto">
+          <div className={`flex items-center justify-between ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
@@ -337,16 +422,16 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               aria-label="Copy content to clipboard"
             >
               {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
-              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
+              {D.actionLabels && <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>}
             </button>
-            <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Open platform app" aria-label="Open platform app" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} /><span className="hidden sm:inline">Open App</span></a>
+            <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Open platform app" aria-label="Open platform app" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} />{D.actionLabels && <span className="hidden sm:inline">Open App</span>}</a>
             {/* Changes requested → the primary action is sending the revised post
                 back to the client (reset to pending), not moving toward posted. */}
             {isChangesRequested && onResubmit ? (
               <button
                 onClick={(e) => { e.stopPropagation(); onResubmit(post.id); }}
                 title="Send the revised post back to the client for review"
-                className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+                className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
                 <RefreshCw size={13} /> Back for review
               </button>
@@ -357,7 +442,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               <button
                 onClick={(e) => { e.stopPropagation(); onSendForReview(post); }}
                 title="Make this visible on the client's review link"
-                className="flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+                className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
                 <SendHorizontal size={13} /> Send for review
               </button>
@@ -368,7 +453,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                 onChange={(e) => { e.stopPropagation(); onStatusChange(post.id, e.target.value); }}
                 aria-label="Set post status"
                 title="Set status"
-                className={`text-xs font-bold rounded-full px-2.5 py-1.5 border cursor-pointer transition-colors ${statusPill}`}
+                className={`text-xs font-bold rounded-full px-2.5 h-7 py-0 leading-none border cursor-pointer transition-colors ${statusPill}`}
               >
                 <option value={STATUS.DRAFT}>Draft</option>
                 <option value={STATUS.SCHEDULED}>Scheduled</option>
@@ -381,7 +466,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
 
         {/* Guest reviewer quick-actions (approve / request changes from the card) */}
         {isReadOnly && (
-          <div className="flex items-center gap-2 pt-3 border-t border-slate-50 mt-auto">
+          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             {post.approvalStatus === APPROVAL_STATUS.APPROVED ? (
               <span className="flex-1 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg py-2 flex items-center justify-center gap-1"><CheckCircle size={14} /> Approved</span>
             ) : (

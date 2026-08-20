@@ -1,2 +1,16 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
+
+/* Breakpoints above Tailwind's built-in scale (sm 40 · md 48 · lg 64 · xl 80 ·
+ * 2xl 96rem), for the post grid's wide column steps.
+ *
+ * These are REGISTERED breakpoints rather than inline `min-[1600px]:` variants on
+ * purpose: Tailwind emits arbitrary media variants ahead of the named scale, so
+ * `min-[1600px]:grid-cols-4` lost to `xl:grid-cols-3` at every width where both
+ * matched — the wide layout silently did nothing. Registered breakpoints sort by
+ * value alongside sm…2xl, which is the only way the cascade comes out right.
+ */
+@theme {
+  --breakpoint-3xl: 100rem; /* 1600px — a fourth card column */
+  --breakpoint-4xl: 120rem; /* 1920px — a fifth compact column */
+}
