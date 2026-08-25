@@ -7,8 +7,12 @@ import {
   daysAwaiting,
   postWasRewritten,
   approvedPayloadIdentity,
+  approvalSafeStoragePatch,
+  publicationSlugOf,
+  reviewStateIdentity,
   suggestionPromotionDocument,
 } from './review';
+import { canonicalReviewScheduledDate, reviewScheduledDateAsDate } from './reviewIdentity';
 import { REVIEW_STAGE, REVIEW_STATE } from '../constants';
 
 describe('reviewStageOf', () => {
@@ -84,12 +88,97 @@ describe('suggestionPromotionDocument', () => {
 });
 
 describe('approvedPayloadIdentity', () => {
-  it('is stable across Spool media cache versions but changes with approved copy', () => {
+  it('is stable across Spool media cache versions and missing/empty optional values', () => {
     const before = { content: '![x](/media/a.png)', title: 'T', imageUrl: '/media/a.png', platform: 'gmb' };
-    const migrated = { content: '![x](/media/v2/a.png)', title: 'T', imageUrl: '/media/v2/a.png', platform: 'gmb' };
+    const migrated = {
+      content: '![x](/media/v2/a.png)', title: 'T', imageUrl: '/media/v2/a.png', platform: 'gmb',
+      altText: '', metaDescription: '', slug: '',
+    };
     expect(approvedPayloadIdentity(migrated)).toBe(approvedPayloadIdentity(before));
     expect(approvedPayloadIdentity({ ...migrated, title: 'Changed' })).not.toBe(approvedPayloadIdentity(before));
-    expect(approvedPayloadIdentity({ ...migrated, platform: 'linkedin' })).not.toBe(approvedPayloadIdentity(before));
+  });
+
+  it.each([
+    ['platform', 'linkedin'],
+    ['altText', 'Descriptive image text'],
+    ['metaDescription', 'Search preview copy'],
+    ['slug', 'approved-publication-path'],
+  ])('changes when approval-bearing %s changes', (field, value) => {
+    const before = {
+      content: 'Copy', title: 'T', imageUrl: '', platform: 'gmb',
+      altText: '', metaDescription: '', slug: '',
+    };
+    expect(approvedPayloadIdentity({ ...before, [field]: value })).not.toBe(approvedPayloadIdentity(before));
+  });
+
+  it('binds the same non-empty fallback path the publisher uses for punctuation-only titles', () => {
+    const draft = { platform: 'blog', title: '🔥🔥', content: '', imageUrl: '' };
+    expect(publicationSlugOf(draft)).toBe('untitled-post');
+    expect(approvedPayloadIdentity(draft)).toContain('untitled-post');
+  });
+});
+
+describe('reviewStateIdentity workflow semantics', () => {
+  it('binds schedule drift but deliberately ignores internal tags', () => {
+    const before = { status: 'draft', scheduledDate: '', tags: ['internal-a'] };
+    expect(reviewStateIdentity({ ...before, tags: ['internal-b'] })).toBe(reviewStateIdentity(before));
+    expect(reviewStateIdentity({ ...before, scheduledDate: '2026-09-01T12:00:00.000Z' }))
+      .not.toBe(reviewStateIdentity(before));
+  });
+
+  it('canonicalizes usePosts Date, Firestore ISO, and Timestamp-like schedules identically', () => {
+    const iso = '2026-09-01T12:00:00.123Z';
+    const state = { status: 'draft', approvalStatus: 'pending', reviewStage: 'in_review' };
+    expect(reviewStateIdentity({ ...state, scheduledDate: new Date(iso) }))
+      .toBe(reviewStateIdentity({ ...state, scheduledDate: iso }));
+    expect(reviewStateIdentity({ ...state, scheduledDate: { toDate: () => new Date(iso) } }))
+      .toBe(reviewStateIdentity({ ...state, scheduledDate: iso }));
+    expect(canonicalReviewScheduledDate('2026-09-01T05:00:00.123-07:00')).toBe(iso);
+    expect(canonicalReviewScheduledDate({ seconds: 1788264000, nanoseconds: 123000000 }))
+      .toBe(iso);
+    expect(reviewScheduledDateAsDate({ toDate: () => new Date(iso) }))
+      .toEqual(new Date(iso));
+  });
+
+  it('fails closed on malformed non-empty schedules', () => {
+    for (const value of [
+      'September 1', 'not-a-date', '2026-02-31T12:00:00.000Z',
+      new Date('invalid'), { seconds: 1, nanoseconds: -1 },
+    ]) {
+      expect(() => reviewStateIdentity({ scheduledDate: value }))
+        .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
+    }
+    expect(() => reviewScheduledDateAsDate({ toDate: () => new Date('invalid') }))
+      .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
+    expect(reviewStateIdentity({ scheduledDate: null })).toBe(reviewStateIdentity({ scheduledDate: '' }));
+  });
+});
+
+describe('approvalSafeStoragePatch', () => {
+  it('omits read-time media versioning and an absent-to-effective slug write', () => {
+    const live = {
+      platform: 'blog', title: 'Approved title',
+      content: '![inline](/media/generated/o/a.png)',
+      imageUrl: '/media/generated/o/cover.png',
+    };
+    const patch = approvalSafeStoragePatch(live, {
+      content: '![inline](https://spool.stitchtec.dev/media/v2/generated/o/a.png)',
+      imageUrl: 'https://spool.stitchtec.dev/media/v2/generated/o/cover.png',
+      slug: 'approved-title', tags: ['metadata'],
+    });
+    expect(patch).toEqual({ tags: ['metadata'] });
+  });
+
+  it('keeps genuine content, media-object, and publication-target changes', () => {
+    const live = {
+      platform: 'blog', title: 'Approved title', content: 'Copy',
+      imageUrl: '/media/generated/o/cover.png',
+    };
+    expect(approvalSafeStoragePatch(live, {
+      content: 'Different copy', imageUrl: '/media/v2/generated/o/other.png', slug: 'different-path',
+    })).toEqual({
+      content: 'Different copy', imageUrl: '/media/v2/generated/o/other.png', slug: 'different-path',
+    });
   });
 });
 
@@ -142,6 +231,14 @@ describe('postWasRewritten', () => {
 
   it('treats a platform move as an approved-payload rewrite', () => {
     expect(postWasRewritten(approvedPayload, { ...approvedPayload, platform: 'linkedin' })).toBe(true);
+  });
+
+  it.each([
+    ['altText', 'New alt text'],
+    ['metaDescription', 'New SEO description'],
+    ['slug', 'new-publication-path'],
+  ])('treats a %s edit as an approved-payload rewrite', (field, value) => {
+    expect(postWasRewritten(approvedPayload, { ...approvedPayload, [field]: value })).toBe(true);
   });
 
   it('detects an image that will be dropped after an upload failure', () => {

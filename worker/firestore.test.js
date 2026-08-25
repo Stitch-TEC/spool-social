@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { versionDraftMedia } from './draftUpdate.js';
 import {
   buildPostMutationWrite,
+  buildDraftListStructuredQuery,
   collectBoundedDraftRows,
   collectPostImageReferences,
   decodeDraftCursor,
+  DRAFT_PAGE_MAX_BYTES,
+  DRAFT_RESPONSE_OVERHEAD_BYTES,
   deleteAutomation,
   deletePost,
   deleteShareDoc,
@@ -109,7 +113,14 @@ describe('fail-closed Firestore runQuery parsing', () => {
 describe('bounded draft pagination', () => {
   const idFor = (value) => value.toString(36).padStart(20, '0');
   const nameFor = (value) => `projects/test/databases/(default)/documents/posts/${idFor(value)}`;
-  const rowFor = (value, fields = {}) => ({ id: idFor(value), ...fields, _cursorName: nameFor(value) });
+  const updatedAtFor = (value) => new Date(Date.parse('2026-08-25T02:00:00.000Z') - value).toISOString();
+  const rowFor = (value, fields = {}) => ({
+    id: idFor(value),
+    updatedAt: updatedAtFor(value),
+    ...fields,
+    _cursorName: nameFor(value),
+    _cursorUpdatedAt: fields.updatedAt || updatedAtFor(value),
+  });
 
   it('keeps retained allocation bounded while scanning a large filtered collection', async () => {
     const source = Array.from({ length: 1400 }, (_, index) => rowFor(index + 1,
@@ -117,7 +128,7 @@ describe('bounded draft pagination', () => {
     const readSizes = [];
     const readPage = async (cursor, batchSize) => {
       readSizes.push(batchSize);
-      const start = cursor ? source.findIndex(row => row._cursorName === cursor) + 1 : 0;
+      const start = cursor ? source.findIndex(row => row._cursorName === cursor.name) + 1 : 0;
       return source.slice(start, start + batchSize);
     };
 
@@ -128,7 +139,10 @@ describe('bounded draft pagination', () => {
     expect(readSizes.every(size => size === 50)).toBe(true);
 
     const second = await collectBoundedDraftRows({
-      readPage, initialCursor: first.nextName, limit: 100, batchSize: 50,
+      readPage,
+      initialCursor: { name: first.nextName, updatedAt: first.nextUpdatedAt },
+      limit: 100,
+      batchSize: 50,
     });
     expect(second.drafts).toHaveLength(100);
     expect(second.drafts[0].id).toBe(idFor(801));
@@ -140,12 +154,72 @@ describe('bounded draft pagination', () => {
     const page = await collectBoundedDraftRows({
       readPage: async () => rows,
       limit: 10,
-      maxBytes: 180,
+      maxBytes: 300,
       batchSize: 2,
     });
     expect(page.drafts).toHaveLength(1);
     expect(page.truncated).toBe(true);
     expect(page.nextName).toBe(nameFor(1));
+  });
+
+  it('does not make an oversized first-row exception and measures transformed bytes', async () => {
+    const oversized = rowFor(1, { content: 'x'.repeat(500) });
+    await expect(collectBoundedDraftRows({
+      readPage: async () => [oversized],
+      limit: 10,
+      maxBytes: 180,
+      batchSize: 1,
+    })).rejects.toMatchObject({ code: 'draft_row_too_large', status: 413 });
+
+    const rows = [
+      rowFor(1, { content: 'short' }),
+      rowFor(2, { content: 'also short' }),
+    ];
+    const transformed = await collectBoundedDraftRows({
+      readPage: async (cursor) => cursor ? [] : rows,
+      limit: 10,
+      maxBytes: 220,
+      batchSize: 2,
+      transformRow: async (row) => ({ ...row, content: row.content.repeat(12) }),
+    });
+    expect(transformed.drafts).toHaveLength(1);
+    expect(transformed.truncated).toBe(true);
+  });
+
+  it('keeps a real encoded response under 1 MiB including revisions and cursor', async () => {
+    const rows = Array.from({ length: 1000 }, (_, index) => rowFor(index + 1, {
+      clientId: 'acme',
+      platform: 'blog',
+      title: `Draft ${index}`,
+      content: `![cover](/media/generated/o/${index}.png)\n${'x'.repeat(1800)}`,
+    }));
+    const readPage = async (cursor, batchSize) => {
+      const start = cursor ? rows.findIndex(row => row._cursorName === cursor.name) + 1 : 0;
+      return rows.slice(start, start + batchSize);
+    };
+    const page = await collectBoundedDraftRows({
+      readPage,
+      limit: 1000,
+      batchSize: 10,
+      maxBytes: DRAFT_PAGE_MAX_BYTES - DRAFT_RESPONSE_OVERHEAD_BYTES,
+      transformRow: (row) => versionDraftMedia('https://spool.stitchtec.dev', row),
+    });
+    const cursor = encodeDraftCursor(
+      page.nextName.split('/').pop(),
+      page.nextUpdatedAt,
+      page.drafts.length,
+      JSON.stringify({ clientId: 'acme', reviewStage: 'in_review' }),
+      '2026-08-25T01:00:00.123456Z',
+    );
+    const body = {
+      drafts: page.drafts,
+      count: page.drafts.length,
+      total: rows.length,
+      truncated: page.truncated,
+      nextCursor: cursor,
+    };
+    expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeLessThanOrEqual(DRAFT_PAGE_MAX_BYTES);
+    expect(page.truncated).toBe(true);
   });
 
   it('rejects malformed pages, classifications, and non-advancing cursors', async () => {
@@ -163,13 +237,60 @@ describe('bounded draft pagination', () => {
   it('encodes cursors with their exact filter context and validates count arithmetic', () => {
     const filter = JSON.stringify({ clientId: 'acme', reviewStage: 'in_review' });
     const readTime = '2026-08-25T01:00:00.123456Z';
-    const cursor = encodeDraftCursor(idFor(42), filter, readTime);
-    expect(decodeDraftCursor(cursor, filter)).toEqual({ id: idFor(42), readTime });
+    const updatedAt = '2026-08-25T00:59:00.000Z';
+    const cursor = encodeDraftCursor(idFor(42), updatedAt, 42, filter, readTime);
+    expect(decodeDraftCursor(cursor, filter)).toEqual({ id: idFor(42), updatedAt, seen: 42, readTime });
     expect(() => decodeDraftCursor(cursor, JSON.stringify({ clientId: 'beta' }))).toThrow(/draft cursor/);
     expect(() => decodeDraftCursor('%', filter)).toThrow(/draft cursor/);
     expect(filteredDraftTotal({ all: 12, templates: 3, suggestions: 2, templateSuggestions: 1 })).toBe(8);
     expect(() => filteredDraftTotal({ all: 1, templates: 2, suggestions: 0, templateSuggestions: 0 }))
       .toThrow(/inconsistent/);
+  });
+
+  it('orders newest-first by updatedAt then document name and builds a full cursor', () => {
+    const startAfter = { name: nameFor(42), updatedAt: '2026-08-25T00:59:00.000Z' };
+    const query = buildDraftListStructuredQuery('owner', startAfter, 10);
+    expect(query.where).toEqual(expect.objectContaining({
+      fieldFilter: expect.objectContaining({ field: { fieldPath: 'uid' } }),
+    }));
+    expect(query.orderBy).toEqual([
+      { field: { fieldPath: 'updatedAt' }, direction: 'DESCENDING' },
+      { field: { fieldPath: '__name__' }, direction: 'DESCENDING' },
+    ]);
+    expect(query.startAt).toEqual({
+      values: [
+        { stringValue: startAfter.updatedAt },
+        { referenceValue: startAfter.name },
+      ],
+      before: false,
+    });
+    expect(query.select.fields).toContainEqual({ fieldPath: 'updatedAt' });
+    expect(query.select.fields).toContainEqual({ fieldPath: 'slug' });
+  });
+
+  it('has no duplicates or gaps across ties in the newest-first tuple', async () => {
+    const tiedAt = '2026-08-25T01:00:00.000Z';
+    const namesDescending = [9, 8, 7, 6, 5, 4, 3, 2, 1];
+    const source = namesDescending.map(value => rowFor(value, { updatedAt: tiedAt }));
+    const readPage = async (cursor, batchSize) => {
+      const start = cursor ? source.findIndex(row => row._cursorName === cursor.name) + 1 : 0;
+      return source.slice(start, start + batchSize);
+    };
+    const first = await collectBoundedDraftRows({ readPage, limit: 4, batchSize: 3 });
+    const second = await collectBoundedDraftRows({
+      readPage,
+      initialCursor: { name: first.nextName, updatedAt: first.nextUpdatedAt },
+      limit: 4,
+      batchSize: 3,
+    });
+    const third = await collectBoundedDraftRows({
+      readPage,
+      initialCursor: { name: second.nextName, updatedAt: second.nextUpdatedAt },
+      limit: 4,
+      batchSize: 3,
+    });
+    expect([...first.drafts, ...second.drafts, ...third.drafts].map(row => row.id))
+      .toEqual(namesDescending.map(idFor));
   });
 });
 

@@ -282,7 +282,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               )))}
               {/* Pull a sent post back off the client's review link. Only meaningful once
                   it's actually out there, so it's hidden while the post is still staged. */}
-              {!isSuggestion && !post.isTemplate && !isNotSent && onHoldFromReview && (
+              {!isSuggestion && !post.isTemplate && !isArchived && !isNotSent && onHoldFromReview && (
                 <button onClick={(e) => { e.stopPropagation(); onHoldFromReview(post); }} title="Move to staging (hide from the client)" aria-label="Move to staging" className="p-2 sm:p-1.5 text-slate-400 hover:text-slate-700 rounded-md"><EyeOff size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               )}
               {/* Push to Sender (operator-only via handler presence): templates + APPROVED
@@ -429,7 +429,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             <a href={platform.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Open platform app" aria-label="Open platform app" className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors p-1 sm:p-0"><ExternalLink size={14} />{D.actionLabels && <span className="hidden sm:inline">Open App</span>}</a>
             {/* Changes requested → the primary action is sending the revised post
                 back to the client (reset to pending), not moving toward posted. */}
-            {isChangesRequested && onResubmit ? (
+            {!isArchived && isChangesRequested && onResubmit ? (
               <button
                 onClick={(e) => { e.stopPropagation(); onResubmit(post); }}
                 title="Send the revised post back to the client for review"
@@ -437,7 +437,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               >
                 <RefreshCw size={13} /> Back for review
               </button>
-            ) : isNotSent && onSendForReview ? (
+            ) : !isArchived && isNotSent && onSendForReview ? (
               /* A staged post's only meaningful next step is showing it to the client —
                  so that's the button, in place of a status dropdown that changes nothing
                  the client can see. */

@@ -27,10 +27,11 @@
 //
 // REVIEW-STAGE SECURITY REVISION (see REVIEW_STAGE_ROLLOUT.md; do not reorder):
 //   1) id-inventory MUST be clean while OLD app/rules are live
-//   2) review-stage dry-run → --apply → audit while OLD app/rules are live;
+//   2) review-stage/order dry-run → --apply → audit while OLD app/rules are live;
 //      all three require the same canonical roster snapshot
-//   3) merge/deploy the stage-constrained app
-//   4) immediately deploy firestore.rules manually
+//   3) deploy firestore.indexes.json and wait until the ordered-post index is READY
+//   4) freeze review actions; deploy feedback-worker → POM → final Spool
+//   5) immediately deploy firestore.rules; verify contract/access, then R2/cache
 //
 // COMMANDS
 //   bootstrap --email <e> [--role super_admin] [--client-id <id>] [--force]
@@ -38,11 +39,11 @@
 //   backfill  [--apply] [--map map.json]      # add clientId to posts + clients
 //   id-inventory                              # strict post/automation/share id rollout gate
 //   review-stage [--apply] [--roster <clients.json> | --context-key <key>]
-//                                              # missing ordinary→in_review, suggestion→private
+//                                              # missing stages + canonical updatedAt ordering key
 //   restamp   [--apply] [--roster <clients.json> | --context-key <key> [--roster-url <url>]]
 //                                              # repair posts/branding/automations/shares to canonical roster slugs
 //   audit     [--roster <clients.json> | --context-key <key>]
-//                                              # fail-closed roster/owner/stage audit
+//                                              # fail-closed roster/owner/stage/order/slug audit
 //
 // FLAGS (global): --key <path> --project <id> --owner-uid <uid>
 // =============================================================================
@@ -212,7 +213,7 @@ function reportStrictIdInventory(inventory) {
 }
 
 async function cmdIdInventory() {
-  console.log(`\nProject: ${PROJECT_ID}\n`);
+  console.log('\nStrict ID inventory for the configured Firebase project\n');
   const incompatible = reportStrictIdInventory(await collectStrictIdInventory());
   if (incompatible) {
     die(`Found ${incompatible} legacy id${incompatible === 1 ? '' : 's'} incompatible with the strict Worker boundary. Stop rollout and migrate/re-issue deliberately; do not deploy the hardened validator yet.`);
@@ -360,13 +361,14 @@ async function cmdBackfill() {
   console.log('Next: node scripts/admin.mjs audit\n');
 }
 
-// reviewStage becomes a rules-enforced visibility boundary. Older documents
-// predate the field and historically meant "in review"; this additive backfill
-// makes that meaning explicit before stage-constrained queries/rules ship.
+// reviewStage becomes a rules-enforced visibility boundary and updatedAt drives
+// the stable newest-first API cursor. Older documents may predate either field;
+// this additive backfill makes both meanings explicit before the ordered,
+// stage-constrained query/rules ship.
 // Every write carries the document's updateTime so a concurrent edit aborts the
 // run instead of being silently merged against a stale audit snapshot.
 async function cmdReviewStage() {
-  console.log(`\nProject: ${PROJECT_ID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
+  console.log(`\nReview-stage inventory for the configured Firebase project; mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
   const incompatible = reportStrictIdInventory(await collectStrictIdInventory());
   if (incompatible) {
     die('Strict ID inventory is not clean. Stop rollout before review-stage backfill or application merge.');
@@ -374,7 +376,9 @@ async function cmdReviewStage() {
   console.log('');
   const roster = await loadRoster();
   const rosterIds = new Set(roster.map((client) => client.slug));
-  const posts = await listAll('posts', ['reviewStage', 'source', 'clientId', 'forClientId', 'uid']);
+  const posts = await listAll('posts', [
+    'reviewStage', 'source', 'clientId', 'forClientId', 'uid', 'updatedAt',
+  ]);
   const suggestions = posts.filter((post) => fieldString(post, 'source') === 'suggestion');
   const suggestionTargets = rosterClaimAudit(suggestions, 'forClientId', rosterIds);
   const suggestionOwners = stringClaimAudit(suggestions, 'uid', OWNER_UID);
@@ -393,6 +397,9 @@ async function cmdReviewStage() {
   console.log(`malformed source fields . ${plan.malformedSources.length}`);
   console.log(`invalid suggestion tenant ${suggestionClientIds.length + invalidSuggestionTargets}`);
   console.log(`invalid suggestion owner  ${invalidSuggestionOwners}`);
+  console.log(`missing updatedAt ........ ${plan.updatedAtChanges.length} (target: document updateTime)`);
+  console.log(`invalid updatedAt ........ ${plan.invalidUpdatedAt.length}`);
+  console.log(`invalid document time .... ${plan.invalidUpdateTimes.length}`);
   if (plan.invalid.length) {
     for (const p of plan.invalid.slice(0, 20)) console.log(`   ${p.id}: ${JSON.stringify(str(p.fields.reviewStage) ?? null)}`);
     die('Refusing to guess an explicit invalid reviewStage. Correct those documents first.');
@@ -400,6 +407,18 @@ async function cmdReviewStage() {
   if (plan.malformedSources.length) {
     for (const post of plan.malformedSources.slice(0, 20)) console.log(`   ${post.id}: source is not a string`);
     die('A non-string source cannot be safely classified for stage backfill. Correct it explicitly first.');
+  }
+  if (plan.invalidUpdatedAt.length) {
+    for (const post of plan.invalidUpdatedAt.slice(0, 20)) {
+      console.log(`   ${post.id}: updatedAt=${JSON.stringify(fieldString(post, 'updatedAt') ?? null)}`);
+    }
+    die('An explicit updatedAt is not a canonical ISO millisecond string. Correct it deliberately before pagination rollout.');
+  }
+  if (plan.invalidUpdateTimes.length) {
+    for (const post of plan.invalidUpdateTimes.slice(0, 20)) {
+      console.log(`   ${post.id}: updateTime=${JSON.stringify(post.updateTime ?? null)}`);
+    }
+    die('A missing updatedAt cannot be derived from its Firestore updateTime. Stop rollout and repair the inventory source.');
   }
   if (plan.unsafeSuggestions.length) {
     for (const post of plan.unsafeSuggestions.slice(0, 20)) {
@@ -411,29 +430,46 @@ async function cmdReviewStage() {
     die('Suggestion ownership/tenant provenance is not clean. Empty clientId is allowed only with canonical forClientId, owner uid, and private/missing reviewStage.');
   }
   if (!flags.apply) {
-    console.log('\n(dry-run) Ordinary missing-stage posts would receive in_review; missing-stage suggestions would receive private. Nothing was changed.\n');
+    console.log('\n(dry-run) Missing stages would be classified as above; missing updatedAt values would receive their canonical Firestore updateTime. Nothing was changed.\n');
     return;
   }
 
-  let applied = 0;
+  const updates = new Map();
   for (const { row: p, value } of plan.changes) {
-    if (!p.updateTime) die(`Missing updateTime for posts/${p.id}; refusing an unguarded write.`);
-    await patchField(p.name, 'reviewStage', value, p.updateTime);
-    if (++applied % 25 === 0) console.log(`   …${applied}/${plan.changes.length}`);
+    updates.set(p, { ...(updates.get(p) || {}), reviewStage: value });
+  }
+  for (const { row: p, value } of plan.updatedAtChanges) {
+    updates.set(p, { ...(updates.get(p) || {}), updatedAt: value });
   }
 
-  const verify = await listAll('posts', ['reviewStage', 'source', 'clientId', 'forClientId', 'uid']);
+  let applied = 0;
+  let appliedFields = 0;
+  for (const [p, values] of updates) {
+    if (!p.updateTime) die(`Missing updateTime for posts/${p.id}; refusing an unguarded write.`);
+    // Stage + ordering backfills share one updateTime precondition. Two
+    // sequential patches would make the second CAS stale by construction.
+    await patchFields(p.name, values, p.updateTime);
+    appliedFields += Object.keys(values).length;
+    if (++applied % 25 === 0) console.log(`   …${applied}/${updates.size}`);
+  }
+
+  const verify = await listAll('posts', [
+    'reviewStage', 'source', 'clientId', 'forClientId', 'uid', 'updatedAt',
+  ]);
   const verifyPlan = reviewStageBackfillPlan(verify);
   if (
     verifyPlan.changes.length
     || verifyPlan.invalid.length
     || verifyPlan.unsafeSuggestions.length
     || verifyPlan.malformedSources.length
+    || verifyPlan.updatedAtChanges.length
+    || verifyPlan.invalidUpdatedAt.length
+    || verifyPlan.invalidUpdateTimes.length
   ) {
-    die('Post-write audit found missing/invalid/tenant-readable suggestion stage values. Do NOT deploy strict rules.');
+    die('Post-write audit found missing/invalid stage or updatedAt values. Do NOT deploy the app, indexes, or strict rules.');
   }
-  console.log(`\n✓ Backfilled ${applied} legacy post${applied === 1 ? '' : 's'} and verified all ${verify.length} stage values (suggestions remain private).`);
-  console.log('Next: merge/deploy the stage-constrained SPA, then immediately deploy firestore.rules (see REVIEW_STAGE_ROLLOUT.md).\n');
+  console.log(`\n✓ Applied ${appliedFields} field backfill${appliedFields === 1 ? '' : 's'} across ${applied} post${applied === 1 ? '' : 's'} and verified all ${verify.length} stage/order values.`);
+  console.log('Next: deploy the required Firestore indexes and wait until READY, then follow the frozen broker → POM → Spool → rules sequence in REVIEW_STAGE_ROLLOUT.md.\n');
 }
 
 // ----- roster (restamp) --------------------------------------------------------
@@ -568,7 +604,9 @@ async function cmdAudit() {
   console.log(`\nProject: ${PROJECT_ID}   OWNER_UID: ${OWNER_UID}\n`);
   const roster = await loadRoster();
   console.log(`Canonical roster: ${roster.length} clients (${roster.map((client) => client.slug).sort().join(', ')})\n`);
-  const posts = await listAll('posts', ['client', 'clientId', 'uid', 'reviewStage', 'source', 'forClientId']);
+  const posts = await listAll('posts', [
+    'client', 'clientId', 'uid', 'reviewStage', 'source', 'forClientId', 'updatedAt', 'slug',
+  ]);
   // Audit is a stop gate. A failed list is unknown state and must terminate;
   // treating it as an empty collection would issue a false clean result.
   const clients = await listAll('clients', ['name', 'clientId', 'uid']);
@@ -631,6 +669,13 @@ async function cmdAudit() {
     (row) => `  reviewStage=${JSON.stringify(fieldString(row, 'reviewStage') ?? null)}`);
   reportRows('ordinary posts without private/in_review reviewStage', workspace.badReviewStage, 'post',
     (row) => `  reviewStage=${JSON.stringify(fieldString(row, 'reviewStage') ?? null)}`);
+  reportRows('posts missing updatedAt (newest-first list would omit them)', workspace.updatedAt.missing, 'post');
+  reportRows('posts with non-string updatedAt', workspace.updatedAt.nonString, 'post');
+  reportRows('posts with non-canonical updatedAt', workspace.updatedAt.invalid, 'post',
+    (row) => `  updatedAt=${JSON.stringify(fieldString(row, 'updatedAt') ?? null)}`);
+  reportRows('posts with non-string publication slug', workspace.publicationSlugs.nonString, 'post');
+  reportRows('posts with non-canonical publication slug', workspace.publicationSlugs.invalid, 'post',
+    (row) => `  slug=${JSON.stringify(fieldString(row, 'slug') ?? null)}`);
 
   if (workspace.mappings.idToMultipleNames.length) {
     bad++; console.log('✗ canonical client IDs map to MULTIPLE normalized display names:');

@@ -43,15 +43,25 @@ the allowlist match the incoming Host dynamically.
 
 ## Required rollout sequence
 
-1. Complete the strict legacy-ID inventory gate and guarded review-stage
-   backfill/audit in `REVIEW_STAGE_ROLLOUT.md`; this must happen before the
-   application merge.
-2. Merge the reviewed PR. The Worker and SPA auto-deploy from `main`.
-3. Confirm new uploads and generated images return `/media/v2/` URLs.
-4. Immediately reauthenticate Firebase and deploy `firestore.rules` manually,
-   then run the approve/request-changes smoke test in `SHARE_LINKS.md`. Existing
-   actions work under the old rules, but the security constraints stay inactive
-   for every minute this step is delayed.
+1. Complete the strict ID/owner/tenant inventory and guarded review-stage +
+   `updatedAt` backfill/audit in `REVIEW_STAGE_ROLLOUT.md`. Deploy
+   `firestore.indexes.json` and wait until the `posts(uid, updatedAt DESC)` index
+   is READY. These are preconditions, not maintenance-window shortcuts.
+2. Start the internal review freeze: no send/hold/approve/request-changes/
+   resubmit actions. Deploy the companion changes in the approved order:
+   **feedback-worker first → POM second → final Spool third**. A temporary
+   fail-closed old POM Content card is accepted. Spool auto-deploys from `main`;
+   do not treat its green deploy as completion.
+3. Immediately reauthenticate Firebase and deploy `firestore.rules` manually:
+
+   ```bash
+   firebase deploy --only firestore:rules --project spool-social
+   ```
+
+4. Run the field/revision/error/pagination and private/in-review smoke checks in
+   `REVIEW_STAGE_ROLLOUT.md` and the guest/member checks in `SHARE_LINKS.md`.
+   Confirm new uploads, rendered Markdown media, list/get output, and generated
+   images emit only canonical `/media/v2/` URLs. Keep the review freeze active.
 5. Complete the R2 raster audit below. Save its inventory/results outside the
    bucket; do not alter objects during the audit.
 6. Purge cached legacy URLs at Cloudflare for **every active hostname** in the
@@ -77,8 +87,8 @@ the allowlist match the incoming Host dynamically.
      binary attachment for non-raster bytes;
    - a request arriving through `spool.kist.workers.dev` must still redirect to
      the exact canonical custom-domain v2 URL, never emit workers.dev.
-Do not mark the media finding closed until steps 5–7 are recorded. None of these
-production operations were performed by the code PR.
+Do not lift the review freeze or mark the media finding closed until steps 5–7
+are recorded. None of these production operations were performed by the code PR.
 
 ## Optional workers.dev shutdown (separate approval/deploy)
 

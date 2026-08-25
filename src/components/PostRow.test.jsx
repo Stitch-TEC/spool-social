@@ -97,6 +97,17 @@ describe('PostRow', () => {
     expect(onRestore).toHaveBeenCalledWith('p1');
   });
 
+  it('does not offer review actions for archived rows', () => {
+    const props = { onEdit: () => {}, onResubmit: vi.fn(), onSendForReview: vi.fn() };
+    const { rerender } = render(<PostRow
+      post={{ ...basePost, status: 'archived', approvalStatus: 'changes_requested', reviewStage: 'in_review' }}
+      {...props}
+    />);
+    expect(screen.queryByLabelText('Back for review')).toBeNull();
+    rerender(<PostRow post={{ ...basePost, status: 'archived', reviewStage: 'private' }} {...props} />);
+    expect(screen.queryByLabelText('Send for review')).toBeNull();
+  });
+
   it('counts what is missing and names it on hover instead of spending a line on chips', () => {
     // gmb wants an image (warning) and this one has no date (warning) → two gaps.
     render(<PostRow post={{ ...basePost, scheduledDate: null }} onEdit={() => {}} />);

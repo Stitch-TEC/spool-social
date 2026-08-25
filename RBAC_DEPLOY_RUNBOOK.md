@@ -8,10 +8,12 @@ yourself out of provisioning.** Do the steps in sequence; don't skip the audit.
 > **Current-rules addendum (2026-08-24):** `firestore.rules` now also enforces
 > `reviewStage` as a client/guest visibility boundary. Before deploying the
 > current file, follow [`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md): strict
-> legacy-ID inventory gate → guarded stage backfill under old code/rules →
-> internal PATCH-caller baseline compatibility → application deploy → immediate
-> rules deploy. That sequence supersedes Step 1
-> below for this revision; deploying the
+> ID/owner/tenant inventory → guarded stage + `updatedAt` backfill → deploy the
+> declared index and wait READY → freeze review actions → **feedback-worker
+> first → POM second → final Spool third → immediate rules deploy → contract and
+> private/in-review checks → R2/cache verification**. A temporarily fail-closed
+> old POM Content card is accepted; no approval action is allowed during the
+> window. That sequence supersedes Step 1 below for this revision; deploying the
 > current rules before the backfill/app would hide legacy posts and deny old
 > client query shapes.
 
@@ -54,7 +56,14 @@ Creates `users/dillon@stitchtec.dev = { roles: ['super_admin'], email, … }`.
 `dillon@stitchtec.dev`, field `roles` = array `['super_admin']`, field `email` =
 `dillon@stitchtec.dev`.)
 
-## Step 1 — Deploy the new rules
+## Step 1 — Rules deployment point (defer for the current revision)
+
+For the current code, **do not run this command here**. First complete the
+guarded data/id/tenant/stage/`updatedAt` audit and backfill, deploy the declared
+index and wait READY, then use the frozen feedback-worker → POM → Spool order in
+`REVIEW_STAGE_ROLLOUT.md`. Run the command only immediately after the final
+Spool deploy, while review actions remain frozen:
+
 ```bash
 firebase deploy --only firestore:rules        # test in the Rules Playground first
 ```
@@ -106,6 +115,12 @@ Exits non-zero and lists offenders if any:
   all resource claims are checked against the same canonical roster snapshot.
 - **posts without `reviewStage: private|in_review`** — hidden by the current
   strict client/guest rules; run the guarded review-stage procedure first.
+- **posts without canonical ISO-millisecond `updatedAt`** — omitted by the
+  newest-first ordered query; the guarded stage/order backfill repairs only
+  missing values from Firestore `updateTime` and refuses explicit malformed
+  values.
+- **posts with malformed explicit publication slugs** — the drafts API and
+  strict broker fail closed rather than inventing an approval-bearing path.
 
 ## Step 4 — Provision client users (super_admin only)
 Once the audit is clean *and* the app + Worker + rules are deployed, either use the
@@ -134,6 +149,7 @@ extra `clientId` field is harmless under the old rules.
 `.github/workflows/deploy.yml` deploys the Worker + SPA on push to `main` but has
 **no** `firestore:rules` step — rules are manual (`firebase deploy`). For the app/
 Worker phase, add a `firebase-tools` step (gated on a `FIREBASE_TOKEN` /
-service-account secret) as a coordinated migration. The current stage boundary
-requires data backfill first, then application, then rules; do not blindly put a
-rules step before the Worker publish (see `REVIEW_STAGE_ROLLOUT.md`).
+service-account secret) as a coordinated migration. The current boundary
+requires data/index gates first, then the frozen broker → POM → Spool sequence,
+then rules and verification; do not blindly put a rules step before the
+companion apps (see `REVIEW_STAGE_ROLLOUT.md`).

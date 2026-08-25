@@ -172,6 +172,21 @@ describe('PostCard — the review pipeline', () => {
     expect(screen.queryByLabelText('Move to staging')).toBeNull();
   });
 
+  it('keeps archived rows out of every review-action surface', () => {
+    const props = {
+      onEdit: () => {}, onStatusChange: () => {}, onResubmit: vi.fn(),
+      onSendForReview: vi.fn(), onHoldFromReview: vi.fn(),
+    };
+    const { rerender } = render(<PostCard
+      post={{ ...basePost, status: 'archived', approvalStatus: 'changes_requested', reviewStage: 'in_review' }}
+      {...props}
+    />);
+    expect(screen.queryByText('Back for review')).toBeNull();
+    expect(screen.queryByLabelText('Move to staging')).toBeNull();
+    rerender(<PostCard post={{ ...basePost, status: 'archived', reviewStage: 'private' }} {...props} />);
+    expect(screen.queryByText('Send for review')).toBeNull();
+  });
+
   it('shows no review badge on a template or a parked suggestion (neither is in the loop)', () => {
     const { rerender } = render(<PostCard post={{ ...basePost, isTemplate: true }} onEdit={() => {}} onUseTemplate={() => {}} />);
     expect(screen.queryByText('Awaiting')).toBeNull();

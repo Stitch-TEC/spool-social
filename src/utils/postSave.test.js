@@ -13,6 +13,7 @@ import {
   saveExistingPostAtomically,
   saveExistingPostWithImageAtomically,
 } from './postSave';
+import { reviewScheduledDateAsDate } from './reviewIdentity';
 
 const snapshot = (data) => ({ exists: () => true, data: () => data });
 
@@ -74,6 +75,40 @@ describe('saveExistingPostAtomically', () => {
     expect(written).not.toHaveProperty('status');
   });
 
+  it('omits read-time v1→v2 media and derived-slug representations from the actual member save patch', async () => {
+    const update = vi.fn();
+    const live = {
+      client: 'Acme', clientId: 'acme', platform: 'blog', title: 'Approved title',
+      content: '![inline](/media/generated/o/inline.png)',
+      imageUrl: '/media/generated/o/cover.png', status: 'scheduled',
+      approvalStatus: 'approved', reviewStage: 'in_review', tags: [],
+    };
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(live)),
+      update,
+    }));
+    const canonical = {
+      ...live,
+      content: '![inline](https://spool.stitchtec.dev/media/v2/generated/o/inline.png)',
+      imageUrl: 'https://spool.stitchtec.dev/media/v2/generated/o/cover.png',
+      slug: 'approved-title',
+      tags: ['metadata-only'],
+    };
+
+    const result = await saveExistingPostAtomically({
+      db: {}, postRef: { id: 'p1' }, postData: canonical,
+      submittedPayload: canonical,
+      baselineStatus: 'scheduled', baselineClientId: 'acme', baselineClient: 'Acme',
+    });
+    const written = update.mock.calls[0][1];
+    expect(result).toMatchObject({ rewritten: false, approvalReset: false });
+    expect(written).not.toHaveProperty('content');
+    expect(written).not.toHaveProperty('imageUrl');
+    expect(written).not.toHaveProperty('slug');
+    expect(written).toMatchObject({ tags: ['metadata-only'] });
+    expect(written).not.toHaveProperty('approvalStatus');
+  });
+
   it('re-reads a concurrent approval and resets it only when the saved payload changed', async () => {
     const firstUpdate = vi.fn();
     const retriedUpdate = vi.fn();
@@ -111,8 +146,10 @@ describe('saveExistingPostAtomically', () => {
     const retriedPatch = retriedUpdate.mock.calls[0][1];
     expect(retriedUpdate).toHaveBeenCalledWith(
       { id: 'p1' },
-      expect.objectContaining({ content: 'Changed copy', title: 'Title', imageUrl: '', approvalStatus: 'pending' })
+      expect.objectContaining({ content: 'Changed copy', approvalStatus: 'pending' })
     );
+    expect(retriedPatch).not.toHaveProperty('imageUrl');
+    expect(retriedPatch).not.toHaveProperty('title');
     expect(Date.parse(retriedPatch.updatedAt)).toBeGreaterThan(Date.parse('2099-01-01T00:00:00.000Z'));
     expect(retriedPatch).not.toHaveProperty('feedback');
     expect(retriedPatch).not.toHaveProperty('feedbackThread');
@@ -147,6 +184,38 @@ describe('saveExistingPostAtomically', () => {
     expect(update.mock.calls[0][1]).toMatchObject({
       platform: 'linkedin', approvalStatus: 'pending',
     });
+  });
+
+  it.each([
+    ['altText', 'New alt text'],
+    ['metaDescription', 'New SEO description'],
+    ['slug', 'new-publication-path'],
+  ])('clears a live approval when the actual save wrapper changes %s', async (field, value) => {
+    const update = vi.fn();
+    const live = {
+      client: 'Acme', clientId: 'acme', content: 'Same copy', title: 'Title', imageUrl: '',
+      platform: 'blog', altText: '', metaDescription: '', slug: 'old-publication-path',
+      status: 'scheduled', approvalStatus: 'approved', reviewStage: 'in_review',
+    };
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(live)),
+      update,
+    }));
+
+    const result = await saveExistingPostWithImageAtomically({
+      db: {},
+      postRef: { id: 'p1' },
+      postData: { ...live, [field]: value },
+      submittedImageUrl: '',
+      baselineStatus: 'scheduled',
+      baselineClient: 'Acme',
+      baselineClientId: 'acme',
+      forClient: 'acme',
+      hostImage: vi.fn().mockResolvedValue(''),
+    });
+
+    expect(result.approvalReset).toBe(true);
+    expect(update.mock.calls[0][1]).toMatchObject({ [field]: value, approvalStatus: 'pending' });
   });
 
   it('atomically re-stages a tenant move and clears a review that races the real save wrapper', async () => {
@@ -475,6 +544,95 @@ describe('applyReviewActionAtomically', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['altText', 'New alt text'],
+    ['metaDescription', 'New SEO description'],
+    ['slug', 'new-publication-path'],
+  ])('rejects a review action when %s changed after rendering', async (field, value) => {
+    const update = vi.fn();
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot({ ...reviewPost, [field]: value })),
+      update,
+    }));
+
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: reviewPost, action: REVIEW_ACTION.APPROVE,
+    })).rejects.toMatchObject({ code: 'review_conflict', status: 409 });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects schedule drift while deliberately allowing internal tag drift', async () => {
+    const update = vi.fn();
+    runTransaction.mockImplementationOnce(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot({
+        ...reviewPost, scheduledDate: '2026-09-01T12:00:00.000Z',
+      })),
+      update,
+    }));
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: reviewPost, action: REVIEW_ACTION.APPROVE,
+    })).rejects.toMatchObject({ code: 'review_conflict' });
+
+    runTransaction.mockImplementationOnce(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot({ ...reviewPost, tags: ['internal-only'] })),
+      update,
+    }));
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: reviewPost, action: REVIEW_ACTION.APPROVE,
+    })).resolves.toMatchObject({ action: REVIEW_ACTION.APPROVE });
+  });
+
+  it.each([
+    [REVIEW_ACTION.APPROVE, {}, {}],
+    [REVIEW_ACTION.REQUEST_CHANGES, {}, { feedback: 'Exact note' }],
+    [REVIEW_ACTION.SEND, { reviewStage: 'private' }, {}],
+    [REVIEW_ACTION.HOLD, {}, {}],
+    [REVIEW_ACTION.RESUBMIT, {
+      approvalStatus: 'changes_requested', feedback: 'Prior note',
+      feedbackThread: [{ text: 'Prior note', by: 'client', at: '2026-08-24T00:00:00.000Z' }],
+    }, {}],
+  ])('accepts a usePosts Date baseline against raw Firestore ISO for %s', async (action, state, extra) => {
+    const iso = '2026-09-01T12:00:00.123Z';
+    const live = { ...reviewPost, ...state, scheduledDate: iso };
+    const rendered = { ...live, scheduledDate: new Date(iso) };
+    const update = vi.fn();
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(live)),
+      update,
+    }));
+
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: rendered, action, ...extra,
+    })).resolves.toMatchObject({ action });
+    expect(update).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [REVIEW_ACTION.APPROVE, {}, {}],
+    [REVIEW_ACTION.REQUEST_CHANGES, {}, { feedback: 'Exact note' }],
+    [REVIEW_ACTION.SEND, { reviewStage: 'private' }, {}],
+    [REVIEW_ACTION.HOLD, {}, {}],
+    [REVIEW_ACTION.RESUBMIT, {
+      approvalStatus: 'changes_requested', feedback: 'Prior note',
+      feedbackThread: [{ text: 'Prior note', by: 'client', at: '2026-08-24T00:00:00.000Z' }],
+    }, {}],
+  ])('accepts a usePosts-normalized Timestamp baseline against the raw transaction value for %s', async (action, state, extra) => {
+    const iso = '2026-09-01T12:00:00.123Z';
+    const rawTimestamp = { toDate: () => new Date(iso) };
+    const live = { ...reviewPost, ...state, scheduledDate: rawTimestamp };
+    const rendered = { ...live, scheduledDate: reviewScheduledDateAsDate(rawTimestamp) };
+    const update = vi.fn();
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(live)),
+      update,
+    }));
+
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: rendered, action, ...extra,
+    })).resolves.toMatchObject({ action });
+    expect(update).toHaveBeenCalledOnce();
+  });
+
   it('rejects a racing tenant move even when the approved payload is identical', async () => {
     const update = vi.fn();
     runTransaction.mockImplementation(async (_db, callback) => callback({
@@ -509,6 +667,35 @@ describe('applyReviewActionAtomically', () => {
     ]);
   });
 
+  it('preserves exact accepted feedback and rejects invalid or archived review actions', async () => {
+    const update = vi.fn();
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(reviewPost)),
+      update,
+    }));
+    const exact = '  Tighten this CTA!  ';
+    await applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: reviewPost,
+      action: REVIEW_ACTION.REQUEST_CHANGES, feedback: exact, actor: 'client',
+    });
+    expect(update.mock.calls[0][1].feedback).toBe(exact);
+    expect(update.mock.calls[0][1].feedbackThread.at(-1).text).toBe(exact);
+
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: reviewPost,
+      action: REVIEW_ACTION.REQUEST_CHANGES, feedback: 'x'.repeat(501),
+    })).rejects.toMatchObject({ code: 'feedback_invalid', status: 400 });
+
+    runTransaction.mockImplementationOnce(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot({ ...reviewPost, status: 'archived' })),
+      update,
+    }));
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: { ...reviewPost, status: 'archived' },
+      action: REVIEW_ACTION.APPROVE,
+    })).rejects.toMatchObject({ code: 'review_conflict', status: 409 });
+  });
+
   it('rejects stale review-state intent even when tenant and content did not change', async () => {
     const update = vi.fn();
     runTransaction.mockImplementation(async (_db, callback) => callback({
@@ -523,7 +710,10 @@ describe('applyReviewActionAtomically', () => {
   });
 
   it('runs bulk send through the same per-post baseline transaction and reports drift per item', async () => {
-    const staged = { ...reviewPost, reviewStage: 'private' };
+    const iso = '2026-09-01T12:00:00.123Z';
+    const rawTimestamp = { toDate: () => new Date(iso) };
+    const staged = { ...reviewPost, reviewStage: 'private', scheduledDate: rawTimestamp };
+    const rendered = { ...staged, scheduledDate: reviewScheduledDateAsDate(rawTimestamp) };
     let call = 0;
     const updates = [];
     runTransaction.mockImplementation(async (_db, callback) => {
@@ -537,8 +727,8 @@ describe('applyReviewActionAtomically', () => {
       db: {},
       action: REVIEW_ACTION.SEND,
       items: [
-        { postRef: { id: 'p1' }, baseline: staged },
-        { postRef: { id: 'p2' }, baseline: staged },
+        { postRef: { id: 'p1' }, baseline: rendered },
+        { postRef: { id: 'p2' }, baseline: rendered },
       ],
     });
     expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);

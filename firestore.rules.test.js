@@ -17,6 +17,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
+import { approvalSafeStoragePatch } from './src/utils/review';
 
 const emulatorIsRunning = !!globalThis.process?.env?.FIRESTORE_EMULATOR_HOST;
 const OWNER_UID = 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
@@ -109,6 +110,17 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     }));
   });
 
+  it('rejects whitespace-only feedback without normalizing accepted text', async () => {
+    await assertFails(updateDoc(postRef(), {
+      approvalStatus: 'changes_requested',
+      feedback: ' \n\t ',
+      feedbackThread: arrayUnion({ text: ' \n\t ', by: 'client', at: NOW }),
+      reviewedBy: 'client',
+      reviewedAt: NOW,
+      updatedAt: NOW,
+    }));
+  });
+
   it('allows repeating the same feedback in a later round without rewriting history', async () => {
     const prior = { text: 'Please tighten the CTA.', by: 'client', at: '2026-08-24T18:00:00.000Z' };
     await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -154,10 +166,10 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     }));
   });
 
-  it.each(['posted', 'archived'])('approves %s content without rewinding workflow status', async (status) => {
+  it('approves posted content without rewinding workflow status', async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await updateDoc(doc(context.firestore(), 'posts', POST_ID), {
-        status,
+        status: 'posted',
         approvalStatus: 'pending',
         updatedAt: '2026-08-24T19:00:00.000Z',
       });
@@ -168,6 +180,21 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
       reviewedAt: NOW,
       updatedAt: NOW,
     }));
+  });
+
+  it('makes archived in-review rows non-actionable', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), {
+        status: 'archived',
+        approvalStatus: 'pending',
+        updatedAt: '2026-08-24T19:00:00.000Z',
+      });
+    });
+    const review = {
+      approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW,
+    };
+    await assertFails(updateDoc(postRef(), review));
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), review));
   });
 
   it('rejects a token bound to the wrong owner/client and a revoked share', async () => {
@@ -311,6 +338,93 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     }));
     await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), {
       platform: 'linkedin', approvalStatus: 'pending', updatedAt: NOW,
+    }));
+  });
+
+  it.each([
+    ['altText', 'New alt text'],
+    ['metaDescription', 'New SEO description'],
+    ['slug', 'new-publication-path'],
+  ])('treats %s as approved payload in member editorial rules', async (field, value) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), { approvalStatus: 'approved' });
+    });
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      [field]: value, updatedAt: NOW,
+    }));
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      [field]: value, approvalStatus: 'pending', updatedAt: NOW,
+    }));
+  });
+
+  it('treats missing and explicit-empty optional preview fields as the same approved payload', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), { approvalStatus: 'approved' });
+    });
+    const safePatch = approvalSafeStoragePatch({
+      platform: 'gmb', content: 'Approved payload',
+    }, {
+      title: '', imageUrl: '', altText: '', metaDescription: '', slug: '',
+      tags: ['metadata-only'], updatedAt: NOW,
+    });
+    if (['title', 'imageUrl', 'altText', 'metaDescription', 'slug'].some((field) => field in safePatch)) {
+      throw new Error('approval-safe write retained a missing-to-empty representation change');
+    }
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), safePatch));
+  });
+
+  it('omits equivalent v1→v2 media and effective-slug storage writes before strict member rules', async () => {
+    const legacy = {
+      platform: 'blog', title: 'Approved title',
+      content: '![inline](/media/generated/o/inline.png)',
+      imageUrl: '/media/generated/o/cover.png',
+    };
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), {
+        ...legacy,
+        approvalStatus: 'approved',
+      });
+    });
+
+    const safePatch = approvalSafeStoragePatch(legacy, {
+      content: '![inline](https://spool.stitchtec.dev/media/v2/generated/o/inline.png)',
+      imageUrl: 'https://spool.stitchtec.dev/media/v2/generated/o/cover.png',
+      slug: 'approved-title',
+      scheduledDate: '2026-09-01T12:00:00.000Z',
+      updatedAt: NOW,
+    });
+    if ('content' in safePatch || 'imageUrl' in safePatch || 'slug' in safePatch) {
+      throw new Error('approval-safe write retained a representation-only payload change');
+    }
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), safePatch));
+    const stored = (await getDoc(doc(memberDb, 'posts', POST_ID))).data();
+    if (stored.content !== legacy.content || stored.imageUrl !== legacy.imageUrl || stored.slug !== undefined) {
+      throw new Error('member save rewrote approval-equivalent stored payload fields');
+    }
+
+    // Direct callers do not get a semantic bypass: a different object/copy/path
+    // remains a strict payload change and must reset approval atomically.
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      imageUrl: '/media/v2/generated/o/different.png', updatedAt: '2026-08-24T20:00:00.001Z',
+    }));
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      content: 'Genuinely changed copy', updatedAt: '2026-08-24T20:00:00.001Z',
+    }));
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      slug: 'different-path', updatedAt: '2026-08-24T20:00:00.001Z',
+    }));
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      imageUrl: '/media/v2/generated/o/different.png', approvalStatus: 'pending',
+      updatedAt: '2026-08-24T20:00:00.001Z',
+    }));
+  });
+
+  it('keeps tags and schedule outside approval-reset semantics', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), { approvalStatus: 'approved' });
+    });
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), {
+      tags: ['internal'], scheduledDate: '2026-09-01T12:00:00.000Z', updatedAt: NOW,
     }));
   });
 

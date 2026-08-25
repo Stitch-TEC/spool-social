@@ -16,6 +16,7 @@ import {
   createPost,
   getPost,
   listDraftPage,
+  DRAFT_PAGE_MAX_BYTES,
   encodeDraftCursor,
   decodeDraftCursor,
   countDraftSummary,
@@ -56,6 +57,9 @@ import {
 } from './httpBody.js';
 import {
   buildDraftMutation,
+  draftPublicationTitle,
+  draftPublicationSlug,
+  publicationPathMatchesSlug,
   assertIsolatedDraftReviewIntent,
   assertDraftBaseline,
   sameLegacyImageBytes,
@@ -160,6 +164,30 @@ function json(obj, status, extra) {
     status,
     headers
   });
+}
+
+/** Machine-stable API error contract. `error` is always a symbolic code;
+ * `message` remains safe to show to an operator or reviewer. */
+export function symbolicErrorPayload(error, message, extra = {}) {
+  return { error: String(error), message: String(message), ...extra };
+}
+
+function apiError(error, message, status, cors, extra) {
+  return json(symbolicErrorPayload(error, message, extra), status, cors);
+}
+
+export function serializedJsonBytes(value) {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+export function draftListResponseBody(page, nextCursor = null) {
+  return {
+    drafts: page.drafts,
+    count: page.drafts.length,
+    total: page.total,
+    truncated: page.truncated,
+    nextCursor: page.truncated ? nextCursor : null,
+  };
 }
 
 function jsonBodyError(err, cors, withOk = false) {
@@ -1530,16 +1558,28 @@ export default {
           : json({ error: 'CONTEXT_KEY seam not configured' }, 503, cors);
       }
 
-      const title = (post.title || md.split('\n')[0].replace(/^#+\s*/, '')).trim().slice(0, 200) || 'Untitled post';
+      const title = draftPublicationTitle(post);
       // Target path: caller-supplied wins (re-publish / operator override); else derive the
       // content-collection DIRECTORY + EXTENSION from the durable content index — repo-sourced
       // rows carry the repo file path of every existing post, so a new post lands where the
       // site's build actually reads (e.g. lyf-fit = content/posts/*.mdx, not a guessed
       // content/blog/*.md). Fail-open to the generic default when the index has no repo rows.
-      const postSlug = String(post.slug || '').trim()
-        || title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
-        || `post-${postId.slice(0, 8).toLowerCase()}`;
+      let postSlug;
+      try {
+        postSlug = draftPublicationSlug(post);
+      } catch {
+        return apiError('draft_publication_slug_invalid', 'The approved publication path is invalid', 409, cors);
+      }
+      if (!postSlug) postSlug = `post-${postId.slice(0, 8).toLowerCase()}`;
       let path = String(body?.path || '').trim();
+      if (path && !publicationPathMatchesSlug(path, postSlug)) {
+        return apiError(
+          'publication_target_mismatch',
+          'The requested file path does not match the approved publication slug',
+          409,
+          cors,
+        );
+      }
       if (!path) {
         let dir = 'content/blog';
         let ext = '.md';
@@ -1645,7 +1685,12 @@ export default {
           if (typeof body.baseClientId !== 'string'
             || typeof body.basePayloadRevision !== 'string'
             || !/^[a-f0-9]{64}$/.test(body.basePayloadRevision)) {
-            return json({ error: 'baseClientId and basePayloadRevision from the latest draft are required' }, 428, cors);
+            return apiError(
+              'review_baseline_required',
+              'baseClientId and basePayloadRevision from the latest draft are required',
+              428,
+              cors,
+            );
           }
           try {
             await assertDraftBaseline(publicOrigin, existing, {
@@ -1653,7 +1698,7 @@ export default {
               payloadRevision: body.basePayloadRevision,
             }, legacyOrigins);
           } catch {
-            return json({ error: 'Draft tenant or content changed; reload before updating' }, 409, cors);
+            return apiError('review_conflict', 'Draft tenant or content changed; reload before updating', 409, cors);
           }
           const fields = {};
           const hasPlatform = Object.prototype.hasOwnProperty.call(body, 'platform');
@@ -1675,6 +1720,16 @@ export default {
           if (typeof body.title === 'string') fields.title = body.title.trim().slice(0, 200);
           if (typeof body.altText === 'string') fields.altText = body.altText.trim().slice(0, 300);
           if (typeof body.metaDescription === 'string') fields.metaDescription = body.metaDescription.trim().slice(0, 200);
+          if (Object.prototype.hasOwnProperty.call(body, 'slug')) {
+            if (typeof body.slug !== 'string') {
+              return json({ error: 'slug must be a string' }, 400, cors);
+            }
+            const slug = body.slug.trim();
+            if (slug && (slug.length > 80 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))) {
+              return json({ error: 'slug must be empty or a canonical lowercase publication path (max 80 characters)' }, 400, cors);
+            }
+            fields.slug = slug;
+          }
           if (Array.isArray(body.tags)) fields.tags = body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean);
           if (body.scheduledDate === null || typeof body.scheduledDate === 'string') {
             fields.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
@@ -1699,15 +1754,31 @@ export default {
             if (!['pending', 'approved', 'changes_requested'].includes(body.approvalStatus)) {
               return json({ error: `Unknown approvalStatus '${body.approvalStatus}'` }, 400, cors);
             }
-            feedback = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 500) : '';
-            if (body.approvalStatus === 'changes_requested' && !feedback) {
-              return json({ error: 'feedback is required when requesting changes' }, 400, cors);
+            feedback = typeof body.feedback === 'string' ? body.feedback : '';
+            if (body.approvalStatus === 'changes_requested'
+              && (!feedback.trim() || feedback.length > 500)) {
+              return apiError(
+                'feedback_invalid',
+                'feedback must contain text and be no more than 500 characters when requesting changes',
+                400,
+                cors,
+              );
             }
             if (hasStatus && !(body.approvalStatus === 'approved' && body.status === 'scheduled')) {
-              return json({ error: 'A review action may change status only when approval advances draft to scheduled' }, 400, cors);
+              return apiError(
+                'mixed_review_edit',
+                'A review action may change status only when approval advances draft to scheduled',
+                400,
+                cors,
+              );
             }
             if (hasReviewStage && body.reviewStage !== 'in_review') {
-              return json({ error: 'Approval/resubmit actions cannot move a draft to private staging' }, 400, cors);
+              return apiError(
+                'mixed_review_edit',
+                'Approval/resubmit actions cannot move a draft to private staging',
+                400,
+                cors,
+              );
             }
           }
           const isReviewIntent = hasApproval || hasReviewStage;
@@ -1721,11 +1792,16 @@ export default {
           try {
             assertIsolatedDraftReviewIntent(body, { hasApproval, hasReviewStage, hasStatus });
           } catch (err) {
-            return json({ error: err.message }, 400, cors);
+            return apiError(err?.code || 'mixed_review_edit', err.message, err?.status || 400, cors);
           }
           if (isReviewIntent && (typeof body.baseReviewRevision !== 'string'
             || !/^[a-f0-9]{64}$/.test(body.baseReviewRevision))) {
-            return json({ error: 'baseReviewRevision from the latest draft is required for review actions' }, 428, cors);
+            return apiError(
+              'review_baseline_required',
+              'baseReviewRevision from the latest draft is required for review actions',
+              428,
+              cors,
+            );
           }
           if (isReviewIntent) {
             try {
@@ -1735,7 +1811,7 @@ export default {
                 reviewRevision: body.baseReviewRevision,
               }, legacyOrigins, { review: true });
             } catch {
-              return json({ error: 'Draft review state changed; reload before acting' }, 409, cors);
+              return apiError('review_conflict', 'Draft review state changed; reload before acting', 409, cors);
             }
           }
 
@@ -1815,10 +1891,36 @@ export default {
           } catch (err) {
             console.error('Draft update failed:', err?.message || err);
             if (err?.status === 404 || err?.code === 'not_found') return json({ error: 'Draft not found' }, 404, cors);
-            if (err?.code === 'feedback_thread_full') return json({ error: 'Feedback history is full' }, 409, cors);
-            if (err?.code === 'feedback_thread_invalid') return json({ error: 'Feedback history needs repair before another note can be added' }, 409, cors);
-            if (err?.code === 'review_conflict') return json({ error: 'Draft tenant, content, or review state changed; reload before updating' }, 409, cors);
-            if (err?.code === 'update_conflict') return json({ error: 'Draft changed concurrently; retry the update' }, 409, cors);
+            if (err?.code === 'feedback_thread_full') {
+              return apiError('feedback_thread_full', 'Feedback history is full', 409, cors);
+            }
+            if (err?.code === 'feedback_invalid') {
+              return apiError(
+                'feedback_invalid',
+                'feedback must contain text and be no more than 500 characters when requesting changes',
+                400,
+                cors,
+              );
+            }
+            if (err?.code === 'feedback_thread_invalid') {
+              return apiError(
+                'feedback_thread_invalid',
+                'Feedback history needs repair before another note can be added',
+                409,
+                cors,
+              );
+            }
+            if (err?.code === 'review_conflict') {
+              return apiError(
+                'review_conflict',
+                'Draft tenant, content, or review state changed; reload before updating',
+                409,
+                cors,
+              );
+            }
+            if (err?.code === 'update_conflict') {
+              return apiError('update_conflict', 'Draft changed concurrently; retry the update', 409, cors);
+            }
             return json({ error: 'Update failed' }, 502, cors);
           }
         }
@@ -1888,30 +1990,55 @@ export default {
           };
           const filterKey = JSON.stringify(filters);
           let cursorId = '';
+          let cursorUpdatedAt = '';
+          let cursorSeen = 0;
           let cursorReadTime = '';
           if (q.has('cursor')) {
             try {
               const cursor = decodeDraftCursor(q.get('cursor'), filterKey);
               cursorId = cursor.id;
+              cursorUpdatedAt = cursor.updatedAt;
+              cursorSeen = cursor.seen;
               cursorReadTime = cursor.readTime;
             }
-            catch { return json({ error: 'Invalid or mismatched draft cursor' }, 400, cors); }
+            catch {
+              return apiError('draft_cursor_invalid', 'Invalid or mismatched draft cursor', 400, cors);
+            }
           }
 
           const page = await listDraftPage(env, env.OWNER_UID, {
-            filters, cursorId, readTime: cursorReadTime, limit: reqLimit,
+            filters,
+            cursorId,
+            cursorUpdatedAt,
+            cursorSeen,
+            readTime: cursorReadTime,
+            limit: reqLimit,
+            transformRow: (draft) => versionDraftMedia(publicOrigin, draft, legacyOrigins),
           });
-          const drafts = await Promise.all(page.drafts.map(d => versionDraftMedia(publicOrigin, d, legacyOrigins)));
-          return json({
-            drafts,
-            count: drafts.length,
-            total: page.total,
-            truncated: page.truncated,
-            nextCursor: page.truncated ? encodeDraftCursor(page.nextId, filterKey, page.readTime) : null,
-          }, 200, cors);
+          const nextCursor = page.truncated
+            ? encodeDraftCursor(page.nextId, page.nextUpdatedAt, page.seen, filterKey, page.readTime)
+            : null;
+          const responseBody = draftListResponseBody(page, nextCursor);
+          if (serializedJsonBytes(responseBody) > DRAFT_PAGE_MAX_BYTES) {
+            throw Object.assign(new Error('Final draft response exceeded its serialized byte limit'), {
+              code: 'draft_response_too_large',
+            });
+          }
+          return json(responseBody, 200, cors);
         } catch (err) {
           console.error('Draft list failed:', err?.message || err);
-          return json({ error: 'List failed' }, 502, cors);
+          if (err?.code === 'draft_row_too_large') {
+            return apiError(
+              'draft_row_too_large',
+              'A draft is too large to return within the response limit; quarantine or repair it before retrying',
+              413,
+              cors,
+            );
+          }
+          if (err?.code === 'invalid_document_id') {
+            return apiError('draft_cursor_invalid', 'Invalid or mismatched draft cursor', 400, cors);
+          }
+          return apiError('draft_list_failed', 'Draft list could not be produced safely', 502, cors);
         }
       }
 

@@ -3,6 +3,7 @@ import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { OPERATOR_UID } from '../config/roles';
 import { versionMediaUrl, versionSpoolMediaContent } from '../utils/helpers';
+import { reviewScheduledDateAsDate } from '../utils/reviewIdentity';
 
 // Firestore TERMINATES a listener when it errors and never re-attaches it. The
 // dashboard's banner promised "Retrying automatically…" and nothing was: one
@@ -101,7 +102,12 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               if (existing && existing[`_raw_${field}`] === newVal) {
                 return existing[field];
               }
-              const d = new Date(newVal);
+              // Firestore may return a Timestamp object. Date(Timestamp) is
+              // invalid in the browser, which used to erase the hook baseline
+              // even though the transaction still saw the real schedule.
+              const d = field === 'scheduledDate'
+                ? reviewScheduledDateAsDate(newVal)
+                : new Date(newVal);
               return isNaN(d.getTime()) ? null : d;
             };
 

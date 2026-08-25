@@ -4,10 +4,12 @@ import {
   buildRosterRepairMap,
   classifyPostRows,
   listAllDocuments,
+  normalizeFirestoreUpdateTime,
   parseCollectionPage,
   parseRosterSnapshot,
   requestJsonObject,
   reviewStageBackfillPlan,
+  postUpdatedAtAudit,
 } from './adminCore.mjs';
 
 const stringField = (value) => ({ stringValue: value });
@@ -210,5 +212,30 @@ describe('suggestion-aware review-stage backfill', () => {
     ]);
     expect(plan.unsafeSuggestions).toEqual([unsafe]);
     expect(plan.malformedSources).toEqual([malformed]);
+    expect(plan.updatedAtChanges).toHaveLength(4);
+    expect(plan.updatedAtChanges.every(({ value }) => value === '2026-08-24T12:00:00.000Z')).toBe(true);
+  });
+
+  it('derives missing updatedAt from updateTime and refuses malformed explicit values', () => {
+    expect(normalizeFirestoreUpdateTime('2026-08-24T12:00:00.123456789Z'))
+      .toBe('2026-08-24T12:00:00.123Z');
+    expect(normalizeFirestoreUpdateTime('2026-02-31T12:00:00Z')).toBe('');
+
+    const missing = row('posts', 'missing', { reviewStage: 'in_review' });
+    missing.updateTime = '2026-08-24T12:00:00.987654Z';
+    const invalid = row('posts', 'invalid', {
+      reviewStage: 'in_review', updatedAt: 'not-an-iso-time',
+    });
+    const nonString = row('posts', 'non-string', {
+      reviewStage: 'in_review', updatedAt: { integerValue: '1' },
+    });
+    const audit = postUpdatedAtAudit([missing, invalid, nonString]);
+    expect(audit.missing).toEqual([missing]);
+    expect(audit.invalid).toEqual([invalid]);
+    expect(audit.nonString).toEqual([nonString]);
+
+    const plan = reviewStageBackfillPlan([missing, invalid, nonString]);
+    expect(plan.updatedAtChanges).toEqual([{ row: missing, value: '2026-08-24T12:00:00.987Z' }]);
+    expect(plan.invalidUpdatedAt).toEqual([nonString, invalid]);
   });
 });

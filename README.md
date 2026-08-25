@@ -188,11 +188,12 @@ audit, legacy Cloudflare cache purge, browser-cache residual, and the manual
 Firestore rules deploy. Follow [`MEDIA_SECURITY_ROLLOUT.md`](MEDIA_SECURITY_ROLLOUT.md);
 merging origin code alone does not complete that rollout.
 
-The private review-stage boundary also has a mandatory guarded legacy-data step
-before merge, preceded by a strict legacy-ID compatibility inventory and followed
-by an immediate manual rules deploy. Follow
-[`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md); do not deploy the strict
-rules against missing-stage posts or an old SPA query.
+The private review-stage/newest-first boundary has mandatory guarded legacy-data
+and index steps before merge. The actual release is a frozen maintenance window:
+feedback-worker → POM → Spool → immediate manual rules → contract/security checks
+→ R2/cache verification, with no approval actions during it. Follow
+[`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md); do not deploy strict rules
+against missing stage/order values or an old SPA query.
 
 ### Manual Deploy (fallback)
 To build and deploy from your local machine:
@@ -218,6 +219,7 @@ node scripts/admin.mjs id-inventory --key sa.json         # must be compatible
 node scripts/admin.mjs review-stage --key sa.json --roster /secure/path/clients.json         # preview
 node scripts/admin.mjs review-stage --key sa.json --roster /secure/path/clients.json --apply # ordinary→in_review; suggestions→private
 node scripts/admin.mjs audit --key sa.json --roster /secure/path/clients.json                 # should report "clean"
+firebase deploy --only firestore:indexes --project spool-social                              # wait until READY
 
 # 3. (Future) give a client teammate access — only once client logins are turned on
 node scripts/admin.mjs grant --email person@client.com --role client --client-id their-id --key sa.json

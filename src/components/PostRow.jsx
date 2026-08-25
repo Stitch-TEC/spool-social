@@ -101,8 +101,8 @@ const PostRow = memo(({
 
   // Same precedence the card uses: the client asking for changes outranks staging,
   // and either one takes over the row's action slot from the status control.
-  const primaryVerb = isChangesRequested && onResubmit ? 'resubmit'
-    : isNotSent && onSendForReview ? 'send'
+  const primaryVerb = !isArchived && isChangesRequested && onResubmit ? 'resubmit'
+    : !isArchived && isNotSent && onSendForReview ? 'send'
     : null;
 
   const brandColor = clientSettings.brandColor || '#4338ca';

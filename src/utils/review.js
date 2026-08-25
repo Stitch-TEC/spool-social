@@ -31,6 +31,7 @@ import {
   sameSpoolMediaReference,
   spoolMediaIdentity,
 } from './helpers';
+import { canonicalReviewScheduledDate } from './reviewIdentity';
 
 /** The post's stage, with the legacy default (absent = already in review). */
 export const reviewStageOf = (post) =>
@@ -53,6 +54,29 @@ export const reviewStateOf = (post) => {
 export const hasFeedback = (post) =>
   (Array.isArray(post?.feedbackThread) && post.feedbackThread.length > 0) || !!post?.feedback;
 
+const slugifyPublicationTitle = (value) => String(value || '')
+  .toLowerCase()
+  .trim()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 80);
+
+/** Effective public path segment. New rows persist `slug`; legacy long-form
+ * rows derive the exact publisher fallback from other approval-bound fields so
+ * the review UI never shows “empty” while publication silently targets a path. */
+export const publicationSlugOf = (post) => {
+  const explicit = String(post?.slug || '').trim();
+  if (explicit) return explicit;
+  if (!['blog', 'job'].includes(String(post?.platform || ''))) return '';
+  const firstLine = String(post?.content || '').replace(/\r\n?/g, '\n').trim()
+    .split('\n')[0]
+    .replace(/^#+\s*/, '');
+  const title = String(post?.title || firstLine).trim().slice(0, 200) || 'Untitled post';
+  // A punctuation/emoji-only title must still resolve to the same visible,
+  // approval-bound target that the publisher will use.
+  return slugifyPublicationTitle(title) || 'untitled-post';
+};
+
 /** Stable identity of exactly the client-approved payload. Media cache-version
  * migrations collapse to the same object key, while ordinary external URLs and
  * copy remain byte-for-byte significant. This is also the baseline used by all
@@ -65,7 +89,45 @@ export const approvedPayloadIdentity = (post) => {
     String(post?.title || ''),
     mediaKey === null ? image : `spool-media:${mediaKey}`,
     String(post?.platform || ''),
+    String(post?.altText || ''),
+    String(post?.metaDescription || ''),
+    // `slug` is the publication target for long-form content. Social drafts
+    // deliberately carry the empty string, so legacy-missing and explicit
+    // empty values remain the same approval identity.
+    publicationSlugOf(post),
   ]);
+};
+
+/**
+ * Remove storage-only canonicalization from a direct Firestore member write.
+ * Security rules intentionally compare stored strings strictly; allowing every
+ * v1/v2/host spelling in rules would require fragile path parsing and could
+ * weaken genuine approval resets. The SPA therefore leaves equivalent stored
+ * bytes untouched while continuing to render canonical v2 values on read.
+ */
+export const approvalSafeStoragePatch = (live, requestedPatch) => {
+  const patch = { ...(requestedPatch || {}) };
+  const requestedDocument = { ...(live || {}), ...patch };
+  if (
+    Object.prototype.hasOwnProperty.call(patch, 'content')
+    && normalizeSpoolMediaContentIdentity(live?.content)
+      === normalizeSpoolMediaContentIdentity(patch.content)
+  ) delete patch.content;
+  if (
+    Object.prototype.hasOwnProperty.call(patch, 'imageUrl')
+    && sameSpoolMediaReference(live?.imageUrl, patch.imageUrl)
+  ) delete patch.imageUrl;
+  if (
+    Object.prototype.hasOwnProperty.call(patch, 'slug')
+    && publicationSlugOf(live) === publicationSlugOf(requestedDocument)
+  ) delete patch.slug;
+  for (const field of ['title', 'altText', 'metaDescription']) {
+    if (
+      Object.prototype.hasOwnProperty.call(patch, field)
+      && String(live?.[field] || '') === String(patch[field] || '')
+    ) delete patch[field];
+  }
+  return patch;
 };
 
 /** The review state a button was rendered against. Including the history and
@@ -80,6 +142,9 @@ export const reviewStateIdentity = (post) => JSON.stringify([
   Array.isArray(post?.feedbackThread) ? post.feedbackThread : null,
   String(post?.reviewedBy || ''),
   String(post?.reviewedAt || ''),
+  // Scheduling is workflow, not approved copy: changing it does not revoke an
+  // approval, but a review button rendered before the change is stale.
+  canonicalReviewScheduledDate(post?.scheduledDate),
 ]);
 
 // Replacement document (not a merge patch) for promotion. Suggestions can
@@ -129,6 +194,9 @@ export const postWasRewritten = (post, next) => !!post && (
   (post.title || '') !== (next?.title || '') ||
   !sameSpoolMediaReference(post.imageUrl, next?.imageUrl) ||
   String(post.platform || '') !== String(next?.platform || '') ||
+  String(post.altText || '') !== String(next?.altText || '') ||
+  String(post.metaDescription || '') !== String(next?.metaDescription || '') ||
+  publicationSlugOf(post) !== publicationSlugOf(next) ||
   // When a failed upload forces the final saved image to be empty, that is a
   // real payload change even if the submitted pre-host image matched the live
   // post. Successful data-URL → /media migration is storage-only and does not

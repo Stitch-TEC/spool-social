@@ -5,21 +5,28 @@ members may read, update, or delete a post only when its stored value is exactly
 `in_review`; `private`, missing, and invalid values fail closed. The SPA's guest
 and member listeners carry the matching `reviewStage == in_review` query.
 
-This change needs one separately approved production data step. This PR does
-not run it, deploy code, or deploy rules.
+This change needs separately approved production data, index, deploy, rules,
+and cache-verification steps. This PR performs none of those live actions.
 
 ## Required sequence (do not reorder)
 
-1. **While the old SPA and old rules are still live**, obtain a fresh service
-   account key outside the repository. Export one fresh canonical broker
-   `GET /clients` response to `/secure/path/clients.json`, inspect it, and use
-   that exact immutable snapshot for every roster-aware gate in this rollout:
+This rollout uses a short internal maintenance window. Announce the freeze and
+perform **no send/hold/approve/request-changes/resubmit actions from the first
+companion deploy until the post-rules smoke tests pass**. Draft editing can also
+wait; this keeps a human approval from racing the three-service contract change.
+
+1. **While the old SPA and old rules are still live, prepare the data and
+   indexes.** Obtain a fresh service-account key outside the repository. Export
+   one fresh canonical broker `GET /clients` response to
+   `/secure/path/clients.json`, inspect it, and use that exact immutable snapshot
+   for every roster-aware gate:
 
    ```bash
    node scripts/admin.mjs id-inventory --key /secure/path/sa.json
    node scripts/admin.mjs review-stage --key /secure/path/sa.json --roster /secure/path/clients.json
    node scripts/admin.mjs review-stage --key /secure/path/sa.json --roster /secure/path/clients.json --apply
    node scripts/admin.mjs audit --key /secure/path/sa.json --roster /secure/path/clients.json
+   firebase deploy --only firestore:indexes --project spool-social
    ```
 
    `id-inventory` is a hard compatibility gate for the new Worker boundary: all
@@ -34,17 +41,24 @@ not run it, deploy code, or deploy rules.
    scalar, or malformed `documents`, a bad document/updateTime, invalid JSON, or
    a repeated page token is not empty and stops the rollout.
 
-   Review the stage dry-run count first. The apply command sets a missing stage
+   Review the stage/order dry-run count first. The apply command sets a missing stage
    on an ordinary legacy post to `in_review`, preserving its historical meaning;
    a missing-stage `source: suggestion` is set to `private` and its empty
-   `clientId` is never filled. Every write uses the document's Firestore
-   `updateTime`; a concurrent change aborts instead of receiving an unguarded
-   merge. An explicitly tenant-readable suggestion or any invalid stage is a
-   stop condition, never guessed or overwritten. The post-write audit must
-   report zero missing/invalid stages. It also verifies every ordinary post,
+   `clientId` is never filled. The same command fills a missing `updatedAt` from
+   that document's normalized Firestore `updateTime`; an explicit malformed
+   `updatedAt` is never guessed. Stage and timestamp changes for one row are one
+   update-time-preconditioned PATCH, so a concurrent change aborts rather than
+   receiving an unguarded merge. An explicitly tenant-readable suggestion or
+   any invalid stage/timestamp is a stop condition. The post-write audit must
+   report zero missing/invalid stage and ordering values. It also verifies every ordinary post,
    suggestion provenance (`forClientId`), client-branding doc, automation, and
    share tenant claim against the same canonical roster; verifies string
-   ownership; and rejects ID/name splits in either direction.
+   ownership; rejects ID/name splits in either direction; and flags malformed
+   publication slugs. Wait until the new `posts(uid ASC, updatedAt DESC)` index
+   is **READY**, not merely submitted, before starting the maintenance window.
+   The list query orders by `updatedAt DESC, __name__ DESC`; its snapshot cursor
+   also carries both values plus the number already seen, so missing order keys,
+   duplicates, and gaps fail closed.
 
    If the audit identifies a legacy missing/off-roster tenant claim, run the
    corresponding `backfill` or roster-backed `restamp` in dry-run first, review
@@ -56,49 +70,73 @@ not run it, deploy code, or deploy rules.
    A conflict is a stop/re-inventory event, never permission to retry a stale
    unguarded patch.
 
-2. **Before the Spool application merge, update every internal PATCH caller**
-   (currently the feedback-worker/POM review path; no automation PATCH caller
-   was found in the suite inventory) to
-   GET/list the draft, retain its `clientId`, `payloadRevision`, and
-   `reviewRevision`, and echo them as `baseClientId`, `basePayloadRevision`, and
-   (for review actions) `baseReviewRevision`. Deploy that caller change first;
-   the old Spool Worker safely ignores these additive request fields. Confirm no
-   blind PATCH caller remains. The hardened Worker returns `428` without a
-   baseline and `409` on tenant/content/review drift, so skipping this step would
-   make POM review actions unavailable after Spool deploy.
-   Re-check ad hoc scripts during rollout, but do not describe automation as a
-   caller unless one is actually found. Callers must also split editing from
-   review intent: save content/title/platform/image/
-   tag/schedule changes first, refetch the new revisions, then send, hold,
-   approve, request changes, or resubmit in a separate PATCH. A mixed request is
-   rejected with `400 mixed_review_edit` so nobody reviews bytes they did not
-   baseline.
+2. **Start the freeze, then deploy feedback-worker first.** Its Spool broker must
+   close the private-row path, forward the opaque list cursor instead of scanning
+   an arbitrary whole collection, and bind the full POM preview contract:
+   `platform`, `title`, `content`, canonical `imageUrl`, `altText`,
+   `metaDescription`, and effective publication `slug`. It must retain and echo
+   `clientId`, `payloadRevision`, and (for review actions) `reviewRevision`.
+   Temporary failure of the old POM Content card is accepted and preferred to a
+   private-row leak or invented optional value. Confirm no POM, feedback-worker,
+   automation, or ad-hoc PATCH caller remains blind.
 
-3. **Only after that audit and caller compatibility gate are clean, merge the application PR.** The Worker/SPA
-   auto-deploys. Confirm an operator still sees private posts and current guest
-   and member sessions see only in-review posts. The old rules still permit old
-   query shapes during this short window, so review actions keep working, but
-   the private-stage security fix is still inactive for cached/old clients.
+3. **Deploy POM second.** POM must render and acknowledge the same seven preview
+   fields, preserve the opaque revisions, request `reviewStage=in_review`, page
+   with `nextCursor`, and split edits from review actions. A platform/title/
+   content/image/alt/meta/slug edit is saved first; POM refetches the returned
+   revisions before a separate review PATCH. Tags are internal and do not change
+   approval identity. `scheduledDate` is workflow-only: it does not revoke an
+   approval, but it is part of `reviewRevision`, so a schedule race returns 409.
+   Archived rows are not actionable.
 
-4. **Immediately deploy the rules manually:**
+4. **Merge/deploy the final Spool PR third.** Worker/SPA auto-deploys from
+   `main`. Its list/get output normalizes legacy missing preview fields to
+   explicit strings and derives a missing long-form publication slug from the
+   same bound title/content fallback the publisher uses. The full serialized
+   list envelope—including normalized rows, both revisions, totals, and cursor—
+   is capped at 1 MiB. A single row that cannot fit fails closed with
+   `draft_row_too_large`; repair/quarantine it rather than skipping it. Stable
+   failures are `{error:<symbolic_code>,message}` for
+   `review_baseline_required`, `review_conflict`, `mixed_review_edit`,
+   `feedback_invalid`, `feedback_thread_full`, `feedback_thread_invalid`, and
+   `draft_cursor_invalid`. Do not end the freeze yet.
+
+5. **Immediately deploy the rules manually:**
 
    ```bash
    firebase deploy --only firestore:rules --project spool-social
    ```
 
-   Smoke-test a current share link and a member login: list/approve/request
-   changes on an in-review post; verify a private post cannot be read, changed,
-   or deleted. Confirm prior feedback remains append-only.
+6. **Run contract and authorization smoke tests before lifting the freeze.**
+   Confirm the operator sees private posts; old POM/guest/member query shapes fail
+   closed; current POM, guest, and member views show only exact `in_review` rows;
+   private rows cannot be read/changed/deleted; and an archived in-review row
+   cannot be approved. On a disposable in-review draft, approve and request
+   changes, verify feedback text is stored exactly and history remains
+   append-only, then change each of platform/title/content/image/alt/meta/slug
+   and verify approval resets and a stale baseline returns `409 review_conflict`.
+   Change only tags (approval remains) and race a schedule
+   change (review action conflicts). Exercise `nextCursor` across equal
+   timestamps and confirm newest-first order with no duplicate/gap.
 
-5. Ask internal testers with an old cached SPA to reload. Once strict rules are
+   Ask internal testers with an old cached SPA to reload. Once strict rules are
    live, an old client query without the stage constraint fails closed with
    `permission-denied`; it cannot leak private posts, but it will appear empty
    until the new app loads.
+
+7. **Only after the application/rules checks pass, perform the R2 inventory and
+   both-host Cloudflare cache verification in `MEDIA_SECURITY_ROLLOUT.md`.** Do
+   not delete or rewrite objects. Verify canonical v2 URLs, the exact legacy
+   alias redirect, attachment handling for unsafe legacy objects, and both
+   hostname cache surfaces. Then lift the maintenance freeze.
 
 ## Failure handling
 
 - If dry-run reports explicit invalid values, stop and inspect them. Do not map
   them automatically.
+- If the ordered-post index is not READY, stop before the maintenance window.
+  Do not rely on a submitted/building index or remove newest-first ordering to
+  make the query run.
 - If ID inventory reports an incompatible post, automation, or share ID, stop
   before backfill/merge. Preserve the document, plan an explicit ID migration,
   and re-run the inventory; strict routes intentionally refuse legacy shapes.
@@ -111,6 +149,10 @@ not run it, deploy code, or deploy rules.
   before merging Spool. Do not weaken the Worker to synthesize a caller baseline
   from a just-in-time server read; that would not bind the action to the content
   and tenant the human/caller actually saw.
+- If any companion does not preserve all preview strings (platform, title,
+  content, imageUrl, altText, metaDescription, effective slug), opaque
+  revisions, stable error codes, or `nextCursor`, stop. The accepted temporary
+  state is a fail-closed POM card, never a partial/invented approval preview.
 - If a suggestion has a non-empty `clientId`, a non-private explicit stage, an
   invalid/off-roster `forClientId`, or the wrong owner, stop. Do not run the
   ordinary post backfill over it and do not make it tenant-readable as a repair.

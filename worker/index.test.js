@@ -3,9 +3,12 @@ import worker, {
   decodeAutoId,
   decodeShareToken,
   deleteWhere,
+  draftListResponseBody,
   listR2ObjectsCompletely,
   purgeClient,
   runGC,
+  serializedJsonBytes,
+  symbolicErrorPayload,
 } from './index.js';
 import { collectPostImageReferences, readRunQueryDocuments } from './firestore.js';
 import { MAX_IMAGE_BYTES } from './media.js';
@@ -300,6 +303,32 @@ describe('/media response hardening', () => {
 });
 
 describe('Worker boundary responses', () => {
+  it('keeps symbolic error codes separate from human-safe messages', () => {
+    for (const code of [
+      'review_conflict',
+      'review_baseline_required',
+      'mixed_review_edit',
+      'feedback_invalid',
+      'feedback_thread_full',
+      'feedback_thread_invalid',
+      'draft_cursor_invalid',
+    ]) {
+      expect(symbolicErrorPayload(code, 'Safe message')).toEqual({ error: code, message: 'Safe message' });
+    }
+  });
+
+  it('measures the exact final draft envelope rather than only its row array', () => {
+    const body = draftListResponseBody({
+      drafts: [{ id: 'A'.repeat(20), content: 'x'.repeat(1024) }],
+      total: 2,
+      truncated: true,
+    }, 'opaque-cursor');
+    expect(serializedJsonBytes(body)).toBe(new TextEncoder().encode(JSON.stringify(body)).byteLength);
+    expect(body).toEqual(expect.objectContaining({
+      count: 1, total: 2, truncated: true, nextCursor: 'opaque-cursor',
+    }));
+  });
+
   it('advertises every implemented method on a hardened CORS preflight', async () => {
     const response = await worker.fetch(new Request('https://spool.example/api/drafts', {
       method: 'OPTIONS',
@@ -458,7 +487,15 @@ describe('draft list pagination boundaries', () => {
     });
     expect(response.status).toBe(400);
     expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
-    await expect(response.json()).resolves.toEqual({ error: expect.stringMatching(errorPattern) });
+    const payload = await response.json();
+    if (query.startsWith('cursor=')) {
+      expect(payload).toEqual({
+        error: 'draft_cursor_invalid',
+        message: expect.stringMatching(errorPattern),
+      });
+    } else {
+      expect(payload).toEqual({ error: expect.stringMatching(errorPattern) });
+    }
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });

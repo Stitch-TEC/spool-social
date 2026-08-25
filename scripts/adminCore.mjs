@@ -177,6 +177,45 @@ export function parseRosterSnapshot(raw) {
 
 export const normalizeClientName = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+const ISO_MILLIS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function normalizeFirestoreUpdateTime(value) {
+  const match = String(value || '').match(
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/,
+  );
+  if (!match) return '';
+  const candidate = `${match[1]}.${String(match[2] || '').padEnd(3, '0').slice(0, 3)}Z`;
+  const parsed = Date.parse(candidate);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === candidate ? candidate : '';
+}
+
+export function postUpdatedAtAudit(posts) {
+  const missing = posts.filter((row) => !Object.prototype.hasOwnProperty.call(row.fields || {}, 'updatedAt'));
+  const nonString = posts.filter((row) => (
+    Object.prototype.hasOwnProperty.call(row.fields || {}, 'updatedAt')
+    && fieldString(row, 'updatedAt') === undefined
+  ));
+  const invalid = posts.filter((row) => {
+    const value = fieldString(row, 'updatedAt');
+    return value !== undefined && (!ISO_MILLIS_RE.test(value) || normalizeFirestoreUpdateTime(value) !== value);
+  });
+  return { missing, nonString, invalid };
+}
+
+export function publicationSlugAudit(posts) {
+  const nonString = posts.filter((row) => (
+    Object.prototype.hasOwnProperty.call(row.fields || {}, 'slug')
+    && fieldString(row, 'slug') === undefined
+  ));
+  const invalid = posts.filter((row) => {
+    const value = fieldString(row, 'slug');
+    return value !== undefined
+      && value !== ''
+      && (value.length > 80 || !CLIENT_ID_RE.test(value));
+  });
+  return { nonString, invalid };
+}
+
 export function classifyPostRows(posts) {
   const malformedSources = posts.filter((post) => (
     Object.prototype.hasOwnProperty.call(post.fields || {}, 'source')
@@ -326,6 +365,8 @@ export function auditWorkspace({ posts, clients, automations, shares, roster, ow
     ...shares.map((row) => ({ row, kind: 'share', idField: 'clientId', nameField: 'client' })),
   ], roster);
   const badReviewStage = ordinaryPosts.filter((row) => !['private', 'in_review'].includes(fieldString(row, 'reviewStage')));
+  const updatedAt = postUpdatedAtAudit(posts);
+  const publicationSlugs = publicationSlugAudit(posts);
   return {
     ordinaryPosts,
     suggestions,
@@ -337,6 +378,8 @@ export function auditWorkspace({ posts, clients, automations, shares, roster, ow
     names,
     mappings,
     badReviewStage,
+    updatedAt,
+    publicationSlugs,
   };
 }
 
@@ -358,5 +401,18 @@ export function reviewStageBackfillPlan(posts) {
     && row.fields.reviewStage !== undefined
     && fieldString(row, 'reviewStage') !== 'private'
   ));
-  return { invalid, changes, unsafeSuggestions, malformedSources };
+  const updatedAt = postUpdatedAtAudit(posts);
+  const invalidUpdateTimes = updatedAt.missing.filter((row) => !normalizeFirestoreUpdateTime(row.updateTime));
+  const updatedAtChanges = updatedAt.missing
+    .filter((row) => !invalidUpdateTimes.includes(row))
+    .map((row) => ({ row, value: normalizeFirestoreUpdateTime(row.updateTime) }));
+  return {
+    invalid,
+    changes,
+    unsafeSuggestions,
+    malformedSources,
+    updatedAtChanges,
+    invalidUpdatedAt: [...updatedAt.nonString, ...updatedAt.invalid],
+    invalidUpdateTimes,
+  };
 }

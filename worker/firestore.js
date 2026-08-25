@@ -7,6 +7,7 @@
 // token endpoint for an access token (cached ~1h) -> call the Firestore REST API.
 
 import { transformMediaDestinations } from '../src/utils/mediaMarkup.js';
+import { DRAFT_PUBLIC_FIELD_PATHS } from './draftUpdate.js';
 
 let tokenCache = { exp: 0, token: null };
 
@@ -83,10 +84,29 @@ function requireFirestoreReadTime(value) {
   return text;
 }
 
-export function encodeDraftCursor(id, filterKey, readTime) {
+export function requireDraftUpdatedAt(value) {
+  const text = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text)
+    || !Number.isFinite(Date.parse(text))
+    || new Date(text).toISOString() !== text) {
+    throw new InvalidFirestoreIdError('draft cursor');
+  }
+  return text;
+}
+
+function requireDraftCursorSeen(value) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10_000_000) {
+    throw new InvalidFirestoreIdError('draft cursor');
+  }
+  return value;
+}
+
+export function encodeDraftCursor(id, updatedAt, seen, filterKey, readTime) {
   const payload = new TextEncoder().encode(JSON.stringify({
-    v: 1,
+    v: 2,
     id: requireAutoId(id, 'draft cursor'),
+    updatedAt: requireDraftUpdatedAt(updatedAt),
+    seen: requireDraftCursorSeen(seen),
     filter: String(filterKey || ''),
     readTime: requireFirestoreReadTime(readTime),
   }));
@@ -98,14 +118,16 @@ export function decodeDraftCursor(value, filterKey) {
   try { payload = JSON.parse(decodeB64urlUtf8(value)); }
   catch { throw new InvalidFirestoreIdError('draft cursor'); }
   if (!isPlainObject(payload)
-    || Object.keys(payload).length !== 4
-    || payload.v !== 1
+    || Object.keys(payload).length !== 6
+    || payload.v !== 2
     || typeof payload.filter !== 'string'
     || payload.filter !== String(filterKey || '')) {
     throw new InvalidFirestoreIdError('draft cursor');
   }
   return {
     id: requireAutoId(payload.id, 'draft cursor'),
+    updatedAt: requireDraftUpdatedAt(payload.updatedAt),
+    seen: requireDraftCursorSeen(payload.seen),
     readTime: requireFirestoreReadTime(payload.readTime),
   };
 }
@@ -501,12 +523,23 @@ export async function listPosts(env, uid, cap = Infinity) {
   }
 }
 
-// Raw retained rows stay below 1 MiB per page (except one already-bounded
-// Firestore document so pagination can always progress). Media URL
-// canonicalization can expand Markdown destinations, so this conservative
-// pre-transform ceiling also keeps the final JSON response comfortably bounded.
+// The final serialized API response, not merely raw Firestore rows, must remain
+// below this boundary. The collector measures transformed/allowlisted rows and
+// reserves space for the envelope + opaque cursor; the route performs one exact
+// final assertion before returning it.
 export const DRAFT_PAGE_MAX_BYTES = 1024 * 1024;
-const DRAFT_SCAN_BATCH = 50;
+export const DRAFT_RESPONSE_OVERHEAD_BYTES = 8 * 1024;
+const DRAFT_SCAN_BATCH = 10;
+
+export class DraftRowTooLargeError extends Error {
+  constructor(id = '') {
+    super('A draft is too large to return within the response limit');
+    this.name = 'DraftRowTooLargeError';
+    this.code = 'draft_row_too_large';
+    this.status = 413;
+    this.draftId = id;
+  }
+}
 
 const stringFieldFilter = (fieldPath, value) => ({
   fieldFilter: {
@@ -609,8 +642,11 @@ export function filteredDraftTotal({ all, templates, suggestions, templateSugges
   return total;
 }
 
-function draftRowIsEligible(row) {
-  if (!isPlainObject(row) || typeof row._cursorName !== 'string' || !row._cursorName) {
+function draftRowIsEligible(row, filters = {}) {
+  if (!isPlainObject(row)
+    || typeof row._cursorName !== 'string'
+    || !row._cursorName
+    || requireDraftUpdatedAt(row._cursorUpdatedAt) !== row._cursorUpdatedAt) {
     throw new Error('Draft page contained a malformed row');
   }
   if (Object.prototype.hasOwnProperty.call(row, 'isTemplate') && typeof row.isTemplate !== 'boolean') {
@@ -619,7 +655,37 @@ function draftRowIsEligible(row) {
   if (Object.prototype.hasOwnProperty.call(row, 'source') && typeof row.source !== 'string') {
     throw new Error('Draft page contained a malformed source field');
   }
-  return row.isTemplate !== true && row.source !== 'suggestion';
+  if (row.isTemplate === true || row.source === 'suggestion') return false;
+  return Object.entries(filters).every(([field, value]) => row[field] === value);
+}
+
+export function buildDraftListStructuredQuery(uid, startAfter = null, batchSize = DRAFT_SCAN_BATCH) {
+  if (typeof uid !== 'string' || !uid || !Number.isInteger(batchSize) || batchSize < 1 || batchSize > 300) {
+    throw new Error('Draft ordered query inputs are malformed');
+  }
+  const structuredQuery = {
+    from: [{ collectionId: 'posts' }],
+    where: joinedFilters([stringFieldFilter('uid', uid)]),
+    select: { fields: DRAFT_PUBLIC_FIELD_PATHS.map((fieldPath) => ({ fieldPath })) },
+    orderBy: [
+      { field: { fieldPath: 'updatedAt' }, direction: 'DESCENDING' },
+      { field: { fieldPath: '__name__' }, direction: 'DESCENDING' },
+    ],
+    limit: batchSize,
+  };
+  if (startAfter) {
+    if (!isPlainObject(startAfter) || typeof startAfter.name !== 'string' || !startAfter.name) {
+      throw new InvalidFirestoreIdError('draft cursor');
+    }
+    structuredQuery.startAt = {
+      values: [
+        { stringValue: requireDraftUpdatedAt(startAfter.updatedAt) },
+        { referenceValue: startAfter.name },
+      ],
+      before: false,
+    };
+  }
+  return structuredQuery;
 }
 
 /** Collect one bounded page from a cursor-driven reader. The reader may need to
@@ -627,12 +693,15 @@ function draftRowIsEligible(row) {
  * beyond the requested page and byte ceiling. */
 export async function collectBoundedDraftRows({
   readPage,
-  initialCursor = '',
+  initialCursor = null,
   limit = 300,
   maxBytes = DRAFT_PAGE_MAX_BYTES,
   batchSize = DRAFT_SCAN_BATCH,
+  transformRow = async (row) => row,
+  filters = {},
 }) {
   if (typeof readPage !== 'function') throw new Error('Draft page reader is required');
+  if (typeof transformRow !== 'function') throw new Error('Draft row transformer is required');
   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid draft page limit');
   if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error('Invalid draft page byte limit');
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 300) throw new Error('Invalid draft scan batch');
@@ -640,7 +709,7 @@ export async function collectBoundedDraftRows({
   const drafts = [];
   let retainedBytes = 2;
   let scanCursor = initialCursor;
-  let lastReturnedName = '';
+  let lastReturnedCursor = null;
   let truncated = false;
 
   for (;;) {
@@ -649,66 +718,101 @@ export async function collectBoundedDraftRows({
     if (rows.length === 0) break;
 
     for (const row of rows) {
-      if (!isPlainObject(row) || typeof row._cursorName !== 'string' || !row._cursorName
-        || (scanCursor && row._cursorName <= scanCursor)) {
+      if (!isPlainObject(row) || typeof row._cursorName !== 'string' || !row._cursorName) {
         throw new Error('Draft page reader did not advance its cursor');
       }
-      scanCursor = row._cursorName;
-      if (!draftRowIsEligible(row)) continue;
+      const rowCursor = {
+        name: row._cursorName,
+        updatedAt: requireDraftUpdatedAt(row._cursorUpdatedAt),
+      };
+      const advances = !scanCursor
+        || rowCursor.updatedAt < scanCursor.updatedAt
+        || (rowCursor.updatedAt === scanCursor.updatedAt && rowCursor.name < scanCursor.name);
+      if (!advances) throw new Error('Draft page reader did not advance its cursor');
+      scanCursor = rowCursor;
+      if (!draftRowIsEligible(row, filters)) continue;
 
-      const { _cursorName: _discardedCursor, ...publicRow } = row;
-      const rowBytes = new TextEncoder().encode(JSON.stringify(publicRow)).byteLength + 1;
-      if (drafts.length >= limit || (drafts.length > 0 && retainedBytes + rowBytes > maxBytes)) {
+      const {
+        _cursorName: _discardedCursor,
+        _cursorUpdatedAt: _discardedUpdatedAt,
+        ...rawPublicRow
+      } = row;
+      const publicRow = await transformRow(rawPublicRow);
+      if (!isPlainObject(publicRow)) throw new Error('Draft row transformer returned a malformed row');
+      const rowJson = JSON.stringify(publicRow);
+      const rowBytes = new TextEncoder().encode(rowJson).byteLength + (drafts.length ? 1 : 0);
+      if (drafts.length >= limit || retainedBytes + rowBytes > maxBytes) {
+        if (!drafts.length) throw new DraftRowTooLargeError(String(publicRow.id || ''));
         truncated = true;
         break;
       }
       drafts.push(publicRow);
       retainedBytes += rowBytes;
-      lastReturnedName = row._cursorName;
+      lastReturnedCursor = rowCursor;
     }
 
     if (truncated || rows.length < batchSize) break;
   }
 
-  if (truncated && !lastReturnedName) throw new Error('Draft page could not make cursor progress');
-  return { drafts, truncated, nextName: truncated ? lastReturnedName : '', retainedBytes };
+  if (truncated && !lastReturnedCursor) throw new Error('Draft page could not make cursor progress');
+  return {
+    drafts,
+    truncated,
+    nextName: truncated ? lastReturnedCursor.name : '',
+    nextUpdatedAt: truncated ? lastReturnedCursor.updatedAt : '',
+    retainedBytes,
+  };
 }
 
-/** Cursor-paginated draft list. Equality filters are pushed into Firestore;
- * templates/suggestions are skipped while scanning small batches because
- * Firestore cannot express "false or missing" safely for legacy fields. */
+/** Cursor-paginated draft list. The ordered query uses only uid + updatedAt so
+ * one declared composite index covers every supported filter combination.
+ * Optional equality filters, templates, and suggestions are applied while
+ * scanning ten projected rows at a time. The exact filtered aggregation count
+ * and final seen-count check make a missing order key fail closed rather than
+ * silently shortening a page. */
 export async function listDraftPage(env, uid, {
   filters = {},
   cursorId = '',
+  cursorUpdatedAt = '',
+  cursorSeen = 0,
   readTime = '',
   limit = 300,
   maxBytes = DRAFT_PAGE_MAX_BYTES,
+  transformRow = async (row) => row,
 } = {}) {
+  if (!Number.isSafeInteger(cursorSeen) || cursorSeen < 0
+    || (!!cursorId !== !!cursorUpdatedAt)
+    || (!!cursorId !== !!readTime)
+    || (!!cursorId !== (cursorSeen > 0))) {
+    throw new InvalidFirestoreIdError('draft cursor');
+  }
   const snapshot = await countFilteredDraftSnapshot(env, uid, filters, readTime);
   const { total } = snapshot;
   if (total === 0) {
+    if (cursorSeen || cursorId) throw new InvalidFirestoreIdError('draft cursor');
     return { drafts: [], count: 0, total: 0, truncated: false, nextId: '', readTime: snapshot.readTime };
   }
+  if (cursorSeen >= total) throw new InvalidFirestoreIdError('draft cursor');
 
   const token = await getAccessToken(env);
   const initialCursor = cursorId
-    ? `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/posts/${requireAutoId(cursorId, 'draft cursor')}`
-    : '';
-  const base = draftBaseFilters(uid, filters);
+    ? {
+      name: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/posts/${requireAutoId(cursorId, 'draft cursor')}`,
+      updatedAt: requireDraftUpdatedAt(cursorUpdatedAt),
+    }
+    : null;
+  // Validate every advertised filter even though the ordered scan applies the
+  // optional values locally to avoid a 32-index combination matrix.
+  draftBaseFilters(uid, filters);
+  const overheadReserve = Math.min(DRAFT_RESPONSE_OVERHEAD_BYTES, Math.floor(maxBytes / 4));
   const page = await collectBoundedDraftRows({
     initialCursor,
     limit,
-    maxBytes,
+    maxBytes: maxBytes - overheadReserve,
+    transformRow,
+    filters,
     readPage: async (startAfter, batchSize) => {
-      const structuredQuery = {
-        from: [{ collectionId: 'posts' }],
-        where: joinedFilters(base),
-        orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
-        limit: batchSize,
-      };
-      if (startAfter) {
-        structuredQuery.startAt = { values: [{ referenceValue: startAfter }], before: false };
-      }
+      const structuredQuery = buildDraftListStructuredQuery(uid, startAfter, batchSize);
       const res = await fetch(`${FS_BASE(env)}:runQuery`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -721,16 +825,25 @@ export async function listDraftPage(env, uid, {
           ...fields,
           id: requireAutoId(document.name.split('/').pop(), 'draft'),
           _cursorName: document.name,
+          _cursorUpdatedAt: requireDraftUpdatedAt(fields.updatedAt),
         };
       });
     },
   });
+  const seen = cursorSeen + page.drafts.length;
+  if (seen > total
+    || (page.truncated && seen >= total)
+    || (!page.truncated && seen !== total)) {
+    throw new Error('Draft pagination snapshot is incomplete or inconsistent; run the updatedAt backfill audit');
+  }
   return {
     drafts: page.drafts,
     count: page.drafts.length,
     total,
     truncated: page.truncated,
     nextId: page.truncated ? requireAutoId(page.nextName.split('/').pop(), 'draft cursor') : '',
+    nextUpdatedAt: page.truncated ? requireDraftUpdatedAt(page.nextUpdatedAt) : '',
+    seen,
     readTime: snapshot.readTime,
   };
 }

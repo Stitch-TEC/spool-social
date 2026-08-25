@@ -43,20 +43,25 @@ but **Firestore rules deploy manually** (`firebase deploy --only firestore:rules
 
 The rules also validate guest review values and transitions: approval/status
 enums are bounded, only `draft → scheduled` may accompany a guest approval,
-feedback is capped at 500 characters, and each feedback write must append one
-client-attributed history entry without deleting prior entries. Approval and
+archived rows cannot be reviewed, feedback must contain text and is capped at
+500 characters, and each accepted note is stored exactly while its write
+appends one client-attributed history entry without deleting prior entries. Approval and
 feedback must also stamp `reviewedBy:"client"` plus one matching ISO
 `reviewedAt`/`updatedAt` value. The SPA performs these actions in Firestore
 transactions bound to the post's clientId, approved-payload identity, and review
-state, so content/tenant/reviewer races return a visible conflict instead of a
-last-write win. A code deploy
+state (including workflow-only scheduling), so content/tenant/reviewer/schedule
+races return a visible conflict instead of a last-write win. The approved
+payload is the complete preview: platform, title, content, canonical image, alt
+text, SEO description, and effective publication slug. Tags and schedule are
+workflow metadata rather than approved copy. A code deploy
 does not activate these rule changes; use the manual deploy/verification step
 below after the application PR is merged.
 
 Registered client members use the same review contract. Their separate
 editorial path is limited to bounded post fields and safe status transitions;
 new member posts must start `draft / pending / in_review`, and changing an
-approved title/content/image/platform must reset approval to `pending` atomically.
+approved title/content/image/platform/altText/metaDescription/slug must reset
+approval to `pending` atomically.
 Members cannot forge posted/approved creation state, review attribution, or
 replace feedback history.
 
@@ -69,27 +74,32 @@ replace feedback history.
 
 **Required sequence:**
 
-1. Complete the strict legacy-ID inventory gate and guarded missing-`reviewStage`
-   dry-run/apply/audit in
-   [`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md) while old code/rules are live.
-2. **Merge to `main`** → CI deploys the Worker + SPA. Existing review actions
-   continue working under the old rules, but all rule security fixes remain inactive.
-3. **Immediately deploy the new rules** (keep the permissive window short):
-   ```bash
-   firebase deploy --only firestore:rules   # verify in the Rules Playground first
-   ```
-4. **Smoke-test both actions** with a current `?s=` link: approve a draft and
-   request changes on another. Confirm the workflow status is not rewound for a
-   posted/archived thread and prior feedback remains present.
+Follow the canonical maintenance-window order in
+[`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md), without variation:
 
-**Future improvement:** automate a coordinated application-then-rules rollout in
+1. Under old code/rules, complete ID/owner/tenant/stage/updatedAt audit and
+   backfill; deploy the `posts(uid, updatedAt DESC)` index and wait until READY.
+2. Freeze review actions. Deploy **feedback-worker first**, accepting a
+   temporary fail-closed old POM Content card; deploy **POM second**; deploy
+   final **Spool third**. Do not approve/send/hold/request changes/resubmit
+   during this window.
+3. **Immediately deploy the new rules**:
+   ```bash
+   firebase deploy --only firestore:rules --project spool-social
+   ```
+4. Verify the full POM/broker/Spool field+revision contract, private/in-review
+   isolation, exact feedback append, approval reset/409 behavior, and that
+   archived rows remain non-actionable. Reload cached SPAs.
+5. Complete the non-destructive R2 inventory and both-host cache purge/
+   verification in `MEDIA_SECURITY_ROLLOUT.md`, then lift the freeze.
+
+**Future improvement:** automate a coordinated companion-apps-then-rules rollout in
 CI, with a Firebase credential that can deploy rules and a post-deploy review
 smoke test. Do not simply put this stricter ruleset before the application deploy:
 the prior SPA lacks the stage-constrained query and does not guarantee the new
 feedback-entry timestamp invariant. A
 truly zero-window rollout needs an explicitly backward-compatible intermediate
-rules/app version; until then, follow the manual sequence above and keep step
-1→2 tight.
+rules/app version; until then, follow the maintenance sequence above.
 
 ### Rollback
 

@@ -68,7 +68,11 @@ Spool has THREE axes, and until this date the UI conflated the first two:
 **At runtime/rules, `reviewStage` ABSENT now fails client access closed.** Legacy
 absence historically meant `in_review` for ordinary posts, while legacy
 `source:'suggestion'` rows must backfill to `private`; the roster-aware
-`scripts/admin.mjs review-stage --apply` makes those meanings explicit before the strict app/rules rollout. See
+`scripts/admin.mjs review-stage --apply` makes those meanings explicit and also
+fills a missing canonical `updatedAt` from Firestore `updateTime` before the
+newest-first app/rules rollout. Deploy `firestore.indexes.json`, wait until the
+`posts(uid, updatedAt DESC)` index is READY, then follow the frozen
+feedback-worker → POM → Spool → rules → verification order. See
 `REVIEW_STAGE_ROLLOUT.md`; its `id-inventory` compatibility gate runs first.
 Never deploy the rules first, skip an incompatible legacy ID, or guess invalid values.
 
@@ -86,9 +90,12 @@ something the client did; pulling a post back to staging must not erase it.
   and members. `App.jsx` still partitions the operator lanes. The guarded legacy
   backfill is a required pre-merge production step, not part of code deployment.
 - **An edit invalidates an approval.** `handleSavePost` resets `approved → pending` when
-  content/title/image/platform changed, and reads approval + feedback from the LIVE post (never
+  platform/title/content/image/altText/metaDescription/effective publication slug changed, and reads approval + feedback from the LIVE post (never
   from the editor's stale formData). Both downstream gates (publish-to-site, push-to-Sender)
   admit anything marked `approved` — that reset is what keeps them meaningful.
+  Tags are internal and do not affect approval. Scheduling is workflow-only and
+  does not revoke approval, but it is part of the review-action revision so a
+  racing review click conflicts. Archived rows are non-actionable.
 - **Review state never crosses a tenant boundary**: editor save, bulk client-reassign,
   and client MERGE clear approval, feedback/history, send time, and legacy reviewer
   attribution, then re-stage atomically with the tenant move (a pure RENAME does not —

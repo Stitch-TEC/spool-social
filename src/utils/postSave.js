@@ -2,6 +2,7 @@ import { runTransaction } from 'firebase/firestore';
 import { APPROVAL_STATUS, REVIEW_STAGE, STATUS } from '../constants';
 import {
   approvedPayloadIdentity,
+  approvalSafeStoragePatch,
   postWasRewritten,
   reviewStateIdentity,
   suggestionPromotionDocument,
@@ -70,10 +71,11 @@ export async function applyReviewActionAtomically({
   if (!expected.clientId || !CLIENT_ID_RE.test(expected.clientId)) {
     throw reviewConflict('Thread has no valid client boundary');
   }
-  const note = String(feedback || '').trim().slice(0, 500);
-  if (action === REVIEW_ACTION.REQUEST_CHANGES && !note) {
-    const error = new Error('Feedback cannot be empty');
-    error.code = 'feedback_required';
+  const note = typeof feedback === 'string' ? feedback : '';
+  if (action === REVIEW_ACTION.REQUEST_CHANGES && (!note.trim() || note.length > 500)) {
+    const error = new Error('Feedback must contain text and be no more than 500 characters');
+    error.code = 'feedback_invalid';
+    error.status = 400;
     throw error;
   }
   const reviewer = actor === 'client' ? 'client' : 'you';
@@ -89,6 +91,9 @@ export async function applyReviewActionAtomically({
       || approvedPayloadIdentity(live) !== expected.payloadRevision
       || reviewStateIdentity(live) !== expected.reviewRevision
     ) throw reviewConflict();
+    if (live.status === STATUS.ARCHIVED) {
+      throw reviewConflict('Archived threads cannot take review actions');
+    }
 
     const updatedAt = nextSaveUpdatedAt(live);
     const patch = { updatedAt };
@@ -228,7 +233,12 @@ export async function saveExistingPostAtomically({
     const snapshot = await transaction.get(postRef);
     if (!snapshot.exists()) throw new Error('Thread no longer exists');
     const live = snapshot.data();
-    const patch = { ...postData };
+    // usePosts renders legacy media through canonical v2 references and derives
+    // legacy publication slugs. Do not persist those representation-only
+    // changes through the member rules path: rules stay strict for genuine
+    // payload edits, while an unrelated save cannot spuriously revoke/fail an
+    // existing approval.
+    const patch = approvalSafeStoragePatch(live, postData);
 
     // Review fields belong to the live client/reviewer path. Never write values
     // captured when the editor opened; feedback/history are omitted entirely.
@@ -362,6 +372,9 @@ export async function saveExistingPostWithImageAtomically({
       title: postData.title,
       imageUrl: prepared.submittedImageUrl,
       platform: postData.platform,
+      altText: postData.altText,
+      metaDescription: postData.metaDescription,
+      slug: postData.slug,
       imageDropped: prepared.imageDropped,
     },
     baselineStatus,

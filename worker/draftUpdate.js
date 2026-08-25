@@ -6,6 +6,7 @@ import {
   versionMediaMarkdownReferences,
   versionMediaReference,
 } from './media.js';
+import { canonicalReviewScheduledDate } from '../src/utils/reviewIdentity.js';
 
 function dataImageParts(value, fallbackMime = '') {
   const text = String(value || '').trim();
@@ -44,6 +45,57 @@ async function sha256(value) {
   return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
 }
 
+// The drafts API is a deliberate contract, not a dump of the Firestore
+// document. The same paths drive the list-query projection and GET/PATCH output
+// so future operator-only fields cannot accidentally expand responses or cross
+// the broker seam.
+export const DRAFT_PUBLIC_FIELD_PATHS = Object.freeze([
+  'uid', 'clientId', 'client', 'content', 'title', 'altText',
+  'metaDescription', 'slug', 'platform', 'status', 'approvalStatus',
+  'feedback', 'feedbackThread', 'reviewStage', 'imageUrl', 'tags',
+  'isTemplate', 'scheduledDate', 'createdAt', 'updatedAt', 'source',
+  'automationId', 'forClientId', 'sentForReviewAt', 'reviewedBy', 'reviewedAt',
+]);
+
+export function publicDraftFields(draft) {
+  const output = {};
+  if (Object.prototype.hasOwnProperty.call(draft || {}, 'id')) output.id = draft.id;
+  for (const field of DRAFT_PUBLIC_FIELD_PATHS) {
+    if (Object.prototype.hasOwnProperty.call(draft || {}, field)) output[field] = draft[field];
+  }
+  return output;
+}
+
+const PUBLICATION_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function draftPublicationTitle(draft) {
+  const firstLine = String(draft?.content || '').replace(/\r\n?/g, '\n').trim()
+    .split('\n')[0]
+    .replace(/^#+\s*/, '');
+  return String(draft?.title || firstLine).trim().slice(0, 200) || 'Untitled post';
+}
+
+export function draftPublicationSlug(draft) {
+  const explicit = String(draft?.slug || '').trim();
+  let value = explicit;
+  if (!value && ['blog', 'job'].includes(String(draft?.platform || ''))) {
+    const title = draftPublicationTitle(draft);
+    value = title.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '').slice(0, 80) || 'untitled-post';
+  }
+  if (value && (value.length > 80 || !PUBLICATION_SLUG_RE.test(value))) {
+    const error = new Error('Draft publication slug is malformed');
+    error.code = 'draft_publication_slug_invalid';
+    throw error;
+  }
+  return value;
+}
+
+export function publicationPathMatchesSlug(path, slug) {
+  const match = String(path || '').match(/(?:^|\/)([a-z0-9]+(?:-[a-z0-9]+)*)\.(?:md|mdx)$/);
+  return !!match && match[1] === String(slug || '');
+}
+
 export function draftPayloadIdentity(origin, draft, legacyOrigins = []) {
   const image = String(draft?.imageUrl || '');
   const normalizedImage = versionMediaReference(origin, image, legacyOrigins);
@@ -54,6 +106,11 @@ export function draftPayloadIdentity(origin, draft, legacyOrigins = []) {
     // normalizing arbitrary external media URLs.
     normalizedImage || image,
     String(draft?.platform || ''),
+    String(draft?.altText || ''),
+    String(draft?.metaDescription || ''),
+    // Long-form publication target. Missing legacy values and explicit empty
+    // strings intentionally hash alike; callers never invent a fallback.
+    draftPublicationSlug(draft),
   ]);
 }
 
@@ -67,6 +124,7 @@ export function draftReviewIdentity(draft) {
     Array.isArray(draft?.feedbackThread) ? draft.feedbackThread : null,
     String(draft?.reviewedBy || ''),
     String(draft?.reviewedAt || ''),
+    canonicalReviewScheduledDate(draft?.scheduledDate),
   ]);
 }
 
@@ -76,7 +134,7 @@ export const draftPayloadRevision = (origin, draft, legacyOrigins = []) =>
 export const draftReviewRevision = (draft) => sha256(draftReviewIdentity(draft));
 
 const REVIEW_EDITORIAL_FIELDS = Object.freeze([
-  'content', 'title', 'platform', 'altText', 'metaDescription', 'tags', 'scheduledDate',
+  'content', 'title', 'platform', 'altText', 'metaDescription', 'slug', 'tags', 'scheduledDate',
   'image', 'imageUrl',
 ]);
 
@@ -123,11 +181,19 @@ export async function assertDraftBaseline(origin, live, baseline, legacyOrigins 
 
 export async function versionDraftMedia(origin, draft, legacyOrigins = []) {
   if (!draft) return draft;
-  const { _updateTime: _discardedUpdateTime, ...publicDraft } = draft;
+  const publicDraft = publicDraftFields(draft);
   return {
     ...publicDraft,
-    content: versionMediaMarkdownReferences(origin, publicDraft.content, legacyOrigins),
-    imageUrl: versionMediaReference(origin, publicDraft.imageUrl, legacyOrigins),
+    // The broker validates these approval-bearing preview fields strictly. Old
+    // rows may omit optional fields, so normalize them here rather than asking
+    // a downstream caller to invent consent-bearing values.
+    content: versionMediaMarkdownReferences(origin, String(publicDraft.content || ''), legacyOrigins),
+    title: String(publicDraft.title || ''),
+    imageUrl: versionMediaReference(origin, String(publicDraft.imageUrl || ''), legacyOrigins),
+    platform: String(publicDraft.platform || ''),
+    altText: String(publicDraft.altText || ''),
+    metaDescription: String(publicDraft.metaDescription || ''),
+    slug: draftPublicationSlug(publicDraft),
     payloadRevision: await draftPayloadRevision(origin, draft, legacyOrigins),
     reviewRevision: await draftReviewRevision(draft),
   };
@@ -138,7 +204,10 @@ export function draftApprovedPayloadChanged(origin, live, next, legacyOrigins = 
       !== normalizeSpoolMediaContentIdentity(origin, next?.content, legacyOrigins)
     || String(live?.title || '') !== String(next?.title || '')
     || !sameSpoolMediaReference(origin, live?.imageUrl, next?.imageUrl, legacyOrigins)
-    || String(live?.platform || '') !== String(next?.platform || '');
+    || String(live?.platform || '') !== String(next?.platform || '')
+    || String(live?.altText || '') !== String(next?.altText || '')
+    || String(live?.metaDescription || '') !== String(next?.metaDescription || '')
+    || draftPublicationSlug(live) !== draftPublicationSlug(next);
 }
 
 export function nextDraftUpdatedAt(live, nowMs = Date.now()) {
@@ -162,6 +231,9 @@ export function buildDraftMutation(origin, live, intent, nowMs = Date.now(), leg
   // Review verbs have one centralized state machine. The caller's review
   // revision handles races; these guards reject an action that was invalid even
   // for the exact baseline it supplied.
+  if (intent.reviewAction && live.status === 'archived') {
+    const error = new Error('Archived drafts cannot take review actions'); error.code = 'review_conflict'; error.status = 409; throw error;
+  }
   if (intent.reviewAction === 'send' && live.reviewStage !== 'private') {
     const error = new Error('Draft is already in review'); error.code = 'review_conflict'; error.status = 409; throw error;
   }
@@ -223,7 +295,13 @@ export function buildDraftMutation(origin, live, intent, nowMs = Date.now(), leg
       patch.reviewedBy = intent.reviewedBy === 'client' ? 'client' : 'you';
       patch.reviewedAt = updatedAt;
     }
-    if (intent.reviewAction === 'request_changes' && intent.feedback) {
+    if (intent.reviewAction === 'request_changes') {
+      if (typeof intent.feedback !== 'string' || !intent.feedback.trim() || intent.feedback.length > 500) {
+        const err = new Error('Feedback must contain text and be no more than 500 characters');
+        err.code = 'feedback_invalid';
+        err.status = 400;
+        throw err;
+      }
       if (live.feedbackThread !== undefined && !Array.isArray(live.feedbackThread)) {
         const err = new Error('Feedback history is malformed');
         err.code = 'feedback_thread_invalid';

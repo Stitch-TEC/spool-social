@@ -8,6 +8,7 @@ import {
   draftReviewRevision,
   draftApprovedPayloadChanged,
   nextDraftUpdatedAt,
+  publicationPathMatchesSlug,
   sameLegacyImageBytes,
   versionDraftMedia,
 } from './draftUpdate.js';
@@ -19,6 +20,7 @@ describe('draft API media canonicalization', () => {
     const output = await versionDraftMedia(origin, {
       id: 'A'.repeat(20),
       _updateTime: 'server-only',
+      operatorSecret: 'must-not-cross-api',
       clientId: 'acme',
       imageUrl: '/media/v2/generated/o/a.png',
       content: '![inline](/media/v2/generated/o/b.png) prose /media/v2/ stays',
@@ -30,8 +32,14 @@ describe('draft API media canonicalization', () => {
       content: `![inline](${origin}/media/v2/generated/o/b.png) prose /media/v2/ stays`,
       payloadRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
       reviewRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
+      title: '',
+      platform: '',
+      altText: '',
+      metaDescription: '',
+      slug: '',
     }));
     expect(output).not.toHaveProperty('_updateTime');
+    expect(output).not.toHaveProperty('operatorSecret');
   });
 
   it('recognizes identical legacy data bytes as a storage migration', () => {
@@ -50,9 +58,40 @@ describe('draft API media canonicalization', () => {
       { content: 'prose /media/v2/a.png', imageUrl: 'https://cdn.example/media/v2/a.png' }
     )).toBe(true);
   });
+
+  it('keeps missing and empty optional approval fields digest-equivalent', async () => {
+    const legacy = { content: 'Copy', title: 'Title', imageUrl: '', platform: 'blog' };
+    const normalized = { ...legacy, altText: '', metaDescription: '', slug: '' };
+    await expect(draftPayloadRevision(origin, legacy)).resolves.toBe(await draftPayloadRevision(origin, normalized));
+    await expect(versionDraftMedia(origin, legacy)).resolves.toMatchObject({
+      title: 'Title', altText: '', metaDescription: '', imageUrl: '', slug: 'title',
+    });
+  });
+
+  it('derives a visible stable publication target for punctuation-only legacy titles', async () => {
+    await expect(versionDraftMedia(origin, {
+      platform: 'blog', title: '🔥🔥', content: '', imageUrl: '',
+    })).resolves.toMatchObject({ slug: 'untitled-post' });
+  });
+
+  it('binds a publish override to the approved slug basename', () => {
+    expect(publicationPathMatchesSlug('content/posts/approved-path.mdx', 'approved-path')).toBe(true);
+    expect(publicationPathMatchesSlug('content/posts/different-path.md', 'approved-path')).toBe(false);
+    expect(publicationPathMatchesSlug('../approved-path.html', 'approved-path')).toBe(false);
+  });
 });
 
 describe('draft API optimistic review preservation', () => {
+  it('matches browser Date/Timestamp-like schedules to the raw Firestore ISO revision', async () => {
+    const iso = '2026-09-01T12:00:00.123Z';
+    const base = { status: 'draft', approvalStatus: 'pending', reviewStage: 'in_review' };
+    const raw = await draftReviewRevision({ ...base, scheduledDate: iso });
+    await expect(draftReviewRevision({ ...base, scheduledDate: new Date(iso) })).resolves.toBe(raw);
+    await expect(draftReviewRevision({ ...base, scheduledDate: { toDate: () => new Date(iso) } })).resolves.toBe(raw);
+    expect(() => draftReviewRevision({ ...base, scheduledDate: 'not-a-date' }))
+      .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
+  });
+
   it('requires edits and review verbs to be separate baseline-bound requests', () => {
     for (const body of [
       { content: 'Unseen replacement', approvalStatus: 'approved' },
@@ -93,6 +132,14 @@ describe('draft API optimistic review preservation', () => {
       .rejects.toMatchObject({ code: 'review_conflict' });
     await expect(assertDraftBaseline(origin, { ...baseline, platform: 'linkedin' }, token))
       .rejects.toMatchObject({ code: 'review_conflict' });
+    for (const [field, value] of [
+      ['altText', 'New alt'],
+      ['metaDescription', 'New description'],
+      ['slug', 'new-publication-path'],
+    ]) {
+      await expect(assertDraftBaseline(origin, { ...baseline, [field]: value }, token))
+        .rejects.toMatchObject({ code: 'review_conflict', status: 409 });
+    }
     await expect(assertDraftBaseline(origin, { ...baseline, approvalStatus: 'approved' }, token, [], { review: true }))
       .rejects.toMatchObject({ code: 'review_conflict' });
   });
@@ -188,6 +235,39 @@ describe('draft API optimistic review preservation', () => {
     expect(mutation.patch).toMatchObject({ platform: 'linkedin', approvalStatus: 'pending' });
   });
 
+  it.each([
+    ['altText', 'New alt text'],
+    ['metaDescription', 'New SEO description'],
+    ['slug', 'new-publication-path'],
+  ])('resets approval when an ordinary worker edit changes %s', (field, value) => {
+    const live = {
+      content: 'Same copy', title: 'Title', imageUrl: '', platform: 'blog',
+      altText: '', metaDescription: '', slug: 'old-path',
+      approvalStatus: 'approved', createdAt: '2026-08-24T21:00:00.000Z',
+    };
+    const mutation = buildDraftMutation(origin, live, {
+      fields: { [field]: value },
+      hasStatus: false,
+      hasApproval: false,
+      hasReviewStage: false,
+    });
+    expect(mutation.payloadChanged).toBe(true);
+    expect(mutation.patch).toMatchObject({ [field]: value, approvalStatus: 'pending' });
+  });
+
+  it('binds schedule only to the review revision and leaves internal tags outside both revisions', async () => {
+    const live = {
+      content: 'Copy', title: '', imageUrl: '', platform: 'gmb',
+      scheduledDate: '', tags: ['internal-a'],
+    };
+    expect(await draftPayloadRevision(origin, { ...live, scheduledDate: '2026-09-01T12:00:00.000Z' }))
+      .toBe(await draftPayloadRevision(origin, live));
+    expect(await draftReviewRevision({ ...live, tags: ['internal-b'] }))
+      .toBe(await draftReviewRevision(live));
+    expect(await draftReviewRevision({ ...live, scheduledDate: '2026-09-01T12:00:00.000Z' }))
+      .not.toBe(await draftReviewRevision(live));
+  });
+
   it('preserves approval when identical legacy bytes are rehosted', () => {
     const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
     const live = {
@@ -207,7 +287,7 @@ describe('draft API optimistic review preservation', () => {
 
   it('rebuilds feedback entry timestamps and appends instead of replacing history', () => {
     const live = {
-      content: 'Copy', title: '', imageUrl: '', status: 'archived',
+      content: 'Copy', title: '', imageUrl: '', status: 'posted',
       approvalStatus: 'pending',
       reviewStage: 'in_review',
       feedbackThread: [{ text: 'Earlier', by: 'client', at: '2026-08-24T18:00:00.000Z' }],
@@ -232,8 +312,28 @@ describe('draft API optimistic review preservation', () => {
     expect(mutation.patch).toMatchObject({
       reviewedBy: 'client', reviewedAt: mutation.patch.updatedAt,
     });
-    // Coupled review status never rewinds an archived post to scheduled.
+    // Coupled review status never rewinds an already-posted post to scheduled.
     expect(mutation.patch).not.toHaveProperty('status');
+  });
+
+  it('stores accepted feedback exactly and rejects archived approvals', () => {
+    const exact = '  Keep this punctuation!  ';
+    const live = {
+      content: 'Copy', status: 'draft', approvalStatus: 'pending', reviewStage: 'in_review',
+      feedbackThread: [], createdAt: '2026-08-24T17:00:00.000Z',
+    };
+    const mutation = buildDraftMutation(origin, live, {
+      fields: {}, hasStatus: false, hasApproval: true, hasReviewStage: false,
+      approvalStatus: 'changes_requested', feedback: exact, reviewedBy: 'client',
+      reviewAction: 'request_changes',
+    });
+    expect(mutation.patch.feedback).toBe(exact);
+    expect(mutation.append.entry.text).toBe(exact);
+
+    expect(() => buildDraftMutation(origin, { ...live, status: 'archived' }, {
+      fields: {}, hasStatus: false, hasApproval: true, hasReviewStage: false,
+      approvalStatus: 'approved', reviewAction: 'approve',
+    })).toThrow(expect.objectContaining({ code: 'review_conflict', status: 409 }));
   });
 
   it('refuses to bypass the 200-entry review-history ceiling', () => {

@@ -4,6 +4,8 @@ import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle';
 import { DATE_FORMATTERS } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
+import { publicationSlugOf } from '../utils/review';
+import { reviewFeedbackState } from '../utils/reviewFeedback';
 
 const fmtDate = (iso) => {
   try { return DATE_FORMATTERS.full.format(new Date(iso)); } catch { return ''; }
@@ -31,14 +33,17 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
     : (post.feedback ? [{ text: post.feedback, by: 'client' }] : []);
 
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
+  const isArchived = post.status === 'archived';
+  const publicationSlug = publicationSlugOf(post);
+  const composedFeedback = reviewFeedbackState(activeTags, feedback);
 
   const toggleTag = (tag) => {
     setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   };
 
   const handleSubmit = () => {
-    const finalFeedback = `${activeTags.join(', ')}${activeTags.length > 0 && feedback ? ' - ' : ''}${feedback}`;
-    onRequestChanges(finalFeedback || "Changes requested");
+    if (!composedFeedback.valid) return;
+    onRequestChanges(composedFeedback.text);
   };
   
   return (
@@ -55,7 +60,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
               <h3 className="text-xl font-bold text-slate-800">Review Thread</h3>
               {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
               <p className="text-sm text-slate-500">
-                Scheduled: {post.scheduledDate ? DATE_FORMATTERS.full.format(post.scheduledDate instanceof Date ? post.scheduledDate : new Date(post.scheduledDate)) : 'No date set'}
+                Schedule (workflow only): {post.scheduledDate ? DATE_FORMATTERS.full.format(post.scheduledDate instanceof Date ? post.scheduledDate : new Date(post.scheduledDate)) : 'No date set'}
               </p>
             </div>
             <button onClick={onClose} title="Close Review" aria-label="Close Review" className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
@@ -70,9 +75,36 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                      {post.content}
                    </div>
                  </div>
+                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                     <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Title</dt>
+                     <dd className="mt-1 text-slate-700 break-words">{post.title || 'Not set'}</dd>
+                   </div>
+                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                     <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Channel</dt>
+                     <dd className="mt-1 text-slate-700 break-words">{post.platform || 'Not set'}</dd>
+                   </div>
+                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                     <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Image description</dt>
+                     <dd className="mt-1 text-slate-700 break-words">{post.altText || 'Not set'}</dd>
+                   </div>
+                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                     <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">SEO description</dt>
+                     <dd className="mt-1 text-slate-700 break-words">{post.metaDescription || 'Not set'}</dd>
+                   </div>
+                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 sm:col-span-2">
+                     <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Publication path</dt>
+                     <dd className="mt-1 text-slate-700 break-all">
+                       {['blog', 'job'].includes(post.platform) ? `/${publicationSlug || '(not set)'}` : 'Not used for this channel'}
+                     </dd>
+                   </div>
+                 </dl>
                  {post.tags && post.tags.length > 0 && (
-                   <div className="flex flex-wrap gap-2">
-                     {post.tags.map(t => <span key={t} className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full font-medium">{t}</span>)}
+                   <div>
+                     <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">Internal tags — not part of approval</p>
+                     <div className="flex flex-wrap gap-2">
+                       {post.tags.map(t => <span key={t} className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full font-medium">{t}</span>)}
+                     </div>
                    </div>
                  )}
                  {feedbackHistory.length > 0 && (
@@ -111,30 +143,48 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                     ))}
                  </div>
                  <div className="relative">
+                    <label htmlFor="review-feedback" className="sr-only">Specific feedback</label>
                     <textarea
-                        className="w-full h-32 p-4 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"
+                        id="review-feedback"
+                        className={`w-full h-32 p-4 border rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none ${composedFeedback.overBy ? 'border-rose-500' : 'border-slate-200'}`}
                         placeholder="Add specific notes..."
-                        maxLength={500}
                         value={feedback}
                         onChange={(e) => setFeedback(e.target.value)}
+                        aria-invalid={!composedFeedback.valid}
+                        aria-describedby="review-feedback-status"
                     />
                     <div className="absolute bottom-3 right-3">
-                        <CharCountCircle current={feedback.length} max={500} />
+                        <CharCountCircle current={composedFeedback.length} max={500} />
                     </div>
                  </div>
+                 <p
+                   id="review-feedback-status"
+                   role={composedFeedback.overBy ? 'alert' : 'status'}
+                   aria-live="polite"
+                   className={`text-xs ${composedFeedback.overBy ? 'font-semibold text-rose-700' : 'text-slate-500'}`}
+                 >
+                   {composedFeedback.overBy
+                     ? `${composedFeedback.overBy} character${composedFeedback.overBy === 1 ? '' : 's'} over the 500-character limit.`
+                     : !composedFeedback.hasText
+                       ? 'Enter feedback or select a reason.'
+                       : `${500 - composedFeedback.length} characters remaining.`}
+                 </p>
                </div>
              )}
           </div>
           <div className="p-6 border-t border-slate-100 bg-slate-50/50">
+            {isArchived && (
+              <p className="mb-3 text-sm text-slate-600 text-center">This thread is archived and can’t be approved or sent back for changes.</p>
+            )}
             {mode === 'view' ? (
               <div className="flex gap-4">
-                <button onClick={() => setMode('reject')} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center gap-2"><ThumbsDown size={18}/> Request Changes</button>
-                <button onClick={onApprove} className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20"><CheckCircle size={18}/> Approve Thread</button>
+                <button disabled={isArchived} onClick={() => setMode('reject')} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"><ThumbsDown size={18}/> Request Changes</button>
+                <button disabled={isArchived} onClick={onApprove} className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle size={18}/> Approve Thread</button>
               </div>
             ) : (
               <div className="flex gap-4">
                 <button onClick={() => setMode('view')} className="px-6 py-3 text-slate-500 font-medium hover:text-slate-700 transition-colors">Cancel</button>
-                <button onClick={handleSubmit} className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-600/20">Submit Feedback</button>
+                <button disabled={!composedFeedback.valid} onClick={handleSubmit} className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-600/20 disabled:opacity-50 disabled:cursor-not-allowed">Submit Feedback</button>
               </div>
             )}
           </div>

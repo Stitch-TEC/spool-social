@@ -15,7 +15,7 @@ import {
   STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT,
   REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, DENSITY, DENSITY_VALUES
 } from './constants';
-import { reviewStageOf, isStaged, reviewStateOf, hasFeedback } from './utils/review';
+import { reviewStageOf, isStaged, reviewStateOf, hasFeedback, publicationSlugOf } from './utils/review';
 import { needsImage, hasBlockers, isOverdue, readinessOf, READINESS_LABELS } from './utils/readiness';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
@@ -389,7 +389,13 @@ const App = () => {
         title,
         altText: (formData.altText || "").trim().slice(0, 300),
         metaDescription: (formData.metaDescription || "").trim().slice(0, 200),
-        slug: (formData.title || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
+        // Preserve an explicit publication path (including one set through POM
+        // or the drafts API). Keep a legacy existing row's absent slug absent:
+        // review/publish derive its target without turning an unrelated edit
+        // into a persisted payload change. New long-form rows stamp the same
+        // deterministic fallback shown in review and used by the publisher.
+        slug: String(formData.slug || '').trim()
+          || (existingPost ? '' : publicationSlugOf(formData)),
         platform: platformId,
         status,
         tags,
@@ -931,9 +937,12 @@ const App = () => {
   const handleRequestChanges = useCallback(async (postOrId, feedback) => {
     const baseline = typeof postOrId === 'object' && postOrId ? postOrId : null;
     const postId = baseline?.id || postOrId;
-    // 🔒 SECURITY: Input Validation & Sanitization
-    const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
-    if (!sanitizedFeedback) return showToast("Feedback cannot be empty", "error");
+    // Validate without rewriting the reviewer's words. The Worker and broker
+    // use the same exact-text contract, so whitespace and punctuation that pass
+    // the bounds check arrive in history byte-for-byte as submitted.
+    const exactFeedback = typeof feedback === 'string' ? feedback : '';
+    if (!exactFeedback.trim()) return showToast("Feedback cannot be empty", "error");
+    if (exactFeedback.length > 500) return showToast("Feedback must be 500 characters or fewer", "error");
 
     // 🛡️ DEFENSE-IN-DEPTH: Verify postId belongs to the guest's view
     if (isReadOnly && !postsRef.current.some(p => p.id === postId)) {
@@ -951,7 +960,7 @@ const App = () => {
         postRef: doc(db, 'posts', postId),
         baseline: current,
         action: REVIEW_ACTION.REQUEST_CHANGES,
-        feedback: sanitizedFeedback,
+        feedback: exactFeedback,
         actor: (isReadOnly || isClientMember) ? 'client' : 'you',
       });
       showToast("Feedback sent!");
@@ -1431,7 +1440,7 @@ const App = () => {
     const items = [];
     selectedIds.forEach((id) => {
       const post = byId.get(id);
-      if (!post || post.source === 'suggestion' || post.isTemplate || !isStaged(post)) return;
+      if (!post || post.status === STATUS.ARCHIVED || post.source === 'suggestion' || post.isTemplate || !isStaged(post)) return;
       if (hasBlockers(post)) { blocked++; return; }
       items.push({ postRef: doc(db, 'posts', post.id), baseline: post });
     });
@@ -1461,7 +1470,7 @@ const App = () => {
     if (isReadOnly || !user) return;
     const byId = new Map(postsRef.current.map(post => [post.id, post]));
     const items = [...selectedIds].map(id => byId.get(id)).filter(post =>
-      post && post.source !== 'suggestion' && !post.isTemplate && !isStaged(post))
+      post && post.status !== STATUS.ARCHIVED && post.source !== 'suggestion' && !post.isTemplate && !isStaged(post))
       .map(post => ({ postRef: doc(db, 'posts', post.id), baseline: post }));
     if (!items.length) return showToast('Nothing to move — these are already in staging', 'error');
     try {
