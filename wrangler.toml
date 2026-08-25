@@ -20,6 +20,10 @@ routes = [
 ]
 # Keep the workers.dev URL alive alongside the custom domain (don't break links).
 workers_dev = true
+# Retained Worker versions must not remain publicly reachable on versioned or
+# aliased preview hostnames. The production workers.dev alias above stays live;
+# only per-version preview URLs are disabled.
+preview_urls = false
 
 # Cron triggers — scheduled() branches on event.cron (worker/index.js):
 #   "0 4 * * *"     nightly (04:00 UTC) sweep of orphaned R2 images (runGC)
