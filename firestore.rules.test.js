@@ -95,6 +95,28 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     }));
   });
 
+  it('allows approval after resubmit when reviewedBy already has the client value', async () => {
+    const priorReviewAt = '2026-08-24T18:00:00.000Z';
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'posts', POST_ID), {
+        // The operator resubmit transition resets the result but deliberately
+        // preserves the attribution from the preceding client review round.
+        approvalStatus: 'pending',
+        reviewedBy: 'client',
+        reviewedAt: priorReviewAt,
+        sentForReviewAt: '2026-08-24T19:00:00.000Z',
+      });
+    });
+
+    await assertSucceeds(updateDoc(postRef(), {
+      status: 'scheduled',
+      approvalStatus: 'approved',
+      reviewedBy: 'client',
+      reviewedAt: NOW,
+      updatedAt: NOW,
+    }));
+  });
+
   it('allows one bounded, client-attributed feedback append', async () => {
     await assertSucceeds(updateDoc(postRef(), {
       approvalStatus: 'changes_requested',

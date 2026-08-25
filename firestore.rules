@@ -184,7 +184,10 @@ service cloud.firestore {
       let requesting = request.resource.data.approvalStatus == 'changes_requested';
       return changed.hasAny(['approvalStatus', 'feedbackThread'])
         && changed.hasAll(['updatedAt'])
-        && changed.hasAll(['reviewedBy', 'reviewedAt'])
+        // reviewedBy may already equal the actor after an earlier review round;
+        // affectedKeys excludes same-value writes. The value check below still
+        // requires missing/different attribution to be written correctly.
+        && changed.hasAll(['reviewedAt'])
         && isIsoUtc(request.resource.data.updatedAt)
         && request.resource.data.reviewedBy == actor
         && request.resource.data.reviewedAt == request.resource.data.updatedAt
