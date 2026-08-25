@@ -62,7 +62,7 @@ cache fill is observable through `CF-Cache-Status`. See
 
 The pre-release audit proved all of the following for Spool:
 
-- no `[cache]` / `cache.enabled` config (`cache_options` is null in the live Script API);
+- no `[cache]` / `cache.enabled` config (`cache_options` is absent/unset in the live Script API);
 - no Cache API or cache-config calls anywhere in Worker history;
 - the legacy media route reads R2 directly and returns the body without a `fetch()` subrequest;
 - repeated legacy responses on both supported hosts carried neither
@@ -133,15 +133,16 @@ are recorded. None of these production operations were performed by the code PR.
 
 Disabling `workers_dev` reduces the future public-host surface, but it is a live
 routing change and is intentionally **not** bundled into this source fix. After
-the R2 audit, both-host cache purge, stored-reference migration verification, and
-caller inventory are complete, request separate approval to change
+the R2 audit, both-host edge-cache applicability record (plus any purge that the
+record requires), stored-reference migration verification, and caller inventory
+are complete, request separate approval to change
 `workers_dev = false` and deploy it. Verify the workers.dev health/media routes
 then stop resolving while the custom domain remains healthy.
 
 Keep `https://spool.kist.workers.dev` in the legacy reference allowlist until all
 stored absolute references have been inventoried/migrated. Disabling the route
-does not erase Cloudflare/browser copies already cached under that hostname and
-does not remove the required purge or residual-browser-cache steps.
+does not erase browser copies already cached under that hostname. If edge caching
+is ever evidenced, route shutdown also does not replace the applicable purge.
 
 ## Non-destructive R2 raster audit
 
@@ -178,7 +179,7 @@ If unsupported or mismatched objects are found:
 
 ## Residual browser cache
 
-A Cloudflare purge does not clear a browser's already-fresh immutable entry on
+An edge purge, when applicable, does not clear a browser's already-fresh immutable entry on
 either active hostname.
 The SPA's runtime v2 rewrite avoids that entry for normal Spool use, but a direct
 bookmark, an old email, or a third-party embed of `/media/<key>` can continue to

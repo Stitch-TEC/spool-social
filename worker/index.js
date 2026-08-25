@@ -2439,11 +2439,12 @@ export default {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return json({ error: 'Method not allowed' }, 405, cors);
       }
-      // v2 is a cache-key break. Old /media/<key> responses were immutable for
-      // one year, so changing origin logic cannot revoke browser/CDN copies.
-      // Cache misses on the old route redirect without caching; the rollout
-      // runbook separately requires a Cloudflare purge and describes residual
-      // browser caches. New app reads rewrite stored legacy refs to this v2 URL.
+      // v2 is a cache-key break. Old /media/<key> responses were browser-immutable
+      // for one year, so changing origin logic cannot revoke an already-fresh
+      // browser copy. Cache misses on the old route redirect without caching; the
+      // rollout runbook proves edge-cache applicability (zero-cache today, purge
+      // if that ever changes) and records the browser residual. New app reads
+      // rewrite stored legacy refs to this v2 URL.
       const v2Prefix = '/media/v2/';
       const isV2 = url.pathname === '/media/v2' || url.pathname.startsWith(v2Prefix);
       const encodedKey = url.pathname === '/media/v2'
