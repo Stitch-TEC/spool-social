@@ -14,7 +14,8 @@
 // loop is capped per tick (MAX_GEN_PER_TICK).
 
 import { generateText } from './gemini.js';
-import { resolveDraftImage, storeImage } from './media.js';
+import { MAX_IMAGE_BYTES, resolveDraftImage, storeImage } from './media.js';
+import { readBytesBounded } from './httpBody.js';
 import { checkRateLimit } from './ratelimit.js';
 import { buildTextContext, buildImagePrompt, contextTierForPlatform, PLATFORM_META } from '../src/generation/prompts.js';
 import { createPost, getClientSettings, listAutomations, updateAutomation } from './firestore.js';
@@ -57,7 +58,7 @@ function isPublicHttpUrl(u) {
 // content-type allowlist (no svg), and the upload route's 5MB cap. Best-effort by design: ANY
 // check failure returns '' (a missing hero image must never fail the run — same posture as the
 // AI-image path's text salvage).
-async function rehostPageImage(env, origin, imgUrl, clientId) {
+export async function rehostPageImage(env, origin, imgUrl, clientId) {
   try {
     let target = new URL(String(imgUrl));
     if (!isPublicHttpUrl(target)) return '';
@@ -81,8 +82,8 @@ async function rehostPageImage(env, origin, imgUrl, clientId) {
     if (!res.ok) return '';
     const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!REHOST_MIMES.includes(mime)) return '';
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (!bytes.length || bytes.length > 5_000_000) return '';
+    const bytes = await readBytesBounded(res.body, res.headers, MAX_IMAGE_BYTES);
+    if (!bytes.length) return '';
     return (await storeImage(env, origin, bytes, mime, 'internal', clientId)).url;
   } catch (err) {
     console.error('Automation page-image rehost failed:', err?.message || err);
@@ -278,8 +279,8 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
       // 'suggest' mode was already operator-only via the empty clientId; 'auto' mode used
       // to publish an unreviewed AI draft to the client the moment the cron fired. Both
       // now wait for the operator's explicit "Send for review" (see src/utils/review.js).
-      // ADDITIVE + back-compatible: absent reviewStage still reads as in_review, so every
-      // pre-existing draft is untouched.
+      // New writes are explicit. Legacy missing-stage rows are handled separately
+      // by the guarded review-stage backfill before strict rules deploy.
       reviewStage: 'private',
       feedback: '',
       imageUrl,

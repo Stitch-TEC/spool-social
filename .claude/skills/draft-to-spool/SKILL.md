@@ -23,7 +23,8 @@ Headers: `Authorization: Bearer $SPOOL_API_KEY`, `Content-Type: application/json
 | field | required | notes |
 |---|---|---|
 | `client` | yes | client / workspace name (existing or new) |
-| `platform` | yes | `gmb` · `linkedin` · `twitter` · `instagram` · `blog` · `job` |
+| `clientId` | – | canonical immutable client slug when known; prefer it over deriving identity from the display name |
+| `platform` | yes | `gmb` · `facebook` · `linkedin` · `twitter` · `instagram` · `blog` · `job` |
 | `content` | yes | post body; **Markdown** for `blog` / `job` |
 | `title` | – | long-form only (`blog` / `job`) |
 | `metaDescription` | – | SEO meta, long-form only |
@@ -31,8 +32,11 @@ Headers: `Authorization: Bearer $SPOOL_API_KEY`, `Content-Type: application/json
 | `tags` | – | array of strings, max 10 |
 | `scheduledDate` | – | ISO 8601 string |
 | `image` | – | one of `{"prompt":"…"}` (generate) · `{"url":"…"}` (reference) · `{"base64":"data:image/png;base64,…"}` (upload) |
+| `reviewStage` | – | omit for safe `private` staging; use `in_review` only when the user explicitly asks to send immediately |
 
-Returns `201 → {"id","status":"draft","reviewUrl"}`.
+Returns `201 → {"id","status":"draft"}`. Draft creation does not mint or
+return a review URL. It lands in operator-only `reviewStage:"private"` staging;
+the operator deliberately sends it for review and manages tokenized links in Spool.
 
 ## How to run it
 1. **Find the source.** It may be the user's text, a local file, a Google Drive doc, a
@@ -49,20 +53,43 @@ Returns `201 → {"id","status":"draft","reviewUrl"}`.
      -H "Authorization: Bearer $SPOOL_API_KEY" -H "Content-Type: application/json" \
      -d '{"client":"Acme","platform":"linkedin","content":"…","tags":["nde"]}'
    ```
-5. **Report** each draft's `reviewUrl` back to the user.
+5. **Report** each created draft ID and that it is safely staged. Do not invent or
+   derive a review URL.
 
 ## Manage existing drafts (not just create)
-- `GET /api/drafts` (filters `?client=` `?platform=` `?status=`) — list drafts with all fields incl. schedule.
-- `GET /api/drafts/{id}` — fetch one.
-- `PATCH /api/drafts/{id}` — change `content`/`title`/`metaDescription`/`altText`/`tags`/`scheduledDate`/`status`, or set an image (`image:{prompt|url|base64}` or `imageUrl`). Only the fields you send change.
+- `GET /api/drafts` (filters `?clientId=` `?client=` `?platform=` `?status=`
+  `?reviewStage=`) — cursor-paginated list. If `truncated:true`, repeat with the
+  returned `nextCursor` and identical filters. `private` is operator staging;
+  client-facing requests use exact `reviewStage=in_review`.
+- `GET /api/drafts/{id}` — fetch one, including `clientId`, `payloadRevision`,
+  and `reviewRevision`.
+- `PATCH /api/drafts/{id}` — change `content`/`title`/`platform`/
+  `metaDescription`/`altText`/`tags`/`scheduledDate`/`status`, or set an image
+  (`image:{prompt|url|base64}` or `imageUrl`). Only the fields you send change.
 - `DELETE /api/drafts/{id}` — delete.
 - `GET /api/media` — list reusable images; reuse one via `PATCH imageUrl` instead of regenerating (saves cost).
 
-So *"find the right image and put it on the Acme blog draft"* = `GET /api/drafts?client=Acme&platform=blog` → `PATCH /api/drafts/{id}` with the image.
+Before every PATCH, GET the draft and echo its exact `clientId` and
+`payloadRevision` as `baseClientId` and `basePayloadRevision`. Keep editorial
+changes separate from review actions: save content/title/platform/image/etc.,
+then refetch the new revisions before a second PATCH that sends, holds, approves,
+requests changes, or resubmits. Review-action PATCHes also echo
+`baseReviewRevision`. This binds the action to the tenant, payload, and review
+state that was actually seen.
+
+So *"find the right image and put it on the Acme blog draft"* = list to find the
+ID → `GET /api/drafts/{id}` → `PATCH /api/drafts/{id}` with the image plus that
+GET's `baseClientId`/`basePayloadRevision`.
 
 ## Errors
 - `401` — missing/blank key. `403` — wrong key type (must be the internal key).
 - `400` — missing `client`/`content` or unknown `platform`.
+- `409` — the tenant, approved payload (including platform), or review state
+  changed. Refetch. Re-evaluate review intent against the new draft rather than
+  blindly replaying an approval/send; retry an editorial request only against
+  the refreshed revisions.
+- `428` — required revision baselines are missing. GET the draft and rebuild the
+  PATCH with its latest revision fields.
 - `429` — rate limited; slow down and retry.
 - `403` + "error 1010" — Cloudflare blocked the User-Agent. curl is fine; with raw HTTP libraries set a normal `User-Agent` (e.g. `spool-client/1.0`).
 

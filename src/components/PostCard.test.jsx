@@ -34,6 +34,13 @@ describe('PostCard', () => {
     expect(screen.queryByLabelText('Set post status')).toBeNull();
   });
 
+  it('passes the exact rendered post as the guest approval baseline', () => {
+    const onStatusChange = vi.fn();
+    render(<PostCard post={basePost} onEdit={() => {}} onStatusChange={onStatusChange} isReadOnly />);
+    fireEvent.click(screen.getByText('Approve'));
+    expect(onStatusChange).toHaveBeenCalledWith('p1', 'scheduled', basePost);
+  });
+
   it('renders a template card with a badge and "Use as draft" instead of Mark Done', () => {
     const onUseTemplate = vi.fn();
     const tmpl = { ...basePost, isTemplate: true };
@@ -54,13 +61,30 @@ describe('PostCard', () => {
     expect(onStatusChange).toHaveBeenCalledWith('p1', 'scheduled');
   });
 
+  it('limits member workflow controls to rule-permitted statuses', () => {
+    render(
+      <PostCard
+        post={basePost}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onDuplicate={() => {}}
+        onStatusChange={() => {}}
+        statusOptions={['draft', 'scheduled']}
+      />
+    );
+    const values = [...screen.getByLabelText('Set post status').options].map(option => option.value);
+    expect(values).toEqual(['draft', 'scheduled']);
+    expect(screen.queryByLabelText('Archive Thread')).toBeNull();
+    expect(screen.queryByLabelText('Blast: Clone to All Clients')).toBeNull();
+  });
+
   it('offers "Back for review" (replacing the status selector) when changes are requested', () => {
     const onResubmit = vi.fn();
     const post = { ...basePost, approvalStatus: 'changes_requested', feedback: 'Tighten the CTA' };
     render(<PostCard post={post} onEdit={() => {}} onStatusChange={() => {}} onResubmit={onResubmit} />);
     expect(screen.queryByLabelText('Set post status')).toBeNull();
     fireEvent.click(screen.getByText('Back for review'));
-    expect(onResubmit).toHaveBeenCalledWith('p1');
+    expect(onResubmit).toHaveBeenCalledWith(post);
   });
 
   it('badges an automation-sourced draft as "Auto" only when provenance is shown (operators)', () => {

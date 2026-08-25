@@ -99,8 +99,13 @@ MAX_GEN_PER_TICK = "10"
 AUTO_MAX_PER_CLIENT = "5"
 AUTO_MAX_TOTAL = "50"
 # Absolute origin the cron runner uses to build /media image URLs (no request in
-# a cron context). Must be the public site origin, no trailing slash.
+# a cron context) and every HTTP route uses for emitted/persisted media URLs.
+# Request Host is never trusted as a media authority. Must be HTTPS, with no
+# path. No trailing slash.
 PUBLIC_ORIGIN = "https://spool.stitchtec.dev"
+# Explicit historical origins whose stored /media references may be migrated
+# to PUBLIC_ORIGIN. This is an input-only allowlist; new URLs never use it.
+LEGACY_MEDIA_ORIGINS = "https://spool.kist.workers.dev"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
 #   GEMINI_API_KEY            — your Google AI Studio / Gemini API key

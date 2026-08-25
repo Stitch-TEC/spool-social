@@ -157,6 +157,7 @@ const PostGrid = memo(({
   onDuplicate,
   onDelete,
   onStatusChange,
+  statusOptions,
   onArchive,
   onRestore,
   onCreate,
@@ -203,6 +204,7 @@ const PostGrid = memo(({
       onEdit,
       onDelete,
       onStatusChange,
+      statusOptions,
       onArchive,
       onRestore,
       onUseTemplate,
@@ -233,7 +235,7 @@ const PostGrid = memo(({
     );
   }, [
     isList, mode, clientMap, isReadOnly, onEdit, onCloneToAll, onDuplicate, onDelete,
-    onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview,
+    onStatusChange, statusOptions, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview,
     onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender,
     onPublishToSite, showProvenance, selectable, selectedIds, onToggleSelect,
   ]);

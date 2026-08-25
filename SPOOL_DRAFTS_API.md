@@ -5,11 +5,13 @@ Zapier). Drop this file in a Claude project and say e.g. *"draft these into Spoo
 
 > **⚠️ Changed 2026-08-18 — drafts now land in STAGING, not on the client's review
 > link.** A draft created here arrives as `draft / pending / reviewStage:"private"`:
-> it is in your dashboard (and in POM's Content card) immediately, but the client
+> it is in your dashboard (and in the **operator-only** POM Content card) immediately, but the client
 > cannot see it until you press **Send for review** — or until a caller asks for it
 > explicitly with `"reviewStage": "in_review"`. Previously every API-created draft
 > was visible to the client on their live review link the instant it was written.
-> Pre-existing drafts are unaffected: a missing `reviewStage` still means *in review*.
+> Pre-existing drafts retain that historical meaning only after the guarded
+> `review-stage` backfill. Once strict rules ship, a missing stage fails closed;
+> follow `REVIEW_STAGE_ROLLOUT.md` before merging/deploying this change.
 
 - **Base URL:** `https://spool.stitchtec.dev`
 - **Auth:** `Authorization: Bearer <INTERNAL_API_KEY>` — **server-side only**, never in browser/client code.
@@ -27,9 +29,11 @@ Zapier). Drop this file in a Claude project and say e.g. *"draft these into Spoo
 | `tags` | – | array of strings (max 10) |
 | `scheduledDate` | – | ISO 8601 string |
 | `image` | – | one of `{ "prompt": "..." }` (generate) · `{ "url": "..." }` (reference) · `{ "base64": "data:image/png;base64,..." }` (upload) |
-| `reviewStage` | – | `private` (default — lands in staging) or `in_review` (goes straight onto the client's review link) |
+| `reviewStage` | – | `private` (default — operator staging only) or `in_review` (goes straight onto the client's review link). Client-facing POM/API consumers must request exact `in_review`; only the operator POM surface may request/show `private`. |
 
-**Returns** `201` → `{ "id": "...", "status": "draft", "reviewUrl": "https://spool.stitchtec.dev/?uid=...&client=..." }`
+**Returns** `201` → `{ "id": "...", "status": "draft" }`. Draft creation does
+not create or return a review URL. Review access is deliberate: the operator
+uses Share Manager (the tokenized `/api/share` flow) when the content is ready.
 
 ### Examples
 
@@ -60,30 +64,59 @@ to have Spool generate one, or `image.url` to reference a hosted image.
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/drafts` | List drafts. Filters: `?clientId=` (canonical slug — preferred; when present the name filter is ignored) `?client=` (display name, legacy) `?platform=` `?status=` `?reviewStage=` (`private` = still on your desk, `in_review` = with the client). `?limit=` caps the page (default **300**, max 1000). Returns `{drafts:[…],count,total,truncated}` — check `truncated` before treating a page as the whole set. |
-| `GET /api/drafts/{id}` | Fetch one draft. |
-| `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), `reviewStage` (`private`/`in_review`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Only the fields you send change. Setting `reviewStage:"in_review"` **is** the send: it stamps `sentForReviewAt` and re-arms an undecided draft to `pending` (an already-approved draft keeps its approval). |
+| `GET /api/drafts` | Cursor-paginated draft list. Filters: `?clientId=` (canonical slug — preferred; when present the name filter is ignored) `?client=` (display name, legacy) `?platform=` `?status=` `?reviewStage=`. `private` is operator-only staging; every client-facing POM/API request must use exact `reviewStage=in_review`. `?limit=` caps rows (default **300**, max 1000); an internal response-byte ceiling may end a page earlier. Returns `{drafts,count,total,truncated,nextCursor}`: `total` is the exact matching count across all pages, `count` is this page, and `truncated:true` means pass the opaque `nextCursor` with the **same filters** to continue. Every row includes guarded-PATCH revisions. |
+| `GET /api/drafts/{id}` | Fetch one draft, including its `payloadRevision` and `reviewRevision`. |
+| `PATCH /api/drafts/{id}` | Update any of `content`, `title`, `platform`, `metaDescription`, `altText`, `tags`, `scheduledDate`, `status` (`draft`/`scheduled`/`posted`/`archived`), `reviewStage` (`private`/`in_review`), and `image` (`{prompt\|url\|base64}`) or `imageUrl`. Every PATCH must echo the latest `baseClientId` + `basePayloadRevision`; review actions (`reviewStage` or `approvalStatus`) must also echo `baseReviewRevision`. Only the fields you send change. Setting `reviewStage:"in_review"` **is** the send: it stamps `sentForReviewAt` and re-arms an undecided draft to `pending` (an already-approved draft keeps its approval). |
 | `DELETE /api/drafts/{id}` | Delete a draft. |
 | `GET /api/media` | List reusable stored images (`{media:[{key,url,size,uploaded}],count}`) — pick one and set it via `PATCH imageUrl` instead of regenerating. |
+
+Draft IDs are Firestore SDK auto-IDs (exactly 20 ASCII alphanumeric
+characters); malformed, encoded-slash, and traversal-shaped IDs return `400`
+before any datastore access. Before the strict Worker rollout, run the
+`scripts/admin.mjs id-inventory` stop gate documented in
+`REVIEW_STAGE_ROLLOUT.md` so a legacy custom post/automation/share ID is not
+stranded. PATCH is deliberately not blind: obtain the row with GET/list, then
+echo its `clientId` as `baseClientId` and its opaque `payloadRevision`. A missing
+baseline returns `428`; tenant/content drift returns `409`. A review action also
+echoes `reviewRevision`, so a racing approve/note/send/hold returns `409` instead
+of silently last-writing the other action. The Worker additionally uses live
+Firestore `updateTime` compare-and-swap and retries ordinary edits against current
+review state. Approval resets only for an actual title/content/image/platform change.
+Review actions are deliberately isolated from editorial changes: do not combine
+`approvalStatus` or `reviewStage` with content, title, platform, image, tags, or scheduling
+edits in one request. Save the editorial change, refetch the returned revisions,
+then perform the review action against that exact payload.
+Spool v1 and relative-v2 media references in `imageUrl` and rendered
+Markdown/HTML image targets are returned and accepted as absolute, current-origin
+`https://spool.stitchtec.dev/media/v2/…` URLs; third-party URLs and prose are not
+rewritten. Uploaded raster bytes are capped at 5 MB.
 
 ```bash
 # List blog drafts for a client
 curl -sS "https://spool.stitchtec.dev/api/drafts?client=Acme&platform=blog" \
   -H "Authorization: Bearer $SPOOL_API_KEY"
 
+# If truncated is true, continue with the opaque cursor and identical filters
+curl -sS "https://spool.stitchtec.dev/api/drafts?client=Acme&platform=blog&cursor=<nextCursor>" \
+  -H "Authorization: Bearer $SPOOL_API_KEY"
+
 # What's still on my desk (staged, not yet shown to the client)?
 curl -sS "https://spool.stitchtec.dev/api/drafts?clientId=acme&reviewStage=private" \
+  -H "Authorization: Bearer $SPOOL_API_KEY"
+
+# Fetch first; keep these exact values with the action the user saw
+curl -sS https://spool.stitchtec.dev/api/drafts/<id> \
   -H "Authorization: Bearer $SPOOL_API_KEY"
 
 # Send a staged draft to the client's review link
 curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
   -H "Authorization: Bearer $SPOOL_API_KEY" -H "Content-Type: application/json" \
-  -d '{"reviewStage":"in_review"}'
+  -d '{"baseClientId":"acme","basePayloadRevision":"<64-hex from GET>","baseReviewRevision":"<64-hex from GET>","reviewStage":"in_review"}'
 
 # Attach an existing/known image to a draft
 curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
   -H "Authorization: Bearer $SPOOL_API_KEY" -H "Content-Type: application/json" \
-  -d '{"image":{"url":"https://…/hero.png"}}'
+  -d '{"baseClientId":"acme","basePayloadRevision":"<64-hex from GET>","image":{"url":"https://…/hero.png"}}'
 ```
 
 ### Media library (`/api/media`)

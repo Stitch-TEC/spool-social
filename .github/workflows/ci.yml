@@ -32,9 +32,14 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: npm ci
       - run: npm run lint
       - run: npm run test
+      - run: npm run test:rules
       - run: npm run build
       # The Worker only gets bundled at deploy time (wrangler), so a syntax error
       # in worker/*.js would otherwise surface AFTER merge, in the production

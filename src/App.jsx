@@ -7,8 +7,7 @@ import {
   deleteDoc,
   setDoc,
   doc,
-  writeBatch,
-  arrayUnion
+  writeBatch
 } from 'firebase/firestore';
 
 import { db } from './config/firebase';
@@ -40,6 +39,15 @@ import { twitterLength } from './utils/markdownEditing';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
+import {
+  applyReviewActionAtomically,
+  applyReviewActionBatch,
+  preparePostImageForSave,
+  promoteSuggestionAtomically,
+  REVIEW_ACTION,
+  resolveExistingClientId,
+  saveExistingPostWithImageAtomically,
+} from './utils/postSave';
 
 // ⚡ Everything below opens on demand (a modal, or the non-default view). Keeping
 // them out of the entry chunk is what makes the dashboard's first paint cheap —
@@ -69,6 +77,7 @@ const normClientName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/
 // Stable empty list: a fresh [] per render would give every non-operator session a
 // new identity each pass and cascade through the memo chain the file relies on.
 const EMPTY_POSTS = Object.freeze([]);
+const MEMBER_STATUS_OPTIONS = Object.freeze([STATUS.DRAFT, STATUS.SCHEDULED]);
 
 // Feed density belongs to the PERSON scanning, not to the workspace's data — so it
 // lives in localStorage, not Firestore: no write path, no tenant question, and an
@@ -260,7 +269,7 @@ const App = () => {
   }, [user, isReadOnly]);
 
   // --- CRUD Handlers ---
-  const handleSavePost = useCallback(async (formData) => {
+  const handleSavePost = useCallback(async (formData, saveContext = {}) => {
     if (isReadOnly) return false;
 
     // 🔒 SECURITY: Input Validation & Sanitization. A client member can only
@@ -315,32 +324,15 @@ const App = () => {
       };
 
       // 🔒 EXPLICIT MAPPING to prevent mass assignment
-      const status = Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT;
+      const status = isClientMember && !formData.id
+        ? STATUS.DRAFT
+        : (Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT);
       const title = (formData.title || "").trim().slice(0, 200);
-
-      // approvalStatus + feedback belong to the CLIENT — they are never authored in
-      // the editor, and formData is a snapshot taken when the editor OPENED. Writing
-      // them back therefore silently reverted any review that landed in the meantime:
-      // a client approval, or a reviewer note from POM, quietly undone by an unrelated
-      // typo fix. Read them from the LIVE post instead (postsRef tracks the snapshot).
-      const liveApproval = Object.values(APPROVAL_STATUS).includes(existingPost?.approvalStatus)
-        ? existingPost.approvalStatus
-        : APPROVAL_STATUS.PENDING;
-
-      // An APPROVED post that gets rewritten is no longer the post the client approved.
-      // Both downstream gates — publish-to-site and push-to-Sender — admit anything
-      // marked `approved`, so carrying the approval across a rewrite walked unreviewed
-      // copy straight through the check that exists to prevent exactly that.
-      const rewritten = !!existingPost && (
-        (existingPost.content || '') !== content ||
-        (existingPost.title || '') !== title ||
-        (existingPost.imageUrl || '') !== imageUrl
+      const submittedImageUrl = formData.imageUrl || '';
+      const notifyImageDropped = () => showToast(
+        "Image couldn't be uploaded and is too large to store offline — saved without it",
+        "error"
       );
-      const approvalReset = liveApproval === APPROVAL_STATUS.APPROVED && rewritten;
-      const approvalStatus = existingPost
-        ? (approvalReset ? APPROVAL_STATUS.PENDING : liveApproval)
-        : (Object.values(APPROVAL_STATUS).includes(formData.approvalStatus) ? formData.approvalStatus : APPROVAL_STATUS.PENDING);
-      const feedback = existingPost ? (existingPost.feedback || '') : '';
 
       // Saving a parked suggestion must NOT silently promote it: stamping a clientId is
       // exactly what makes a post client-visible, so keep it empty — promotion is the
@@ -348,6 +340,31 @@ const App = () => {
       // and the incoming form data, so an id-stripped copy (duplicate) of a suggestion
       // stays a suggestion instead of minting a live draft.
       const isSuggestion = (existingPost ?? formData)?.source === 'suggestion';
+      const baselineClientId = typeof saveContext.baselineClientId === 'string'
+        ? saveContext.baselineClientId
+        : existingPost?.clientId;
+      const baselineClient = typeof saveContext.baselineClient === 'string'
+        ? saveContext.baselineClient
+        : existingPost?.client;
+      const stampedRequestedClientId = clientIdByName[client] || clientMap[client]?.clientId || '';
+      const knownRequestedClientId = (
+        stampedRequestedClientId && (rosterSlugs.size === 0 || rosterSlugs.has(stampedRequestedClientId))
+          ? stampedRequestedClientId
+          : rosterSlugByName.get(normClientName(client)) || stampedRequestedClientId
+      );
+      const resolvedClientId = isSuggestion
+        ? ''
+        : isClientMember
+          ? myClientId
+          : existingPost
+            ? resolveExistingClientId({
+              requestedClient: client,
+              baselineClient,
+              baselineClientId,
+              knownClientId: knownRequestedClientId,
+            })
+            : clientIdFor(client);
+      const imageClientId = isSuggestion ? (existingPost?.forClientId || knownRequestedClientId) : resolvedClientId;
 
       // Staging axis (utils/review.js). Editing NEVER moves a post between stages —
       // only the explicit Send / Hold verbs do — so an existing post keeps whatever
@@ -366,18 +383,6 @@ const App = () => {
             ? REVIEW_STAGE.IN_REVIEW
             : REVIEW_STAGE.PRIVATE);
 
-      // Swap a bulky base64 data URL for a small hosted /media URL (content-addressed
-      // in R2, so a reused photo keeps one URL). Also opportunistically migrates
-      // legacy data-URL posts whenever they're re-saved. Falls back to the data URL
-      // if the upload fails, so saving never blocks on the media API.
-      let imageUrl = await ensureHostedImage(formData.imageUrl || '', isClientMember ? myClientId : clientIdFor(client));
-      // The Firestore fallback has a hard budget. Truncating base64 mid-stream would
-      // store a CORRUPTED image with a success toast — drop it honestly instead.
-      if (imageUrl.startsWith('data:') && imageUrl.length > 500000) {
-        imageUrl = '';
-        showToast("Image couldn't be uploaded and is too large to store offline — saved without it", "error");
-      }
-
       const postData = {
         client,
         content,
@@ -387,21 +392,17 @@ const App = () => {
         slug: (formData.title || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80),
         platform: platformId,
         status,
-        approvalStatus,
-        feedback,
-        imageUrl: imageUrl.slice(0, 500000),
         tags,
         // Evergreen flag: templates live in the posts collection but are excluded
         // from the dated queue + the drafts API — surfaced only in the Templates view.
         // Forced off for suggestions: a suggestion-template hybrid would sit in two lanes
         // with two conflicting action rows.
-        isTemplate: isSuggestion ? false : !!formData.isTemplate,
-        reviewStage,
+        isTemplate: (isSuggestion || isClientMember) ? false : !!formData.isTemplate,
         // All posts are attributed to the operator uid (so the operator's query
         // + the single per-client review token resolve across multi-author
         // content); clientId is the immutable tenant key.
         uid: OPERATOR_UID,
-        clientId: isSuggestion ? '' : (isClientMember ? myClientId : clientIdFor(client)),
+        clientId: resolvedClientId,
         // Suggestions keep their identity through saves. forClientId tracks the CURRENT
         // client name so promote can never mis-tenant a renamed suggestion — but it is
         // re-derived ONLY on an actual rename: the worker's original forClientId is
@@ -422,14 +423,54 @@ const App = () => {
       };
 
       if (formData.id) {
-        await updateDoc(doc(db, 'posts', formData.id), postData);
+        // Read approval from Firestore inside the transaction, not postsRef or
+        // formData. A concurrent approve/feedback write makes the transaction
+        // retry; feedback/history/staging fields are never included in this
+        // editor patch. Approval is reset only against the live approved payload;
+        // an intentional tenant move derives a full private/pending review reset
+        // from that same live transaction.
+        const { approvalReset, tenantReset } = await saveExistingPostWithImageAtomically({
+          db,
+          postRef: doc(db, 'posts', formData.id),
+          postData,
+          submittedImageUrl,
+          baselineStatus: saveContext.baselineStatus,
+          baselineClientId,
+          baselineClient,
+          forClient: imageClientId,
+          hostImage: ensureHostedImage,
+          onImageDropped: notifyImageDropped,
+        });
         // Never silent: losing an approval is exactly the kind of thing an operator
         // must be told about the moment it happens, not discover at the publish gate.
-        showToast(approvalReset
-          ? "Thread updated — approval cleared, the content changed since the client signed off"
-          : "Thread updated");
+        showToast(tenantReset
+          ? `Thread moved to ${client} staging — prior client review cleared`
+          : approvalReset
+            ? "Thread updated — approval cleared, the content changed since the client signed off"
+            : "Thread updated");
       } else {
-        await addDoc(collection(db, 'posts'), { ...postData, createdAt: new Date().toISOString() });
+        const { imageUrl } = await preparePostImageForSave({
+          submittedImageUrl,
+          forClient: imageClientId,
+          hostImage: ensureHostedImage,
+          onImageDropped: notifyImageDropped,
+        });
+        const approvalStatus = isClientMember
+          ? APPROVAL_STATUS.PENDING
+          : Object.values(APPROVAL_STATUS).includes(formData.approvalStatus)
+          ? formData.approvalStatus
+          : APPROVAL_STATUS.PENDING;
+        const createdAt = new Date().toISOString();
+        await addDoc(collection(db, 'posts'), {
+          ...postData,
+          imageUrl: imageUrl.slice(0, 500000),
+          approvalStatus,
+          feedback: '',
+          reviewStage,
+          createdAt,
+          // Re-stamp after image hosting; postData was prepared before that await.
+          updatedAt: createdAt
+        });
         showToast("New thread created!");
       }
 
@@ -441,7 +482,7 @@ const App = () => {
       showToast(`Save failed: ${error.message}`, "error");
       return false;
     }
-  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName]);
+  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName, clientMap, rosterSlugByName, rosterSlugs]);
 
   // Delete immediately with an Undo toast (less friction than a confirm modal,
   // but still recoverable). Undo re-creates the doc with explicit field mapping.
@@ -456,7 +497,35 @@ const App = () => {
         label: "Undo",
         onClick: async () => {
           try {
-            await addDoc(collection(db, 'posts'), {
+            const restoredAt = new Date().toISOString();
+            const restoredPost = isClientMember ? {
+              // Member creates are intentionally a fresh-review operation. A
+              // deleted approved/posted thread cannot be resurrected with its
+              // former approval or operator-only provenance.
+              uid: OPERATOR_UID,
+              clientId: myClientId,
+              client: post.client || myClientName || myClientId,
+              content: post.content || '',
+              title: (post.title || '').slice(0, 200),
+              altText: (post.altText || '').slice(0, 300),
+              metaDescription: (post.metaDescription || '').slice(0, 200),
+              slug: (post.slug || '').slice(0, 80),
+              isTemplate: false,
+              reviewStage: REVIEW_STAGE.IN_REVIEW,
+              feedbackThread: [],
+              platform: post.platform || 'gmb',
+              status: STATUS.DRAFT,
+              approvalStatus: APPROVAL_STATUS.PENDING,
+              feedback: '',
+              imageUrl: (post.imageUrl || '').slice(0, 500000),
+              tags: (Array.isArray(post.tags) ? post.tags : [])
+                .filter(tag => typeof tag === 'string' && tag.length > 0)
+                .slice(0, 10)
+                .map(tag => tag.slice(0, 20)),
+              scheduledDate: post._raw_scheduledDate || null,
+              createdAt: restoredAt,
+              updatedAt: restoredAt,
+            } : {
               uid: OPERATOR_UID,
               // Undo on a SUGGESTION must resurrect it into the parked lane, not the client
               // queue: the name-derived clientId backfill (correct for legacy posts that lost
@@ -489,10 +558,11 @@ const App = () => {
               imageUrl: (post.imageUrl || '').slice(0, 500000),
               tags: post.tags || [],
               scheduledDate: post._raw_scheduledDate || null,
-              createdAt: post._raw_createdAt || new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            });
-            showToast("Thread restored");
+              createdAt: post._raw_createdAt || restoredAt,
+              updatedAt: restoredAt,
+            };
+            await addDoc(collection(db, 'posts'), restoredPost);
+            showToast(isClientMember ? "Thread restored as a fresh draft" : "Thread restored");
           } catch (error) {
             console.error("Undo Error:", error);
             showToast("Couldn't restore thread", "error");
@@ -503,7 +573,7 @@ const App = () => {
       console.error("Delete Error:", error);
       showToast("Delete failed", "error");
     }
-  }, [isReadOnly, user, showToast, clientIdFor]);
+  }, [isReadOnly, user, showToast, clientIdFor, isClientMember, myClientId, myClientName]);
 
   const handleArchivePost = useCallback(async (postId) => {
     if (isReadOnly) return;
@@ -525,9 +595,10 @@ const App = () => {
     }
   }, [isReadOnly, showToast]);
 
-  const handleStatusChange = useCallback(async (postId, newStatus) => {
+  const handleStatusChange = useCallback(async (postId, newStatus, reviewBaseline) => {
     // 🔒 SECURITY: Validate status enum
     if (!Object.values(STATUS).includes(newStatus)) return;
+    if (isClientMember && !MEMBER_STATUS_OPTIONS.includes(newStatus)) return;
 
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
@@ -548,19 +619,38 @@ const App = () => {
     // workflow — but it used to force status='scheduled' unconditionally, so approving
     // an already-POSTED thread rewound it to Scheduled (it then read as unpublished and
     // reappeared as upcoming work). Only advance a post that is still a plain draft.
-    const current = markApproved ? postsRef.current.find(p => p.id === postId) : null;
-    const advanceStatus = !markApproved || !current || current.status === STATUS.DRAFT;
+    // Bind approval to the exact card/modal payload the reviewer saw. A newer
+    // listener snapshot must not silently become consent to different copy.
+    const current = markApproved
+      ? (reviewBaseline?.id === postId ? reviewBaseline : postsRef.current.find(p => p.id === postId))
+      : null;
     try {
-      await updateDoc(doc(db, 'posts', postId), {
-        ...(advanceStatus ? { status: newStatus } : {}),
-        updatedAt: new Date().toISOString(),
-        ...(markApproved ? { approvalStatus: APPROVAL_STATUS.APPROVED } : {})
-      });
+      if (markApproved) {
+        if (!current) return;
+        await applyReviewActionAtomically({
+          db,
+          postRef: doc(db, 'posts', postId),
+          baseline: current,
+          action: REVIEW_ACTION.APPROVE,
+          actor: 'client',
+        });
+        setReviewingPost(null);
+      } else {
+        await updateDoc(doc(db, 'posts', postId), {
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        });
+      }
       showToast(markApproved ? "Approved ✓" : `Status updated to ${newStatus}`);
-    } catch {
-      showToast("Update failed", "error");
+    } catch (error) {
+      showToast(
+        error?.code === 'review_conflict'
+          ? 'This thread changed while you were reviewing it — refresh and try again'
+          : "Update failed",
+        "error",
+      );
     }
-  }, [isReadOnly, showToast]);
+  }, [isReadOnly, isClientMember, showToast]);
 
   // Commit previewed import rows. Rows are already sanitized by parseImportFile
   // (in ImportExportModal); here we attach ownership/timestamps and chunk to the
@@ -610,17 +700,17 @@ const App = () => {
           metaDescription: item.metaDescription || '',
           slug: item.slug || '',
           platform: item.platform,
-          status: item.status,
-          approvalStatus: item.approvalStatus,
+          status: isClientMember ? STATUS.DRAFT : item.status,
+          approvalStatus: isClientMember ? APPROVAL_STATUS.PENDING : item.approvalStatus,
           feedback: item.feedback || '',
           imageUrl: item.imageUrl || '',
           tags: item.tags || [],
           // Preserve templates through a backup → restore round-trip (otherwise a
           // full-backup import floods the dated queue with evergreen content).
-          isTemplate: !!item.isTemplate,
-          // A bulk import lands in STAGING, never straight onto the client's review
-          // link — restoring a 400-row backup used to flood it in one commit.
-          reviewStage: REVIEW_STAGE.PRIVATE,
+          isTemplate: isClientMember ? false : !!item.isTemplate,
+          // Operator imports land in STAGING; a client member's own imports are
+          // already their content and must remain in_review under the rules boundary.
+          reviewStage: isClientMember ? REVIEW_STAGE.IN_REVIEW : REVIEW_STAGE.PRIVATE,
           scheduledDate: item.scheduledDate || null,
           createdAt: now,
           updatedAt: now,
@@ -648,22 +738,21 @@ const App = () => {
   // Operator: after addressing client feedback, send the revised post back for
   // another review round — reset approvalStatus to pending and clear the current
   // feedback note (the full feedbackThread history is preserved for the reviewer).
-  const handleResubmitForReview = useCallback(async (postId) => {
+  const handleResubmitForReview = useCallback(async (post) => {
     if (isReadOnly) return;
     try {
-      await updateDoc(doc(db, 'posts', postId), {
-        approvalStatus: APPROVAL_STATUS.PENDING,
-        feedback: '',
-        // "Back for review" is a SEND. If the operator pulled the post into staging
-        // to rework it, leaving the stage alone would reset the badge to "awaiting"
-        // while the client still couldn't see it — a silent dead end.
-        reviewStage: REVIEW_STAGE.IN_REVIEW,
-        sentForReviewAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+      await applyReviewActionAtomically({
+        db,
+        postRef: doc(db, 'posts', post.id),
+        baseline: post,
+        action: REVIEW_ACTION.RESUBMIT,
+        actor: 'you',
       });
       showToast("Sent back for review 🔁");
-    } catch {
-      showToast("Couldn't update — please try again", "error");
+    } catch (error) {
+      showToast(error?.code === 'review_conflict'
+        ? 'This thread changed — refresh before sending it again'
+        : "Couldn't update — please try again", "error");
     }
   }, [isReadOnly, showToast]);
 
@@ -678,17 +767,18 @@ const App = () => {
       return showToast(`Not ready to send — ${READINESS_LABELS[blockers[0]].toLowerCase()}`, "error");
     }
     try {
-      await updateDoc(doc(db, 'posts', post.id), {
-        reviewStage: REVIEW_STAGE.IN_REVIEW,
-        // Re-arm the review round. An already-approved post keeps its approval (the
-        // client's decision stands); only an undecided one is (re)armed as pending.
-        ...(post.approvalStatus === APPROVAL_STATUS.APPROVED ? {} : { approvalStatus: APPROVAL_STATUS.PENDING }),
-        sentForReviewAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+      await applyReviewActionAtomically({
+        db,
+        postRef: doc(db, 'posts', post.id),
+        baseline: post,
+        action: REVIEW_ACTION.SEND,
+        actor: 'you',
       });
       showToast("Sent for review — it's on the client's link now ✓");
-    } catch {
-      showToast("Couldn't send for review", "error");
+    } catch (error) {
+      showToast(error?.code === 'review_conflict'
+        ? 'This thread changed — refresh before sending it'
+        : "Couldn't send for review", "error");
     }
   }, [isReadOnly, showToast]);
 
@@ -698,49 +788,56 @@ const App = () => {
   const handleHoldFromReview = useCallback(async (post) => {
     if (isReadOnly) return;
     try {
-      await updateDoc(doc(db, 'posts', post.id), {
-        reviewStage: REVIEW_STAGE.PRIVATE,
-        updatedAt: new Date().toISOString()
+      await applyReviewActionAtomically({
+        db,
+        postRef: doc(db, 'posts', post.id),
+        baseline: post,
+        action: REVIEW_ACTION.HOLD,
+        actor: 'you',
       });
       showToast("Moved to staging — the client can no longer see it");
-    } catch {
-      showToast("Couldn't move to staging", "error");
+    } catch (error) {
+      showToast(error?.code === 'review_conflict'
+        ? 'This thread changed — refresh before moving it'
+        : "Couldn't move to staging", "error");
     }
   }, [isReadOnly, showToast]);
 
-  // Promote a parked suggestion into the client's normal review queue. Stamping the real
-  // clientId (forClientId — the roster slug the Worker resolved at generation time) is what
-  // makes it client-visible: rules and subscriptions both key on it. Promote TRUSTS
-  // forClientId because every rename path keeps it current (handleSavePost re-stamps on a
-  // client change; handleMergeClient moves it) — re-resolving from the display name here
-  // would route through clientIdFor, the phantom-slug-prone resolver, and degrade the
-  // worker's roster-resolved slug on every promote. forClientId stays behind as provenance;
-  // the source relabel + tag removal take it out of the suggestions lane.
+  // Promote a parked suggestion into the client's normal review queue. The resolver is
+  // called with the LIVE transaction document and accepts forClientId only when it is in the
+  // loaded canonical roster (or while that roster is unavailable); otherwise it repairs from
+  // the canonical name map. No display-name slug is minted here.
+  const suggestionTargetFor = useCallback((post) => {
+    const direct = typeof post.forClientId === 'string' ? post.forClientId : '';
+    const stamped = clientIdByName[post.client] || clientMap[post.client]?.clientId || '';
+    return (direct && (rosterSlugs.size === 0 || rosterSlugs.has(direct)) ? direct : '')
+      || rosterSlugByName.get(normClientName(post.client))
+      || (rosterSlugs.size === 0 || rosterSlugs.has(stamped) ? stamped : '');
+  }, [clientIdByName, clientMap, rosterSlugByName, rosterSlugs]);
+
   const handlePromoteSuggestion = useCallback(async (post) => {
     if (isReadOnly || !isOperator) return;
-    const target = post.forClientId || clientIdFor(post.client || '');
-    if (!target) return showToast("Couldn't resolve a client for this suggestion", "error");
     try {
-      await updateDoc(doc(db, 'posts', post.id), {
-        clientId: target,
-        source: 'automation',
-        // Promoting adopts the suggestion as REAL client content — but into STAGING,
-        // not straight onto the client's review link. The operator reads it once more
-        // (and usually adds the image) before "Send for review".
-        reviewStage: REVIEW_STAGE.PRIVATE,
-        tags: (post.tags || []).filter(t => t !== 'suggested'),
-        // Promote always lands a LIVE pending draft — un-archive and clear any template
-        // flag so the client actually sees what the success toast promises.
-        ...(post.status === STATUS.ARCHIVED ? { status: STATUS.DRAFT } : {}),
-        ...(post.isTemplate ? { isTemplate: false } : {}),
-        updatedAt: new Date().toISOString()
+      const result = await promoteSuggestionAtomically({
+        db,
+        postRef: doc(db, 'posts', post.id),
+        ownerUid: OPERATOR_UID,
+        // Called inside every transaction attempt with the LIVE document.
+        resolveTarget: suggestionTargetFor,
       });
-      showToast(`Moved into ${post.client || 'the client'}'s staging area — send it when it's ready ✓`);
+      showToast(`Moved into ${result.client || 'the client'}'s staging area — send it when it's ready ✓`);
     } catch (error) {
       console.error("Promote Error:", error);
-      showToast("Couldn't use the suggestion", "error");
+      showToast(
+        error?.code === 'suggestion_already_promoted'
+          ? 'That suggestion was already used or changed — refresh to see its current state'
+          : error?.code === 'suggestion_client_unresolved'
+            ? "Couldn't resolve a canonical client for this suggestion"
+            : "Couldn't use the suggestion",
+        "error",
+      );
     }
-  }, [isReadOnly, isOperator, clientIdFor, showToast]);
+  }, [isReadOnly, isOperator, suggestionTargetFor, showToast]);
 
   // Dismissing deletes outright — a suggestion never reached a client, so there's nothing to
   // archive; the automation's cadence brings fresh options next run.
@@ -831,7 +928,9 @@ const App = () => {
     }
   }, [isReadOnly, isOperator, showToast]);
 
-  const handleRequestChanges = useCallback(async (postId, feedback) => {
+  const handleRequestChanges = useCallback(async (postOrId, feedback) => {
+    const baseline = typeof postOrId === 'object' && postOrId ? postOrId : null;
+    const postId = baseline?.id || postOrId;
     // 🔒 SECURITY: Input Validation & Sanitization
     const sanitizedFeedback = (feedback || "").trim().slice(0, 500);
     if (!sanitizedFeedback) return showToast("Feedback cannot be empty", "error");
@@ -843,27 +942,29 @@ const App = () => {
     }
 
     try {
-      // Append to a feedback thread (history across review rounds) rather than overwriting.
-      // `feedback` keeps the latest note for back-compat / card display. ATOMIC append (arrayUnion),
-      // not a snapshot rebuild: POM's review verb (broker → worker PATCH) is a concurrent writer on
-      // the same field, and a read-modify-write here could silently drop its entry (or vice versa).
-      // Entries carry an ISO timestamp so the union-dedupe never merges two distinct notes. The old
-      // 20-entry cap can't be enforced atomically — readers trim for display instead.
-      const entry = { text: sanitizedFeedback, by: isReadOnly ? 'client' : 'you', at: new Date().toISOString() };
-
-      await updateDoc(doc(db, 'posts', postId), {
+      // The modal's original post is the consent baseline. Falling back is kept
+      // only for non-modal/internal callers that still pass an id.
+      const current = baseline || postsRef.current.find(p => p.id === postId);
+      if (!current) return showToast('Thread no longer available', 'error');
+      await applyReviewActionAtomically({
+        db,
+        postRef: doc(db, 'posts', postId),
+        baseline: current,
+        action: REVIEW_ACTION.REQUEST_CHANGES,
         feedback: sanitizedFeedback,
-        feedbackThread: arrayUnion(entry),
-        approvalStatus: APPROVAL_STATUS.CHANGES_REQUESTED,
-        updatedAt: new Date().toISOString()
+        actor: (isReadOnly || isClientMember) ? 'client' : 'you',
       });
       showToast("Feedback sent!");
       setReviewingPost(null);
     } catch (error) {
       console.error("Feedback Error:", error);
-      showToast("Failed to send feedback", "error");
+      showToast(error?.code === 'review_conflict'
+        ? 'This thread changed while you were reviewing it — refresh and try again'
+        : error?.code === 'feedback_thread_full'
+          ? 'This feedback history is full — ask the operator to archive it'
+          : "Failed to send feedback", "error");
     }
-  }, [isReadOnly, showToast]);
+  }, [isReadOnly, isClientMember, showToast]);
 
   // --- Derived data ---
   // ⚡ Stabilize uniqueClients reference: derive from a hash string that only
@@ -1006,7 +1107,7 @@ const App = () => {
         platform: d.platform,
         status: STATUS.DRAFT,
         approvalStatus: APPROVAL_STATUS.PENDING,
-        reviewStage: REVIEW_STAGE.PRIVATE,
+        reviewStage: isClientMember ? REVIEW_STAGE.IN_REVIEW : REVIEW_STAGE.PRIVATE,
         feedback: '',
         imageUrl: '',
         tags: [],
@@ -1287,6 +1388,11 @@ const App = () => {
         reviewStage: REVIEW_STAGE.PRIVATE,
         feedback: '',
         feedbackThread: [],
+        sentForReviewAt: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        approvedBy: null,
+        approvedAt: null,
       }),
       n => `Moved ${n} thread${n === 1 ? '' : 's'} to "${c}" — review state reset`,
       { clearAfter: true }
@@ -1318,35 +1424,62 @@ const App = () => {
   // Bulk send: the verb that makes a whole batch visible to the client at once —
   // the realistic way to work a week of drafts. Posts with hard blockers are SKIPPED,
   // not silently included, and the toast names how many and why.
-  const handleBulkSendForReview = useCallback(() => {
+  const handleBulkSendForReview = useCallback(async () => {
+    if (isReadOnly || !user) return;
     let blocked = 0;
-    const now = new Date().toISOString();
-    commitBulk((post) => {
-      if (post.isTemplate) return null;      // templates sit outside the review loop
-      if (!isStaged(post)) return null;      // already with the client
-      if (hasBlockers(post)) { blocked++; return null; }
-      return {
-        reviewStage: REVIEW_STAGE.IN_REVIEW,
-        ...(post.approvalStatus === APPROVAL_STATUS.APPROVED ? {} : { approvalStatus: APPROVAL_STATUS.PENDING }),
-        sentForReviewAt: now,
-      };
-    },
-    n => `Sent ${n} for review${blocked ? ` · skipped ${blocked} that aren’t ready` : ''} ✓`,
-    {
-      clearAfter: true,
-      emptyMsg: () => blocked
-        ? `Nothing sent — ${blocked} ${blocked === 1 ? 'post isn’t' : 'posts aren’t'} ready (empty, over the limit, or missing a required image)`
-        : 'Nothing to send — these are already with the client',
+    const byId = new Map(postsRef.current.map(post => [post.id, post]));
+    const items = [];
+    selectedIds.forEach((id) => {
+      const post = byId.get(id);
+      if (!post || post.source === 'suggestion' || post.isTemplate || !isStaged(post)) return;
+      if (hasBlockers(post)) { blocked++; return; }
+      items.push({ postRef: doc(db, 'posts', post.id), baseline: post });
     });
-  }, [commitBulk]);
+    if (!items.length) {
+      return showToast(blocked
+        ? `Nothing sent — ${blocked} ${blocked === 1 ? 'post isn’t' : 'posts aren’t'} ready (empty, over the limit, or missing a required image)`
+        : 'Nothing to send — these are already with the client', 'error');
+    }
+    try {
+      const results = await applyReviewActionBatch({
+        db, items, action: REVIEW_ACTION.SEND, actor: 'you',
+      });
+      const sent = results.filter(result => result.status === 'fulfilled').length;
+      const conflicts = results.length - sent;
+      showToast(sent
+        ? `Sent ${sent} for review${blocked ? ` · skipped ${blocked} that aren’t ready` : ''}${conflicts ? ` · ${conflicts} changed; refresh` : ''} ✓`
+        : `Nothing sent — ${conflicts} changed while selected; refresh and try again`,
+      sent ? 'success' : 'error');
+      if (sent) clearSelection();
+    } catch (error) {
+      console.error('Bulk send error:', error);
+      showToast('Bulk send failed', 'error');
+    }
+  }, [isReadOnly, user, selectedIds, showToast, clearSelection]);
 
-  const handleBulkHold = useCallback(() => {
-    commitBulk(
-      (post) => (post.isTemplate || isStaged(post)) ? null : { reviewStage: REVIEW_STAGE.PRIVATE },
-      n => `Moved ${n} thread${n === 1 ? '' : 's'} to staging`,
-      { clearAfter: true, emptyMsg: () => 'Nothing to move — these are already in staging' }
-    );
-  }, [commitBulk]);
+  const handleBulkHold = useCallback(async () => {
+    if (isReadOnly || !user) return;
+    const byId = new Map(postsRef.current.map(post => [post.id, post]));
+    const items = [...selectedIds].map(id => byId.get(id)).filter(post =>
+      post && post.source !== 'suggestion' && !post.isTemplate && !isStaged(post))
+      .map(post => ({ postRef: doc(db, 'posts', post.id), baseline: post }));
+    if (!items.length) return showToast('Nothing to move — these are already in staging', 'error');
+    try {
+      const results = await applyReviewActionBatch({
+        db, items, action: REVIEW_ACTION.HOLD, actor: 'you',
+      });
+      const moved = results.filter(result => result.status === 'fulfilled').length;
+      const conflicts = results.length - moved;
+      showToast(moved
+        ? `Moved ${moved} thread${moved === 1 ? '' : 's'} to staging${conflicts ? ` · ${conflicts} changed; refresh` : ''}`
+        : `Nothing moved — ${conflicts} changed while selected; refresh and try again`,
+      moved ? 'success' : 'error');
+      if (moved) clearSelection();
+    } catch (error) {
+      console.error('Bulk hold error:', error);
+      showToast('Bulk hold failed', 'error');
+    }
+  }, [isReadOnly, user, selectedIds, showToast, clearSelection]);
 
   const handleBulkArchive = useCallback(() => {
     commitBulk(() => ({ status: STATUS.ARCHIVED }), n => `Archived ${n} thread${n === 1 ? '' : 's'}`, { clearAfter: true });
@@ -1440,6 +1573,11 @@ const App = () => {
                 reviewStage: REVIEW_STAGE.PRIVATE,
                 feedback: '',
                 feedbackThread: [],
+                sentForReviewAt: null,
+                reviewedBy: null,
+                reviewedAt: null,
+                approvedBy: null,
+                approvedAt: null,
                 updatedAt: now,
               })
             // Pure rename: display name ONLY. Leaving clientId/forClientId alone keeps every
@@ -1809,16 +1947,21 @@ const App = () => {
                     clientMap={clientMap}
                     isReadOnly={isReadOnly}
                     onEdit={handleSelectPost}
-                    onCloneToAll={handleCloneToAll}
+                    onCloneToAll={isOperator ? handleCloneToAll : undefined}
                     onDuplicate={handleDuplicatePost}
                     onDelete={handleDeleteClick}
                     onStatusChange={handleStatusChange}
-                    onArchive={handleArchivePost}
-                    onRestore={handleRestorePost}
+                    statusOptions={isClientMember ? MEMBER_STATUS_OPTIONS : undefined}
+                    onArchive={isOperator ? handleArchivePost : undefined}
+                    onRestore={isOperator ? handleRestorePost : undefined}
                     onUseTemplate={showTemplates ? handleUseTemplate : undefined}
                     onResubmit={handleResubmitForReview}
-                    onSendForReview={!isReadOnly ? handleSendForReview : undefined}
-                    onHoldFromReview={!isReadOnly ? handleHoldFromReview : undefined}
+                    // Staging is an operator-only security boundary. Client
+                    // members subscribe only to in-review rows and strict rules
+                    // reject moving one back to private, so do not surface an
+                    // action that can only fail for them.
+                    onSendForReview={isOperator ? handleSendForReview : undefined}
+                    onHoldFromReview={isOperator ? handleHoldFromReview : undefined}
                     onPromoteSuggestion={isOperator ? handlePromoteSuggestion : undefined}
                     onDismissSuggestion={isOperator ? handleDismissSuggestion : undefined}
                     onPushToSender={isOperator ? handlePushToSender : undefined}
@@ -1869,8 +2012,8 @@ const App = () => {
           post={reviewingPost}
           clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
           onClose={() => setReviewingPost(null)}
-          onApprove={() => { handleStatusChange(reviewingPost.id, STATUS.SCHEDULED); setReviewingPost(null); }}
-          onRequestChanges={(fb) => handleRequestChanges(reviewingPost.id, fb)}
+          onApprove={() => handleStatusChange(reviewingPost.id, STATUS.SCHEDULED, reviewingPost)}
+          onRequestChanges={(fb) => handleRequestChanges(reviewingPost, fb)}
           /* The modal is the CLIENT's review surface today; the flag keeps the
              feedback attribution resolved against the viewer, not the author. */
           viewerIsClient={isReadOnly}

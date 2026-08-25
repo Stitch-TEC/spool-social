@@ -3,7 +3,8 @@
 //   POST /api/generate  { prompt }            -> { url, key }   (image to R2)
 //   POST /api/text      { prompt }            -> { text }
 //   GET  /api/ideas?client=X                   -> { ok, slug, signals }  (site/repo idea signals)
-//   GET  /media/<key>                          -> the stored image
+//   GET  /media/v2/<key>                       -> the byte-validated stored image
+//   GET  /media/<key>                          -> no-store redirect to the v2 cache key
 //   GET  /api/health                           -> { ok: true }
 //   POST /api/client-rename | /api/client-purge -> internal-key only (broker client lifecycle)
 //   *                                          -> static assets (the Vite SPA)
@@ -11,11 +12,56 @@
 import { authenticate } from './auth.js';
 import { generateText, generateImage } from './gemini.js';
 import { checkRateLimit } from './ratelimit.js';
-import { createPost, getPost, listPosts, countDraftSummary, updatePost, updatePostWithAppend, deletePost, listAllImageUrls, getUserRecord, setUserRecord, deleteUserRecord , getDocRaw } from './firestore.js';
+import {
+  createPost,
+  getPost,
+  listDraftPage,
+  encodeDraftCursor,
+  decodeDraftCursor,
+  countDraftSummary,
+  deletePost,
+  listAllImageUrls,
+  getUserRecord,
+  setUserRecord,
+  deleteUserRecord,
+  getDocRaw,
+  mutatePostAtomically,
+  requireAutoId,
+  requireShareToken,
+} from './firestore.js';
 import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShareDoc } from './firestore.js';
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { listDocsWhere, batchUpdateDocs, batchDeleteDocs, mergeDocRaw } from './firestore.js';
-import { b64ToBytes, bytesToB64, mediaUrl, storeImage, resolveDraftImage } from './media.js';
+import {
+  bytesToB64,
+  decodeImageBase64,
+  inspectRasterImage,
+  MAX_IMAGE_BYTES,
+  mediaOriginConfig,
+  mediaKeyFromUrl,
+  mediaUrl,
+  RASTER_VALIDATION_VERSION,
+  storeImage,
+  resolveDraftImage,
+  versionMediaMarkdownReferences,
+  versionMediaReference,
+} from './media.js';
+import {
+  BodyTooLargeError,
+  DEFAULT_JSON_BYTES,
+  IMAGE_JSON_BYTES,
+  MULTIMODAL_JSON_BYTES,
+  readBytesBounded,
+  readJsonBounded,
+} from './httpBody.js';
+import {
+  buildDraftMutation,
+  assertIsolatedDraftReviewIntent,
+  assertDraftBaseline,
+  sameLegacyImageBytes,
+  versionDraftMedia,
+} from './draftUpdate.js';
+import { applySecurityHeaders, forceMediaDownload, withSecurityHeaders } from './security.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
 import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, renderSenderPreview, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
 // Shared with the SPA editor (pure string helpers — no DOM at module scope).
@@ -95,7 +141,9 @@ function corsHeaders(env, request) {
   const allowed =
     allow === '*' ? '*' : allow.split(',').map(s => s.trim()).includes(origin) ? origin : '';
   const h = {
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    // Advertise every method this Worker actually implements. Browsers reject
+    // PATCH/DELETE/HEAD preflights before routing when this list lies.
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,HEAD,OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization,Content-Type'
   };
   if (allowed) h['Access-Control-Allow-Origin'] = allowed;
@@ -106,10 +154,43 @@ function corsHeaders(env, request) {
 }
 
 function json(obj, status, extra) {
+  const headers = new Headers({ 'Content-Type': 'application/json', ...(extra || {}) });
+  applySecurityHeaders(headers);
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { 'Content-Type': 'application/json', ...(extra || {}) }
+    headers
   });
+}
+
+function jsonBodyError(err, cors, withOk = false) {
+  const payload = { ...(withOk ? { ok: false } : {}), error: err instanceof BodyTooLargeError ? 'Request body is too large' : 'Invalid JSON' };
+  return json(payload, err instanceof BodyTooLargeError ? 413 : 400, cors);
+}
+
+async function parseJson(request, maxBytes = DEFAULT_JSON_BYTES) {
+  return readJsonBounded(request, maxBytes);
+}
+
+export function decodeAutoId(encoded, kind) {
+  let decoded;
+  try { decoded = decodeURIComponent(encoded); }
+  catch {
+    const err = new Error(`Malformed ${kind} id`);
+    err.code = 'invalid_document_id';
+    throw err;
+  }
+  return requireAutoId(decoded, kind);
+}
+
+export function decodeShareToken(encoded) {
+  let decoded;
+  try { decoded = decodeURIComponent(encoded); }
+  catch {
+    const err = new Error('Malformed share token');
+    err.code = 'invalid_document_id';
+    throw err;
+  }
+  return requireShareToken(decoded);
 }
 
 function clampMaxTokens(v) {
@@ -125,17 +206,29 @@ async function resolveImage(src, env) {
   if (typeof src !== 'string' || !src) return null;
   if (src.startsWith('data:')) {
     const m = src.match(/^data:([^;]+);base64,(.+)$/);
-    return m ? { mimeType: m[1], data: m[2] } : null;
+    if (!m || m[2].length > 11_000_000) return null;
+    try {
+      const bytes = decodeImageBase64(m[2], 8_000_000);
+      const raster = inspectRasterImage(bytes, m[1]);
+      return { mimeType: raster.mime, data: bytesToB64(bytes) };
+    } catch {
+      return null;
+    }
   }
-  const marker = '/media/';
-  const idx = src.indexOf(marker);
-  if (idx !== -1 && env.MEDIA) {
-    const key = decodeURIComponent(src.slice(idx + marker.length).split('?')[0]);
+  const key = mediaKeyFromUrl(src);
+  if (key && env.MEDIA) {
     const obj = await env.MEDIA.get(key);
     if (!obj) return null;
-    const bytes = new Uint8Array(await obj.arrayBuffer());
-    if (bytes.length > 8_000_000) return null; // ~8MB cap
-    return { mimeType: obj.httpMetadata?.contentType || 'image/png', data: bytesToB64(bytes) };
+    if (Number.isFinite(obj.size) && obj.size > 8_000_000) return null;
+    let bytes;
+    try { bytes = await readBytesBounded(obj.body, new Headers({ 'Content-Length': String(obj.size ?? '') }), 8_000_000); }
+    catch (err) { if (err instanceof BodyTooLargeError) return null; throw err; }
+    try {
+      const raster = inspectRasterImage(bytes);
+      return { mimeType: raster.mime, data: bytesToB64(bytes) };
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -164,18 +257,51 @@ function validateVideoUrl(raw) {
 }
 
 // List a curated library prefix (images + video-reference pointers via customMetadata).
+export async function listR2ObjectsCompletely(binding, options) {
+  const objects = [];
+  const seenCursors = new Set();
+  const expectedPrefix = typeof options?.prefix === 'string' ? options.prefix : '';
+  let cursor = '';
+  while (cursor !== null) {
+    const listed = await binding.list({ ...options, ...(cursor ? { cursor } : {}) });
+    if (!listed || typeof listed !== 'object' || Array.isArray(listed)
+      || !Array.isArray(listed.objects) || typeof listed.truncated !== 'boolean') {
+      throw new Error('R2 list returned a malformed result');
+    }
+    for (const object of listed.objects) {
+      if (!object || typeof object !== 'object' || Array.isArray(object)
+        || typeof object.key !== 'string' || !object.key) {
+        throw new Error('R2 list returned a malformed object');
+      }
+      // R2 promises that list({prefix}) cannot escape that namespace. Treat a
+      // contrary response as corrupt/uncertain inventory: destructive callers
+      // must never delete a key from another tenant or storage class.
+      if (expectedPrefix && !object.key.startsWith(expectedPrefix)) {
+        throw new Error(`R2 list returned an object outside prefix ${expectedPrefix}`);
+      }
+      if (object.uploaded !== undefined && !Number.isFinite(new Date(object.uploaded).getTime())) {
+        throw new Error(`R2 list returned an invalid upload time for ${object.key}`);
+      }
+      objects.push(object);
+    }
+    if (!listed.truncated) { cursor = null; continue; }
+    if (typeof listed.cursor !== 'string' || !listed.cursor || seenCursors.has(listed.cursor)) {
+      throw new Error('R2 list returned a missing/repeated continuation cursor');
+    }
+    seenCursors.add(listed.cursor);
+    cursor = listed.cursor;
+  }
+  return objects;
+}
+
 async function listMediaPrefix(env, origin, prefix) {
   const items = [];
-  let cursor;
-  do {
-    const listed = await env.MEDIA.list({ prefix, cursor, include: ['customMetadata'], limit: 1000 });
-    for (const o of listed.objects) {
-      const cm = o.customMetadata || {};
-      if (cm.type === 'video') items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded });
-      else items.push({ key: o.key, type: 'image', url: mediaUrl(origin, o.key), size: o.size, uploaded: o.uploaded });
-    }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
+  const objects = await listR2ObjectsCompletely(env.MEDIA, { prefix, include: ['customMetadata'], limit: 1000 });
+  for (const o of objects) {
+    const cm = o.customMetadata || {};
+    if (cm.type === 'video') items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded });
+    else items.push({ key: o.key, type: 'image', url: mediaUrl(origin, o.key), size: o.size, uploaded: o.uploaded });
+  }
   items.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
   return items;
 }
@@ -221,33 +347,37 @@ function canManageKey(auth, env, key, caller) {
 // are older than a grace window. Mark-and-sweep is safe — it never deletes an
 // in-use or freshly created image, and it catches orphans from both app- and
 // API-side deletes.
-async function runGC(env) {
+export async function runGC(env, {
+  listReferences = listAllImageUrls,
+  listObjects = (binding, options) => listR2ObjectsCompletely(binding, options),
+} = {}) {
   if (!env.MEDIA || !env.FIREBASE_SERVICE_ACCOUNT) return;
   const graceDays = parseInt(env.GC_GRACE_DAYS || '365', 10);
   const cutoff = Date.now() - (Number.isFinite(graceDays) ? graceDays : 365) * 24 * 60 * 60 * 1000;
 
   const referenced = new Set();
+  let objects;
   try {
-    for (const u of await listAllImageUrls(env)) {
-      const i = u.indexOf('/media/');
-      if (i !== -1) referenced.add(u.slice(i + '/media/'.length).split('?')[0]);
+    for (const u of await listReferences(env)) {
+      const key = mediaKeyFromUrl(u);
+      if (key) referenced.add(key);
     }
+    // Two-phase sweep: finish and validate the ENTIRE R2 listing before the
+    // first delete. A malformed page/cursor or later-page outage therefore
+    // turns this run into a no-op instead of deleting from an incomplete view.
+    objects = await listObjects(env.MEDIA, { prefix: 'generated/', limit: 1000 });
   } catch (err) {
-    console.error('GC: reference query failed:', err?.message || err);
+    console.error('GC: inventory failed; no objects deleted:', err?.message || err);
     return;
   }
 
-  let deleted = 0, kept = 0, cursor;
-  do {
-    const listed = await env.MEDIA.list({ prefix: 'generated/', cursor });
-    for (const o of listed.objects) {
-      const inUse = referenced.has(o.key);
-      const old = o.uploaded ? new Date(o.uploaded).getTime() < cutoff : false;
-      if (!inUse && old) { await env.MEDIA.delete(o.key); deleted++; }
-      else kept++;
-    }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
+  let deleted = 0, kept = 0;
+  for (const o of objects) {
+    const inUse = referenced.has(o.key);
+    const old = o.uploaded ? new Date(o.uploaded).getTime() < cutoff : false;
+    if (!inUse && old) { await env.MEDIA.delete(o.key); deleted++; }
+    else kept++;
+  }
   console.log(`GC: deleted ${deleted} orphaned image(s), kept ${kept}.`);
 }
 
@@ -332,58 +462,119 @@ async function propagateClientRename(env, clientId, to) {
 
 // Delete every owned doc in `collection` (same tenant filter as relabelWhere).
 // `skip(doc)` may exclude a doc — the caller reports the skips as a note, never silently.
-async function deleteWhere(env, collection, field, clientId, skip) {
-  const docs = await listDocsWhere(env, collection, field, clientId, { select: ['clientId', 'roles'] });
+export async function deleteWhere(env, collection, field, clientId, skip, {
+  list = listDocsWhere,
+  remove = batchDeleteDocs,
+} = {}) {
+  const { names, skipped } = await planDeleteWhere(env, collection, field, clientId, skip, list);
+  const deleted = await remove(env, names);
+  return { deleted, skipped };
+}
+
+async function planDeleteWhere(env, collection, field, clientId, skip, list = listDocsWhere) {
+  const docs = await list(env, collection, field, clientId, { select: ['clientId', 'roles'] });
+  if (docs.truncated) {
+    const error = new Error(`${collection}: purge listing capped — no documents deleted`);
+    error.committed = 0;
+    throw error;
+  }
   const mine = ownedBy(docs, field, clientId);
   const doomed = skip ? mine.filter(d => !skip(d)) : mine;
-  const deleted = await batchDeleteDocs(env, doomed.map(d => d.name));
-  return { deleted, skipped: mine.length - doomed.length };
+  return { names: doomed.map(d => d.name), skipped: mine.length - doomed.length };
 }
 
-// Delete every object under an R2 prefix (paged list, batched delete). Returns the count.
-async function purgeMediaPrefix(env, prefix) {
-  let deleted = 0, cursor;
-  do {
-    const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
-    const keys = listed.objects.map(o => o.key);
-    if (keys.length) { await env.MEDIA.delete(keys); deleted += keys.length; }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
-  return deleted;
+async function deleteR2Keys(binding, keys) {
+  let committed = 0;
+  try {
+    // R2's multi-delete limit is 1,000 keys. Inventory is already complete;
+    // chunk only the mutation phase and retain an honest committed count.
+    for (let i = 0; i < keys.length; i += 1000) {
+      await binding.delete(keys.slice(i, i + 1000));
+      committed += Math.min(1000, keys.length - i);
+    }
+    return committed;
+  } catch (error) {
+    error.committed = committed;
+    throw error;
+  }
 }
 
-async function purgeClient(env, clientId) {
+// Purge is deliberately two-phase: obtain and validate EVERY Firestore and R2
+// inventory before the first mutation. A capped/malformed later store can never
+// leave an earlier store deleted while the route still lacked a complete plan.
+export async function purgeClient(env, clientId, {
+  list = listDocsWhere,
+  remove = batchDeleteDocs,
+  listObjects = (binding, options) => listR2ObjectsCompletely(binding, options),
+  removeObjects = deleteR2Keys,
+} = {}) {
   const results = { counts: {}, errors: [], notes: [] };
-  const wipe = (store, collection, field, skip) => lifecycleStep(results, store, async () => {
-    const { deleted, skipped } = await deleteWhere(env, collection, field, clientId, skip);
-    if (skipped) results.notes.push(`${store}: left ${skipped} hand-managed super_admin doc(s) in place`);
-    return deleted;
-  });
-  await wipe('posts', 'posts', 'clientId');
-  await wipe('suggestions', 'posts', 'forClientId');
-  await wipe('shares', 'shares', 'clientId');
-  await wipe('automations', 'automations', 'clientId');
+  const specs = [
+    ['posts', 'posts', 'clientId'],
+    ['suggestions', 'posts', 'forClientId'],
+    ['shares', 'shares', 'clientId'],
+    ['automations', 'automations', 'clientId'],
+  ];
   // A super_admin doc pinned to this slug is the OPERATOR's own record (bootstrap --client-id) —
   // deleting it would lock a co-operator out. Same "privileged = hand-managed" line people-sync draws.
-  await wipe('users', 'users', 'clientId', d => (Array.isArray(d.fields.roles) ? d.fields.roles : []).includes('super_admin'));
-  await wipe('branding', 'clients', 'clientId');
-  await lifecycleStep(results, 'media', async () => {
-    if (!env.MEDIA) { results.notes.push('media: no MEDIA binding — R2 library not purged'); return 0; }
-    // The prefix uses the slug VERBATIM — a non-canonical slug (`a--b`) must never normalize onto
-    // another tenant's folder (`a-b`); the route rejects such ids before we get here (belt).
-    if (slugifyClient(clientId) !== clientId) throw new Error(`media: non-canonical slug "${clientId}" — refusing to purge a normalized prefix`);
-    return purgeMediaPrefix(env, `library/${env.OWNER_UID}/${clientId}/`);
-  });
+  specs.push(['users', 'users', 'clientId', d => (Array.isArray(d.fields.roles) ? d.fields.roles : []).includes('super_admin')]);
+  specs.push(['branding', 'clients', 'clientId']);
+
+  const plans = new Map();
+  for (const [store, collection, field, skip] of specs) {
+    try {
+      plans.set(store, await planDeleteWhere(env, collection, field, clientId, skip, list));
+      results.counts[store] = 0;
+    } catch (err) {
+      results.counts[store] = 0;
+      results.errors.push({ store, error: err?.message || String(err) });
+    }
+  }
+
+  let mediaKeys = [];
+  if (!env.MEDIA) {
+    results.notes.push('media: no MEDIA binding — R2 library not purged');
+    results.counts.media = 0;
+  } else {
+    try {
+      // The prefix uses the slug VERBATIM — a non-canonical slug (`a--b`) must never normalize onto
+      // another tenant's folder (`a-b`); the route rejects such ids before we get here (belt).
+      if (slugifyClient(clientId) !== clientId) throw new Error(`media: non-canonical slug "${clientId}" — refusing to purge a normalized prefix`);
+      mediaKeys = (await listObjects(env.MEDIA, {
+        prefix: `library/${env.OWNER_UID}/${clientId}/`, limit: 1000,
+      })).map(object => object.key);
+      results.counts.media = 0;
+    } catch (err) {
+      results.counts.media = 0;
+      results.errors.push({ store: 'media', error: err?.message || String(err) });
+    }
+  }
+
+  // Any uncertain inventory aborts the ENTIRE purge. Counts are zero because
+  // no mutation has begun; the caller returns a hard failure, never a partial
+  // success envelope.
+  if (results.errors.length) return results;
+
+  for (const [store] of specs) {
+    const plan = plans.get(store);
+    if (plan.skipped) results.notes.push(`${store}: left ${plan.skipped} hand-managed super_admin doc(s) in place`);
+    await lifecycleStep(results, store, () => remove(env, plan.names));
+  }
+  if (env.MEDIA) await lifecycleStep(results, 'media', () => removeObjects(env.MEDIA, mediaKeys));
   return results;
 }
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const cors = corsHeaders(env, request);
+    let cors = {};
+    try {
+      const url = new URL(request.url);
+      cors = corsHeaders(env, request);
+      const { publicOrigin, legacyOrigins } = mediaOriginConfig(env);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: cors });
+      const headers = applySecurityHeaders(new Headers(cors));
+      return new Response(null, { status: 204, headers });
     }
 
     if (url.pathname === '/api/health') {
@@ -643,7 +834,11 @@ export default {
       // an additive broker change must not start leaking draft-content imagery here).
       const pages = canSeeAllIdx ? out.pages : out.pages.filter((p) => p.source !== 'repo');
       const repoPageUrls = canSeeAllIdx ? null : new Set(out.pages.filter((p) => p.source === 'repo').map((p) => p.url));
-      const images = canSeeAllIdx ? out.images : out.images.filter((i) => !i.pageUrl || !repoPageUrls.has(i.pageUrl));
+      const visibleImages = canSeeAllIdx ? out.images : out.images.filter((i) => !i.pageUrl || !repoPageUrls.has(i.pageUrl));
+      const images = visibleImages.map((i) => ({
+        ...i,
+        ...(i.spoolUrl ? { spoolUrl: versionMediaReference(publicOrigin, i.spoolUrl, legacyOrigins) } : {}),
+      }));
       const counts = canSeeAllIdx ? out.counts : {
         total: pages.length,
         crawled: pages.filter((p) => p.lastCrawled).length,
@@ -672,9 +867,9 @@ export default {
       }
       let impBody = {};
       try {
-        impBody = await request.json();
-      } catch {
-        return json({ error: 'Invalid JSON' }, 400, cors);
+        impBody = await parseJson(request);
+      } catch (err) {
+        return jsonBodyError(err, cors);
       }
       const requested = slugifyClient(String(impBody.client || ''));
       let slug = impCaller && !impCaller.isOperator ? slugifyClient(impCaller.clientId) : requested;
@@ -699,7 +894,12 @@ export default {
         console.error(`[site-image-import] ${slug}: import failed (${out.reason}${out.status ? ` ${out.status}` : ''})`);
         return json({ ok: false, error: 'upstream_failed' }, 502, cors);
       }
-      return json({ ok: true, slug, url: out.url, alreadySynced: out.alreadySynced }, 200, cors);
+      return json({
+        ok: true,
+        slug,
+        url: versionMediaReference(publicOrigin, out.url, legacyOrigins),
+        alreadySynced: out.alreadySynced,
+      }, 200, cors);
     }
 
     // --- People-sync (identity Phase 2) — INTERNAL KEY ONLY (the feedback-worker broker). ---
@@ -717,7 +917,7 @@ export default {
       }
 
       let body;
-      try { body = await request.json(); } catch { return json({ ok: false, error: 'Invalid JSON' }, 400, cors); }
+      try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors, true); }
       const email = String(body?.email || '').trim().toLowerCase();
       const action = body?.action === 'revoke' ? 'revoke' : body?.action === 'grant' ? 'grant' : '';
       // Lowercase the slug (Sender's receiver already does) so a mixed-case clientId can't produce a
@@ -768,7 +968,7 @@ export default {
       if (!env.OWNER_UID) return json({ ok: false, error: 'OWNER_UID is not configured' }, 500, cors);
 
       let body;
-      try { body = await request.json(); } catch { return json({ ok: false, error: 'Invalid JSON' }, 400, cors); }
+      try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors, true); }
       // Lowercase like people-sync (fail-safe backstop), then insist on a real slug — a display
       // name here would silently match nothing (rename) or, worse, be slugified into a folder.
       const clientId = String(body?.clientId || '').trim().toLowerCase();
@@ -796,11 +996,10 @@ export default {
 
       const r = await purgeClient(env, clientId);
       console.log(`[client-purge] ${clientId}: ${summarize(r)}${r.notes.length ? ` notes=${r.notes.length}` : ''}`);
-      const allFailed = r.errors.length && r.errors.length === stores(r);
       return json({
         ok: r.errors.length === 0, clientId, counts: r.counts, notes: r.notes,
-        ...(r.errors.length ? { error: allFailed ? 'purge_failed' : 'partial_failure', errors: r.errors } : {}),
-      }, allFailed ? 502 : 200, cors);
+        ...(r.errors.length ? { error: 'purge_failed', errors: r.errors } : {}),
+      }, r.errors.length ? 502 : 200, cors);
     }
 
     // --- Generation endpoints ---
@@ -831,9 +1030,9 @@ export default {
 
       let body;
       try {
-        body = await request.json();
-      } catch {
-        return json({ error: 'Invalid JSON' }, 400, cors);
+        body = await parseJson(request, url.pathname === '/api/text' ? MULTIMODAL_JSON_BYTES : IMAGE_JSON_BYTES);
+      } catch (err) {
+        return jsonBodyError(err, cors);
       }
 
       const prompt = (body?.prompt || '').toString().trim();
@@ -927,12 +1126,13 @@ export default {
         const imgPrompt = brandPart ? `${prompt} ${brandPart}` : prompt;
         const { b64, mime } = await generateImage(env, imgPrompt, { clientId: genClientId });
         const owner = auth.mode === 'firebase' ? auth.principal : 'internal';
-        const stored = await storeImage(env, url.origin, b64ToBytes(b64), mime, owner, genClientId);
+        const stored = await storeImage(env, publicOrigin, decodeImageBase64(b64), mime, owner, genClientId);
         return json({ url: stored.url, key: stored.key }, 200, cors);
       } catch (err) {
         // A quota denial is a POLICY outcome the user must see (raise the quota in POM) — pass its
         // message + 429 through instead of masking it as a generic failure.
         if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+        if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
         // Log upstream detail server-side (visible via `wrangler tail`), but do
         // not reflect raw Gemini error text back to API callers.
         console.error('Generation failed:', err?.message || err);
@@ -969,7 +1169,9 @@ export default {
       // DELETE /api/media/:key
       if (url.pathname.startsWith('/api/media/')) {
         if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
-        const key = decodeURIComponent(url.pathname.slice('/api/media/'.length));
+        let key;
+        try { key = decodeURIComponent(url.pathname.slice('/api/media/'.length)); }
+        catch { return json({ error: 'Malformed media key' }, 400, cors); }
         if (!key) return json({ error: 'Missing key' }, 400, cors);
         if (!canManageKey(auth, env, key, caller)) return json({ error: 'Not found' }, 404, cors);
         await env.MEDIA.delete(key);
@@ -980,7 +1182,7 @@ export default {
       // no client) store a post-attachment image in the content-addressed reuse pool.
       if (request.method === 'POST') {
         let body;
-        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
         if (!env.OWNER_UID) return json({ error: 'OWNER_UID is not configured' }, 500, cors);
         // Key the library by the canonical SLUG (a display name or a slug both resolve here), so the
         // in-app editor and the POM Assets card share one folder and two orgs can never collide.
@@ -993,17 +1195,26 @@ export default {
         // GC reclaims it once no post references it.
         if (!client && !body?.videoUrl && body?.image?.base64) {
           const m = String(body.image.base64).match(/^data:([^;]+);base64,(.+)$/);
-          const mime = m ? m[1] : (body.image.mime || 'image/jpeg');
+          const mime = m ? m[1] : (body.image.mime || '');
           let bytes;
-          try { bytes = b64ToBytes(m ? m[2] : String(body.image.base64)); }
-          catch { return json({ error: 'Invalid base64 image' }, 400, cors); }
-          if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
+          try { bytes = decodeImageBase64(m ? m[2] : String(body.image.base64)); }
+          catch (err) {
+            return err?.code === 'image_too_large'
+              ? json({ error: err.message }, 413, cors)
+              : json({ error: 'Invalid base64 image' }, 400, cors);
+          }
+          try { inspectRasterImage(bytes, mime); }
+          catch { return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors); }
+          if (m && body.image.mime) {
+            try { inspectRasterImage(bytes, body.image.mime); }
+            catch { return json({ error: 'Image MIME does not match its bytes' }, 415, cors); }
+          }
           const poolOwner = auth.mode === 'apikey' ? env.OWNER_UID : auth.principal;
           // `forClient` (distinct from `client`) tags the pooled attachment with the client it belongs
           // to — for the picker's per-client scoping — WITHOUT routing it into the curated library or
           // counting it against the per-client cap. A member is pinned to their own slug.
           const forClient = memberSlug || slugifyClient(body?.forClient || '');
-          const stored = await storeImage(env, url.origin, bytes, mime, poolOwner, forClient);
+          const stored = await storeImage(env, publicOrigin, bytes, mime, poolOwner, forClient);
           return json({ key: stored.key, type: 'image', url: stored.url }, 201, cors);
         }
 
@@ -1028,24 +1239,39 @@ export default {
         const b64 = body?.image?.base64;
         if (b64) {
           const m = String(b64).match(/^data:([^;]+);base64,(.+)$/);
-          const mime = m ? m[1] : (body.image.mime || 'image/jpeg');
+          const mime = m ? m[1] : (body.image.mime || '');
           let bytes;
-          try { bytes = b64ToBytes(m ? m[2] : String(b64)); }
-          catch { return json({ error: 'Invalid base64 image' }, 400, cors); }
-          if (bytes.length > 5_000_000) return json({ error: 'Image too large after optimization (max 5 MB)' }, 413, cors);
-          const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+          try { bytes = decodeImageBase64(m ? m[2] : String(b64)); }
+          catch (err) {
+            return err?.code === 'image_too_large'
+              ? json({ error: err.message }, 413, cors)
+              : json({ error: 'Invalid base64 image' }, 400, cors);
+          }
+          let raster;
+          try { raster = inspectRasterImage(bytes, mime); }
+          catch { return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors); }
+          if (m && body.image.mime) {
+            try { inspectRasterImage(bytes, body.image.mime); }
+            catch { return json({ error: 'Image MIME does not match its bytes' }, 415, cors); }
+          }
           // Content-addressed like the pool: re-saving the same bytes lands on the SAME
           // key (an idempotent overwrite), so "Save to library" / repeat uploads can never
           // fill the library with duplicates. Only a genuinely new image counts at the cap.
           const digest = await crypto.subtle.digest('SHA-256', bytes);
           const hash = Array.from(new Uint8Array(digest), (bt) => bt.toString(16).padStart(2, '0')).join('');
-          const key = `${base}${hash}.${ext}`;
+          const key = `${base}${hash}.${raster.ext}`;
           const already = existing.objects.some(o => o.key === key);
           if (!already && existing.objects.length >= cap) {
             return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
           }
-          await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime } });
-          return json({ key, type: 'image', url: mediaUrl(url.origin, key), deduped: already }, 201, cors);
+          await env.MEDIA.put(key, bytes, {
+            httpMetadata: { contentType: raster.mime },
+            customMetadata: {
+              rasterValidated: RASTER_VALIDATION_VERSION,
+              rasterMime: raster.mime,
+            },
+          });
+          return json({ key, type: 'image', url: mediaUrl(publicOrigin, key), deduped: already }, 201, cors);
         }
         return json({ error: 'image.base64 or videoUrl is required' }, 400, cors);
       }
@@ -1058,7 +1284,7 @@ export default {
           // Same slug canonicalization as POST — list the shared slug-keyed folder.
           const client = slugifyClient(clientParam);
           if (memberSlug && client !== memberSlug) return json({ error: 'Not authorized for this client' }, 403, cors);
-          const media = await listMediaPrefix(env, url.origin, `library/${env.OWNER_UID}/${client}/`);
+          const media = await listMediaPrefix(env, publicOrigin, `library/${env.OWNER_UID}/${client}/`);
           return json({ media, count: media.length }, 200, cors);
         }
         // No client → the generated AI-cache pool (in-editor "Choose from library").
@@ -1086,7 +1312,7 @@ export default {
                 const ids = (o.customMetadata?.clientIds || o.customMetadata?.clientId || '').split(',');
                 if (!ids.includes(forClient)) continue;
               }
-              media.push({ key: o.key, type: 'image', url: mediaUrl(url.origin, o.key), size: o.size, uploaded: o.uploaded });
+              media.push({ key: o.key, type: 'image', url: mediaUrl(publicOrigin, o.key), size: o.size, uploaded: o.uploaded });
             }
             cursor = paginate && listed.truncated ? listed.cursor : undefined;
           } while (cursor);
@@ -1119,9 +1345,10 @@ export default {
       if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
 
       let body;
-      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-      const postId = String(body?.postId || '').trim();
-      if (!postId) return json({ error: 'postId is required' }, 400, cors);
+      try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
+      let postId;
+      try { postId = requireAutoId(String(body?.postId || '').trim(), 'draft'); }
+      catch { return json({ error: 'valid postId is required' }, 400, cors); }
       const post = await getPost(env, postId);
       if (!post) return json({ error: 'Post not found' }, 404, cors);
       // A parked suggestion has no tenant — promote it first (the explicit gate stays load-bearing).
@@ -1151,7 +1378,11 @@ export default {
           : json({ error: 'CONTEXT_KEY seam not configured' }, 503, cors);
       }
 
-      const html = postToEmailHtml(post);
+      const html = postToEmailHtml({
+        ...post,
+        imageUrl: versionMediaReference(publicOrigin, post.imageUrl, legacyOrigins),
+        content: versionMediaMarkdownReferences(publicOrigin, post.content, legacyOrigins),
+      });
       if (!html) return json({ error: 'Post has no content to convert' }, 400, cors);
       const name = (post.title || `${post.client || slug} — ${post.platform || 'draft'}`).slice(0, 120);
       try {
@@ -1194,7 +1425,7 @@ export default {
       if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
 
       let body;
-      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+      try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
       // Bound every field to the save path's own limits — this is preview-only,
       // but it still flows through the broker's 500KB relay cap. A data-URL
       // hero that would blow that cap is DROPPED whole (never truncated —
@@ -1207,10 +1438,10 @@ export default {
           heroOmitted = true;
         }
       } else {
-        imageUrl = imageUrl.slice(0, 2048); // hosted/https URLs are short
+        imageUrl = versionMediaReference(publicOrigin, imageUrl, legacyOrigins).slice(0, 2048); // hosted/https URLs are short
       }
       const draft = {
-        content: String(body?.content || '').slice(0, 120000),
+        content: versionMediaMarkdownReferences(publicOrigin, String(body?.content || ''), legacyOrigins).slice(0, 120000),
         title: String(body?.title || '').slice(0, 200),
         imageUrl,
         altText: String(body?.altText || '').slice(0, 300),
@@ -1268,9 +1499,10 @@ export default {
       if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
 
       let body;
-      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-      const postId = String(body?.postId || '').trim();
-      if (!postId) return json({ error: 'postId is required' }, 400, cors);
+      try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
+      let postId;
+      try { postId = requireAutoId(String(body?.postId || '').trim(), 'draft'); }
+      catch { return json({ error: 'valid postId is required' }, 400, cors); }
       const post = await getPost(env, postId);
       if (!post) return json({ error: 'Post not found' }, 404, cors);
       if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
@@ -1283,7 +1515,7 @@ export default {
       if (post.platform !== 'blog') return json({ error: 'Only blog drafts can be published to the site (v1)' }, 400, cors);
       // Normalize line endings FIRST: keeps the frontmatter detection below honest for CRLF
       // content and makes the sha the broker pins independent of paste/import line-ending luck.
-      const md = String(post.content || '').replace(/\r\n?/g, '\n').trim();
+      const md = versionMediaMarkdownReferences(publicOrigin, post.content, legacyOrigins).replace(/\r\n?/g, '\n').trim();
       if (!md) return json({ error: 'Post has no content' }, 400, cors);
 
       // Resolve the ROSTER slug — never slugify a display name (the documented phantom-slug bug).
@@ -1386,13 +1618,16 @@ export default {
 
       // /api/drafts/:id — fetch one / patch / delete.
       if (url.pathname.startsWith('/api/drafts/')) {
-        const id = decodeURIComponent(url.pathname.slice('/api/drafts/'.length));
-        if (!id) return json({ error: 'Missing draft id' }, 400, cors);
+        let id;
+        try { id = decodeAutoId(url.pathname.slice('/api/drafts/'.length), 'draft'); }
+        catch { return json({ error: 'Invalid draft id' }, 400, cors); }
 
         const existing = await getPost(env, id);
         if (!existing || existing.uid !== env.OWNER_UID) return json({ error: 'Draft not found' }, 404, cors);
 
-        if (request.method === 'GET') return json({ draft: existing }, 200, cors);
+        if (request.method === 'GET') {
+          return json({ draft: await versionDraftMedia(publicOrigin, existing, legacyOrigins) }, 200, cors);
+        }
 
         if (request.method === 'DELETE') {
           await deletePost(env, id);
@@ -1401,78 +1636,189 @@ export default {
 
         if (request.method === 'PATCH') {
           let body;
-          try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-          const max = rawIntakeCap(existing.platform);
-          const patch = {};
-          if (typeof body.content === 'string') patch.content = body.content.trim().slice(0, max);
-          if (typeof body.title === 'string') patch.title = body.title.trim().slice(0, 200);
-          if (typeof body.altText === 'string') patch.altText = body.altText.trim().slice(0, 300);
-          if (typeof body.metaDescription === 'string') patch.metaDescription = body.metaDescription.trim().slice(0, 200);
-          if (Array.isArray(body.tags)) patch.tags = body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean);
-          if (body.scheduledDate === null || typeof body.scheduledDate === 'string') {
-            patch.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
+          try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
+          // Every internal caller must bind its update to the tenant + approved
+          // payload it actually rendered. A missing baseline is not equivalent
+          // to "latest"; callers GET/list the draft first and receive both
+          // revisions. Review verbs additionally bind current review/history so
+          // two reviewer/operator actions cannot silently last-write each other.
+          if (typeof body.baseClientId !== 'string'
+            || typeof body.basePayloadRevision !== 'string'
+            || !/^[a-f0-9]{64}$/.test(body.basePayloadRevision)) {
+            return json({ error: 'baseClientId and basePayloadRevision from the latest draft are required' }, 428, cors);
           }
-          if (['draft', 'scheduled', 'posted', 'archived'].includes(body.status)) patch.status = body.status;
+          try {
+            await assertDraftBaseline(publicOrigin, existing, {
+              clientId: body.baseClientId,
+              payloadRevision: body.basePayloadRevision,
+            }, legacyOrigins);
+          } catch {
+            return json({ error: 'Draft tenant or content changed; reload before updating' }, 409, cors);
+          }
+          const fields = {};
+          const hasPlatform = Object.prototype.hasOwnProperty.call(body, 'platform');
+          let nextPlatform = existing.platform;
+          if (hasPlatform) {
+            if (typeof body.platform !== 'string'
+              || !Object.prototype.hasOwnProperty.call(PLATFORM_MAX, body.platform)) {
+              return json({ error: `Unknown platform '${String(body.platform)}'` }, 400, cors);
+            }
+            nextPlatform = body.platform;
+            fields.platform = body.platform;
+          }
+          const max = rawIntakeCap(nextPlatform);
+          if (typeof body.content === 'string') {
+            fields.content = versionMediaMarkdownReferences(publicOrigin, body.content.trim().slice(0, max), legacyOrigins);
+          } else if (hasPlatform && String(existing.content || '').length > max) {
+            return json({ error: `Existing content exceeds the ${nextPlatform} intake limit; update content with platform` }, 400, cors);
+          }
+          if (typeof body.title === 'string') fields.title = body.title.trim().slice(0, 200);
+          if (typeof body.altText === 'string') fields.altText = body.altText.trim().slice(0, 300);
+          if (typeof body.metaDescription === 'string') fields.metaDescription = body.metaDescription.trim().slice(0, 200);
+          if (Array.isArray(body.tags)) fields.tags = body.tags.slice(0, 10).map(t => String(t).trim().slice(0, 20)).filter(Boolean);
+          if (body.scheduledDate === null || typeof body.scheduledDate === 'string') {
+            fields.scheduledDate = body.scheduledDate ? String(body.scheduledDate).slice(0, 40) : null;
+          }
+          const hasStatus = ['draft', 'scheduled', 'posted', 'archived'].includes(body.status);
+          const hasReviewStage = ['private', 'in_review'].includes(body.reviewStage);
           // Staging axis (src/utils/review.js): 'private' keeps the draft off the client's
           // review link, 'in_review' publishes it there. Sending also (re)arms the round —
           // an undecided draft goes back to pending and gets a fresh sentForReviewAt, so
           // POM's "waiting N days" is measured from the send, not from creation. An already
           // APPROVED draft keeps its approval: that was the client's decision, not ours.
-          if (['private', 'in_review'].includes(body.reviewStage)) {
-            patch.reviewStage = body.reviewStage;
-            if (body.reviewStage === 'in_review') {
-              patch.sentForReviewAt = new Date().toISOString();
-              if (body.approvalStatus === undefined && existing.approvalStatus !== 'approved') {
-                patch.approvalStatus = 'pending';
-              }
-            }
-          }
+          // sentForReviewAt/pending are derived from the LIVE draft inside the
+          // compare-and-swap builder, never from this potentially stale read.
           // Review verbs (POM's Content card via the feedback-worker broker): approvalStatus
           // transitions with an optional reviewer note. The note is appended SERVER-SIDE and
-          // ATOMICALLY (updatePostWithAppend — a :commit array transform) so a concurrent in-app /
-          // guest note on the same draft is never clobbered by a snapshot rebuild. Shape mirrors the
+          // in the same update-time-precondition commit so a concurrent in-app / guest note on the
+          // same draft is never clobbered by a snapshot rebuild. Shape mirrors the
           // UI's request-changes entries ({text, by, at}), so POM feedback renders like in-app feedback.
-          let threadEntry = null;
-          if (body.approvalStatus !== undefined) {
+          const hasApproval = body.approvalStatus !== undefined;
+          let feedback = '';
+          if (hasApproval) {
             if (!['pending', 'approved', 'changes_requested'].includes(body.approvalStatus)) {
               return json({ error: `Unknown approvalStatus '${body.approvalStatus}'` }, 400, cors);
             }
-            const note = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 500) : '';
-            if (body.approvalStatus === 'changes_requested' && !note) {
+            feedback = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 500) : '';
+            if (body.approvalStatus === 'changes_requested' && !feedback) {
               return json({ error: 'feedback is required when requesting changes' }, 400, cors);
             }
-            patch.approvalStatus = body.approvalStatus;
-            if (note) {
-              // Attribution whitelist — never store an arbitrary caller string in the thread.
-              const by = body.reviewedBy === 'client' ? 'client' : 'you';
-              patch.feedback = note;
-              threadEntry = { text: note, by, at: new Date().toISOString() };
+            if (hasStatus && !(body.approvalStatus === 'approved' && body.status === 'scheduled')) {
+              return json({ error: 'A review action may change status only when approval advances draft to scheduled' }, 400, cors);
             }
+            if (hasReviewStage && body.reviewStage !== 'in_review') {
+              return json({ error: 'Approval/resubmit actions cannot move a draft to private staging' }, 400, cors);
+            }
+          }
+          const isReviewIntent = hasApproval || hasReviewStage;
+          const reviewAction = hasApproval
+            ? body.approvalStatus === 'approved' ? 'approve'
+              : body.approvalStatus === 'changes_requested' ? 'request_changes'
+                : 'resubmit'
+            : hasReviewStage
+              ? body.reviewStage === 'in_review' ? 'send' : 'hold'
+              : '';
+          try {
+            assertIsolatedDraftReviewIntent(body, { hasApproval, hasReviewStage, hasStatus });
+          } catch (err) {
+            return json({ error: err.message }, 400, cors);
+          }
+          if (isReviewIntent && (typeof body.baseReviewRevision !== 'string'
+            || !/^[a-f0-9]{64}$/.test(body.baseReviewRevision))) {
+            return json({ error: 'baseReviewRevision from the latest draft is required for review actions' }, 428, cors);
+          }
+          if (isReviewIntent) {
+            try {
+              await assertDraftBaseline(publicOrigin, existing, {
+                clientId: body.baseClientId,
+                payloadRevision: body.basePayloadRevision,
+                reviewRevision: body.baseReviewRevision,
+              }, legacyOrigins, { review: true });
+            } catch {
+              return json({ error: 'Draft review state changed; reload before acting' }, 409, cors);
+            }
+          }
+
+          let migratedImageFrom = '';
+          const imageInput = body.image || (typeof body.imageUrl === 'string' && body.imageUrl.startsWith('data:')
+            ? { base64: body.imageUrl }
+            : null);
+          if (imageInput && sameLegacyImageBytes(existing.imageUrl, imageInput)) {
+            migratedImageFrom = existing.imageUrl;
           }
           if (body.image) {
             try {
               // Thread the DRAFT's own tenant slug into the image generation for usage metering —
               // server-resolved, overriding any caller-supplied image.clientId (never trust raw input).
-              const u = await resolveDraftImage(env, url.origin, { ...body.image, clientId: existing.clientId || undefined });
-              if (u) patch.imageUrl = u;
+              const u = await resolveDraftImage(env, publicOrigin, { ...body.image, clientId: existing.clientId || undefined }, legacyOrigins);
+              if (u) fields.imageUrl = versionMediaReference(publicOrigin, u, legacyOrigins).slice(0, 2000);
             } catch (err) {
               // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
               if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+              if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
+              if (err?.code === 'unsupported_image') {
+                return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors);
+              }
               console.error('Patch image failed:', err?.message || err);
               return json({ error: 'Image processing failed' }, 502, cors);
             }
           } else if (typeof body.imageUrl === 'string') {
-            patch.imageUrl = body.imageUrl.slice(0, 2000);
+            try {
+              const u = body.imageUrl.startsWith('data:')
+                ? await resolveDraftImage(env, publicOrigin, { base64: body.imageUrl, clientId: existing.clientId || undefined }, legacyOrigins)
+                : versionMediaReference(publicOrigin, body.imageUrl, legacyOrigins);
+              fields.imageUrl = u ? u.slice(0, 2000) : '';
+            } catch (err) {
+              if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
+              if (err?.code === 'unsupported_image') return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors);
+              console.error('Patch image failed:', err?.message || err);
+              return json({ error: 'Image processing failed' }, 502, cors);
+            }
           }
-          if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
-          patch.updatedAt = new Date().toISOString();
+          if (!Object.keys(fields).length && !hasStatus && !hasReviewStage && !hasApproval) {
+            return json({ error: 'No updatable fields provided' }, 400, cors);
+          }
+
+          const intent = {
+            fields,
+            hasStatus,
+            status: body.status,
+            baseStatus: existing.status,
+            hasReviewStage,
+            reviewStage: body.reviewStage,
+            hasApproval,
+            approvalStatus: body.approvalStatus,
+            feedback,
+            reviewedBy: body.reviewedBy === 'client' ? 'client' : 'you',
+            migratedImageFrom,
+            baseClientId: body.baseClientId,
+            basePayloadRevision: body.basePayloadRevision,
+            baseReviewRevision: isReviewIntent ? body.baseReviewRevision : '',
+            isReviewIntent,
+            reviewAction,
+          };
           try {
-            const draft = threadEntry
-              ? await updatePostWithAppend(env, id, patch, 'feedbackThread', threadEntry)
-              : await updatePost(env, id, patch);
-            return json({ draft }, 200, cors);
+            const result = await mutatePostAtomically(env, id, async (live) => {
+              if (live.uid !== env.OWNER_UID) {
+                const err = new Error('Draft not found');
+                err.status = 404;
+                throw err;
+              }
+              await assertDraftBaseline(publicOrigin, live, {
+                clientId: intent.baseClientId,
+                payloadRevision: intent.basePayloadRevision,
+                reviewRevision: intent.baseReviewRevision,
+              }, legacyOrigins, { review: intent.isReviewIntent });
+              return buildDraftMutation(publicOrigin, live, intent, Date.now(), legacyOrigins);
+            });
+            return json({ draft: await versionDraftMedia(publicOrigin, result.document, legacyOrigins) }, 200, cors);
           } catch (err) {
             console.error('Draft update failed:', err?.message || err);
+            if (err?.status === 404 || err?.code === 'not_found') return json({ error: 'Draft not found' }, 404, cors);
+            if (err?.code === 'feedback_thread_full') return json({ error: 'Feedback history is full' }, 409, cors);
+            if (err?.code === 'feedback_thread_invalid') return json({ error: 'Feedback history needs repair before another note can be added' }, 409, cors);
+            if (err?.code === 'review_conflict') return json({ error: 'Draft tenant, content, or review state changed; reload before updating' }, 409, cors);
+            if (err?.code === 'update_conflict') return json({ error: 'Draft changed concurrently; retry the update' }, 409, cors);
             return json({ error: 'Update failed' }, 502, cors);
           }
         }
@@ -1497,20 +1843,17 @@ export default {
           }
         }
         try {
-          // Bound the response. This scanned every post the owner has ever created and
-          // returned FULL documents — content, base64-era imageUrl, whole feedbackThread
-          // arrays — so the payload grew without limit as the workspace did, on a route
-          // POM polls. ?limit= (default 300, max 1000) caps it, and the response says
-          // when it truncated so no caller can mistake a partial list for the whole set.
-          const reqLimit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '300', 10) || 300, 1), 1000);
-          let drafts = await listPosts(env, env.OWNER_UID);
-          // Templates aren't drafts, and parked SUGGESTIONS aren't review content yet: legacy
-          // name-keyed callers join this list by display name (which suggestions carry), so
-          // without this filter a not-yet-promoted option would surface on a client's dashboard.
-          // (Slug-keyed callers are safe either way — a suggestion's clientId is '' by design.)
-          drafts = drafts.filter(d => !d.isTemplate && d.source !== 'suggestion');
           const q = url.searchParams;
-          const fc = q.get('client'), fcid = (q.get('clientId') || '').trim(), fp = q.get('platform'), fst = q.get('status');
+          const rawLimit = q.get('limit') || '300';
+          if (!/^\d{1,4}$/.test(rawLimit)) return json({ error: 'limit must be an integer from 1 to 1000' }, 400, cors);
+          const reqLimit = Number(rawLimit);
+          if (reqLimit < 1 || reqLimit > 1000) return json({ error: 'limit must be an integer from 1 to 1000' }, 400, cors);
+
+          const rawClient = q.get('client');
+          const fc = rawClient === null ? null : rawClient.trim();
+          const fcid = (q.get('clientId') || '').trim();
+          const fp = (q.get('platform') || '').trim();
+          const fst = (q.get('status') || '').trim();
           // ?reviewStage=private|in_review — lets POM ask for "what's still on my desk"
           // vs "what's with the client". Absent = every stage (the pre-existing behaviour,
           // so no caller's list can shrink under it).
@@ -1521,18 +1864,51 @@ export default {
           // The ?client= name filter stays for legacy callers that only send the name (and a
           // dual-param caller hitting an older deploy of this worker gets the name filter = the
           // status quo, so the protocol is safe in both interim deploy states).
-          if (fcid) drafts = drafts.filter(d => d.clientId === fcid);
-          else if (fc) drafts = drafts.filter(d => d.client === fc);
-          if (fp) drafts = drafts.filter(d => d.platform === fp);
-          if (fst) drafts = drafts.filter(d => d.status === fst);
-          // ABSENT reviewStage reads as 'in_review' — the same legacy default the SPA applies.
-          if (frs) drafts = drafts.filter(d => (d.reviewStage || 'in_review') === frs);
-          drafts.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-          // Newest-first, so a truncated page is still the page a caller wants.
-          const total = drafts.length;
-          const truncated = total > reqLimit;
-          if (truncated) drafts = drafts.slice(0, reqLimit);
-          return json({ drafts, count: drafts.length, total, truncated }, 200, cors);
+          if (fcid && (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(fcid) || fcid.length > 64)) {
+            return json({ error: 'clientId must be a canonical client slug' }, 400, cors);
+          }
+          if (!fcid && fc !== null && (!fc || fc.length > 50)) {
+            return json({ error: 'client must be 1 to 50 characters' }, 400, cors);
+          }
+          if (fp && !Object.prototype.hasOwnProperty.call(PLATFORM_MAX, fp)) {
+            return json({ error: `Unknown platform '${fp}'` }, 400, cors);
+          }
+          if (fst && !['draft', 'scheduled', 'posted', 'archived'].includes(fst)) {
+            return json({ error: `Unknown status '${fst}'` }, 400, cors);
+          }
+          if (frs && !['private', 'in_review'].includes(frs)) {
+            return json({ error: `Unknown reviewStage '${frs}'` }, 400, cors);
+          }
+
+          const filters = {
+            ...(fcid ? { clientId: fcid } : (fc ? { client: fc } : {})),
+            ...(fp ? { platform: fp } : {}),
+            ...(fst ? { status: fst } : {}),
+            ...(frs ? { reviewStage: frs } : {}),
+          };
+          const filterKey = JSON.stringify(filters);
+          let cursorId = '';
+          let cursorReadTime = '';
+          if (q.has('cursor')) {
+            try {
+              const cursor = decodeDraftCursor(q.get('cursor'), filterKey);
+              cursorId = cursor.id;
+              cursorReadTime = cursor.readTime;
+            }
+            catch { return json({ error: 'Invalid or mismatched draft cursor' }, 400, cors); }
+          }
+
+          const page = await listDraftPage(env, env.OWNER_UID, {
+            filters, cursorId, readTime: cursorReadTime, limit: reqLimit,
+          });
+          const drafts = await Promise.all(page.drafts.map(d => versionDraftMedia(publicOrigin, d, legacyOrigins)));
+          return json({
+            drafts,
+            count: drafts.length,
+            total: page.total,
+            truncated: page.truncated,
+            nextCursor: page.truncated ? encodeDraftCursor(page.nextId, filterKey, page.readTime) : null,
+          }, 200, cors);
         } catch (err) {
           console.error('Draft list failed:', err?.message || err);
           return json({ error: 'List failed' }, 502, cors);
@@ -1541,14 +1917,18 @@ export default {
 
       if (request.method === 'POST') {
         let body;
-        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
 
         const platform = String(body?.platform || 'gmb');
         // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would
         // wrongly validate and let a junk platform through). PLATFORM_MAX is a plain object literal.
         if (!Object.prototype.hasOwnProperty.call(PLATFORM_MAX, platform)) return json({ error: `Unknown platform '${platform}'` }, 400, cors);
 
-        const content = (body?.content || '').toString().trim().slice(0, rawIntakeCap(platform));
+        const content = versionMediaMarkdownReferences(
+          publicOrigin,
+          (body?.content || '').toString().trim().slice(0, rawIntakeCap(platform)),
+          legacyOrigins,
+        );
         if (!content) return json({ error: 'content is required' }, 400, cors);
         const client = (body?.client || '').toString().trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
@@ -1586,10 +1966,14 @@ export default {
         try {
           // Same server-resolved clientId threading as PATCH — the sanitized slug from above,
           // overriding any caller-supplied image.clientId.
-          imageUrl = (await resolveDraftImage(env, url.origin, body?.image ? { ...body.image, clientId: clientId || undefined } : null)) || '';
+          imageUrl = (await resolveDraftImage(env, publicOrigin, body?.image ? { ...body.image, clientId: clientId || undefined } : null, legacyOrigins)) || '';
         } catch (err) {
           // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
           if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+          if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
+          if (err?.code === 'unsupported_image') {
+            return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors);
+          }
           console.error('Draft image failed:', err?.message || err);
           return json({ error: 'Image processing failed' }, 502, cors);
         }
@@ -1610,10 +1994,10 @@ export default {
             imageUrl, tags, scheduledDate,
             createdAt: nowIso, updatedAt: nowIso, source: 'api'
           });
-          return json({
-            id, status: 'draft',
-            reviewUrl: `${url.origin}/?uid=${env.OWNER_UID}&client=${encodeURIComponent(client)}`
-          }, 201, cors);
+          // Do not return the retired anonymous ?uid=&client= review URL. Review
+          // access exists only after the operator deliberately creates a
+          // tokenized share link through /api/share.
+          return json({ id, status: 'draft' }, 201, cors);
         } catch (err) {
           console.error('Draft create failed:', err?.message || err);
           return json({ error: 'Draft create failed' }, 502, cors);
@@ -1637,9 +2021,10 @@ export default {
         if (!rl.ok) return json({ error: 'Too many attempts — try again shortly.' }, 429, { ...cors, 'Retry-After': String(rl.retryAfter) });
 
         let body;
-        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
-        const token = String(body?.token || '').trim().slice(0, 128);
-        if (!token) return json({ error: 'token is required' }, 400, cors);
+        try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
+        let token;
+        try { token = requireShareToken(String(body?.token || '').trim()); }
+        catch { return json({ error: 'valid token is required' }, 400, cors); }
 
         let share;
         try { share = await getShareDoc(env, token); }
@@ -1684,8 +2069,9 @@ export default {
       // DELETE /api/share/:token — revoke (operator any; member own clientId only).
       if (url.pathname.startsWith('/api/share/')) {
         if (request.method !== 'DELETE') return json({ error: 'Method not allowed' }, 405, cors);
-        const token = decodeURIComponent(url.pathname.slice('/api/share/'.length));
-        if (!token) return json({ error: 'Missing token' }, 400, cors);
+        let token;
+        try { token = decodeShareToken(url.pathname.slice('/api/share/'.length)); }
+        catch { return json({ error: 'Invalid share token' }, 400, cors); }
         const share = await getShareDoc(env, token);
         if (!share) return json({ error: 'Not found' }, 404, cors);
         if (!caller.isOperator && share.clientId !== caller.clientId) return json({ error: 'Not found' }, 404, cors);
@@ -1717,7 +2103,7 @@ export default {
       // the member's own (forced) or, for an operator, the requested client's.
       if (request.method === 'POST') {
         let body;
-        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
         const client = String(body?.client || '').trim().replace(/\//g, '').slice(0, 50);
         if (!client) return json({ error: 'client is required' }, 400, cors);
         const clientId = caller.isOperator
@@ -1763,8 +2149,9 @@ export default {
       if (url.pathname.startsWith('/api/automations/')) {
         const rest = url.pathname.slice('/api/automations/'.length);
         const isRun = rest.endsWith('/run');
-        const id = decodeURIComponent(isRun ? rest.slice(0, -'/run'.length) : rest);
-        if (!id) return json({ error: 'Missing automation id' }, 400, cors);
+        let id;
+        try { id = decodeAutoId(isRun ? rest.slice(0, -'/run'.length) : rest, 'automation'); }
+        catch { return json({ error: 'Invalid automation id' }, 400, cors); }
 
         const existing = await getAutomation(env, id);
         if (!existing || existing.ownerUid !== env.OWNER_UID) return json({ error: 'Automation not found' }, 404, cors);
@@ -1775,7 +2162,7 @@ export default {
           if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405, cors);
           try {
             // Separate budget principal so manual previews can't drain the cron's daily budget.
-            const result = await generateForAutomation(env, url.origin, existing, 'automation:preview');
+            const result = await generateForAutomation(env, publicOrigin, existing, 'automation:preview');
             const nowIso = new Date().toISOString();
             await updateAutomation(env, id, {
               lastRunAt: nowIso, lastStatus: 'ok', lastError: '',
@@ -1806,7 +2193,7 @@ export default {
 
         if (request.method === 'PATCH') {
           let body;
-          try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+          try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
           const patch = sanitizeAutomationPatch(body, existing.platform);
           if (Object.keys(patch).length === 0) return json({ error: 'No updatable fields provided' }, 400, cors);
           // A changed cadence must take effect now, not after the old (possibly
@@ -1841,7 +2228,7 @@ export default {
 
       if (request.method === 'POST') {
         let body;
-        try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, cors); }
+        try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors); }
 
         const platform = String(body?.platform || 'gmb');
         // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would
@@ -1925,32 +2312,110 @@ export default {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return json({ error: 'Method not allowed' }, 405, cors);
       }
-      const key = decodeURIComponent(url.pathname.slice('/media/'.length));
+      // v2 is a cache-key break. Old /media/<key> responses were immutable for
+      // one year, so changing origin logic cannot revoke browser/CDN copies.
+      // Cache misses on the old route redirect without caching; the rollout
+      // runbook separately requires a Cloudflare purge and describes residual
+      // browser caches. New app reads rewrite stored legacy refs to this v2 URL.
+      const v2Prefix = '/media/v2/';
+      const isV2 = url.pathname === '/media/v2' || url.pathname.startsWith(v2Prefix);
+      const encodedKey = url.pathname === '/media/v2'
+        ? ''
+        : url.pathname.slice((isV2 ? v2Prefix : '/media/').length);
+      let key;
+      try { key = decodeURIComponent(encodedKey); }
+      catch { return json({ error: 'Malformed media key' }, 400, cors); }
+      if (!key) return json({ error: 'Missing media key' }, 400, cors);
+
+      if (!isV2) {
+        const headers = applySecurityHeaders(new Headers(cors));
+        headers.set('Location', mediaUrl(publicOrigin, key));
+        headers.set('Cache-Control', 'no-store');
+        return new Response(null, { status: 308, headers });
+      }
+
       const isHead = request.method === 'HEAD';
       const obj = isHead ? await env.MEDIA.head(key) : await env.MEDIA.get(key);
-      if (!obj) return new Response(null, { status: 404, headers: cors });
+      if (!obj) {
+        const headers = applySecurityHeaders(new Headers(cors));
+        return new Response(null, { status: 404, headers });
+      }
       const headers = new Headers(cors);
       obj.writeHttpMetadata(headers);
-      headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-      // Serve stored bytes as EXACTLY their stored type — R2 holds user/site-sourced content,
-      // and content-sniffing an inline same-origin response is how a disguised HTML/SVG body
-      // becomes stored XSS. New stores only accept raster types; the svg→attachment fallback
-      // neutralizes any legacy svg object without breaking <img> rendering of raster images.
-      headers.set('X-Content-Type-Options', 'nosniff');
-      if ((headers.get('Content-Type') || '').toLowerCase().includes('svg')) {
-        headers.set('Content-Disposition', 'attachment');
+      let body = null;
+      let safeInline = false;
+
+      if (isHead) {
+        // HEAD has no bytes to inspect. Old Content-Type metadata is untrusted;
+        // only objects written through the new byte gate carry this validation
+        // stamp. Every legacy HEAD is attachment/no-store until it is audited
+        // and deliberately rewritten through a validated ingestion path.
+        const custom = obj.customMetadata || {};
+        const canonical = String(custom.rasterMime || '').toLowerCase();
+        safeInline = custom.rasterValidated === RASTER_VALIDATION_VERSION
+          && (!Number.isFinite(obj.size) || obj.size <= MAX_IMAGE_BYTES)
+          && ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(canonical);
+        if (safeInline) headers.set('Content-Type', canonical);
+      } else {
+        // Re-inspect legacy objects on read too. That protects objects written
+        // before this gate, including HTML stored under a forged image MIME.
+        if (Number.isFinite(obj.size) && obj.size > MAX_IMAGE_BYTES) {
+          // Do not allocate a legacy oversize object merely to classify it. It
+          // remains retrievable as a no-store attachment for audit/remediation.
+          body = obj.body;
+        } else {
+          let bytes;
+          try {
+            bytes = await readBytesBounded(
+              obj.body,
+              Number.isFinite(obj.size) ? new Headers({ 'Content-Length': String(obj.size) }) : new Headers(),
+              MAX_IMAGE_BYTES,
+            );
+          } catch (err) {
+            if (err instanceof BodyTooLargeError) return json({ error: 'Stored media exceeds the safe read limit' }, 413, cors);
+            throw err;
+          }
+          body = bytes;
+          try {
+            // Reads classify solely from bytes. A stale/wrong legacy R2 MIME must
+            // not hide an otherwise valid raster; claim matching remains strict
+            // on every WRITE, where the claim is supplied by the caller/upstream.
+            const raster = inspectRasterImage(bytes);
+            headers.set('Content-Type', raster.mime);
+            safeInline = true;
+          } catch {
+            safeInline = false;
+          }
+        }
       }
+
+      if (safeInline) {
+        // Stored metadata may also carry a stale attachment disposition. Once
+        // bytes (GET) or the new validation stamp (HEAD) prove this is a raster,
+        // remove it so the canonical inline response cannot inherit that claim.
+        headers.delete('Content-Disposition');
+        headers.delete('Content-Encoding');
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      } else forceMediaDownload(headers, key);
+      applySecurityHeaders(headers);
       // Conditional-request support: keys are content-addressed/immutable, so a
       // revalidating client gets a bodyless 304 instead of a full R2 read-through.
       headers.set('ETag', obj.httpEtag);
-      if (request.headers.get('If-None-Match') === obj.httpEtag) {
+      if (safeInline && request.headers.get('If-None-Match') === obj.httpEtag) {
         return new Response(null, { status: 304, headers });
       }
-      return new Response(isHead ? null : obj.body, { headers });
+      return new Response(body, { headers });
     }
 
     // --- Everything else: the SPA / static assets ---
-    return env.ASSETS.fetch(request);
+      return withSecurityHeaders(await env.ASSETS.fetch(request));
+    } catch (err) {
+      // One final boundary for dependencies and static assets. Individual
+      // routes still map expected errors precisely; an unexpected throw must
+      // not fall through to Cloudflare's unhashed/un-CORSed default 500 page.
+      console.error('Unhandled Worker request failure:', err?.message || err);
+      return json({ error: 'Internal server error' }, 500, cors);
+    }
   },
 
   // Cron triggers (see wrangler.toml [triggers]). Each cron expression fires its
@@ -1960,8 +2425,8 @@ export default {
     if (event.cron === '0 4 * * *') {
       ctx.waitUntil(runGC(env));
     } else {
-      const origin = (env.PUBLIC_ORIGIN || 'https://spool.stitchtec.dev').replace(/\/$/, '');
-      ctx.waitUntil(runDueAutomations(env, origin));
+      const { publicOrigin } = mediaOriginConfig(env);
+      ctx.waitUntil(runDueAutomations(env, publicOrigin));
     }
   }
 };

@@ -15,7 +15,8 @@ per-`(owner, client)` secret. Opening it:
 
 1. The app calls `POST /api/share/session` with the token.
 2. The Worker looks up `shares/<token>` (via the service account) and mints a
-   **Firebase custom token** carrying claims `{ share: true, shareOwner, shareClient }`.
+   **Firebase custom token** carrying claims `{ share: true, shareOwner,
+   shareClientId, shareToken }`.
 3. The guest signs in with that custom token and can read **only** that one
    owner+client's posts — enforced by `firestore.rules`, not just the UI.
 
@@ -39,52 +40,67 @@ generation / media / drafts APIs.
 
 The Worker + SPA **auto-deploy on push to `main`** (`.github/workflows/deploy.yml`),
 but **Firestore rules deploy manually** (`firebase deploy --only firestore:rules`).
-That asymmetry creates a short window you must manage.
 
-> **Mind the gap.** Once the new app is live but the *old* rules are still active,
-> guest **reads** work (old read rule = any signed-in user) but guest **writes**
-> (approve / request changes) are **rejected** — the new app sends `updatedAt` +
-> `feedbackThread`, which the old guest-update allowlist (`status`,
-> `approvalStatus`, `feedback`) forbids. So reviewers can *view but not act* until
-> the rules are deployed. The owner dashboard is unaffected throughout.
+The rules also validate guest review values and transitions: approval/status
+enums are bounded, only `draft → scheduled` may accompany a guest approval,
+feedback is capped at 500 characters, and each feedback write must append one
+client-attributed history entry without deleting prior entries. Approval and
+feedback must also stamp `reviewedBy:"client"` plus one matching ISO
+`reviewedAt`/`updatedAt` value. The SPA performs these actions in Firestore
+transactions bound to the post's clientId, approved-payload identity, and review
+state, so content/tenant/reviewer races return a visible conflict instead of a
+last-write win. A code deploy
+does not activate these rule changes; use the manual deploy/verification step
+below after the application PR is merged.
 
-**Recommended sequence (minimizes disruption):**
+Registered client members use the same review contract. Their separate
+editorial path is limited to bounded post fields and safe status transitions;
+new member posts must start `draft / pending / in_review`, and changing an
+approved title/content/image/platform must reset approval to `pending` atomically.
+Members cannot forge posted/approved creation state, review attribution, or
+replace feedback history.
 
-1. **Merge to `main`** → CI deploys the Worker (share endpoints) + SPA
-   (`?s=` flow + Share Manager). Don't hand out any links yet.
-2. **Immediately deploy the new rules** (don't leave the gap open):
+> **Mind the security gap.** The currently deployed rules already allow the
+> fields the app writes, so approve/request-changes actions continue to work
+> after the Worker/SPA deploy. They remain too permissive, however: the enum,
+> transition, length, timestamp, and append-only checks above are **inactive**
+> until the manual rules deploy succeeds. A green application deploy does not
+> mean this security fix is live.
+
+**Required sequence:**
+
+1. Complete the strict legacy-ID inventory gate and guarded missing-`reviewStage`
+   dry-run/apply/audit in
+   [`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md) while old code/rules are live.
+2. **Merge to `main`** → CI deploys the Worker + SPA. Existing review actions
+   continue working under the old rules, but all rule security fixes remain inactive.
+3. **Immediately deploy the new rules** (keep the permissive window short):
    ```bash
    firebase deploy --only firestore:rules   # verify in the Rules Playground first
    ```
-   After this: `?s=` links work fully (read + write); old `?uid=` anonymous links
-   **stop working** (no `share` claim → reads denied).
-3. **Now create + distribute `?s=` links** from the Share Manager and re-issue them
-   to clients who had old `?uid=` links.
-4. **(Recommended) Disable Firebase Anonymous sign-in** (Firebase console →
-   Authentication → Sign-in method). Guests use custom tokens now, so disabling
-   anonymous auth closes the last path to obtaining *any* session.
+4. **Smoke-test both actions** with a current `?s=` link: approve a draft and
+   request changes on another. Confirm the workflow status is not rewound for a
+   posted/archived thread and prior feedback remains present.
 
-> **Why app-first, not rules-first?** Deploying the rules *before* the app is worse:
-> the new read rule would immediately break existing `?uid=` reviewers **and** the
-> Share Manager (the only way to mint `?s=` links) wouldn't exist yet — leaving a
-> window with *no* working review path at all.
-
-**Best fix (eliminates the gap):** automate the rules deploy in CI so it runs with
-the Worker deploy. Add a `firebase-tools` step gated on a `FIREBASE_TOKEN` (or
-service-account) secret to `deploy.yml`, ordered before the Worker publish. Until
-that's wired up, follow the manual sequence above and keep step 1→2 tight.
+**Future improvement:** automate a coordinated application-then-rules rollout in
+CI, with a Firebase credential that can deploy rules and a post-deploy review
+smoke test. Do not simply put this stricter ruleset before the application deploy:
+the prior SPA lacks the stage-constrained query and does not guarantee the new
+feedback-entry timestamp invariant. A
+truly zero-window rollout needs an explicitly backward-compatible intermediate
+rules/app version; until then, follow the manual sequence above and keep step
+1→2 tight.
 
 ### Rollback
 
-Re-deploying the previous `firestore.rules` restores the old behavior. The
-Worker/SPA changes read fine under the old rules (only guest *writes* differ), so
-they don't need reverting — but guest review actions will fail until the new rules
-are back.
+Re-deploying the previous `firestore.rules` restores the permissive behavior.
+Guest review actions continue working, but the security gap reopens; record that
+state explicitly rather than treating rollback as a completed remediation.
 
 ## Data model
 
-- `shares/<token>` (Worker-only; `firestore.rules` denies all client access):
-  `{ ownerUid, client, label, revoked, createdAt }`.
+- `shares/<token>` (Worker-only; guest rules only test existence/revocation):
+  `{ ownerUid, client, clientId, label, revoked, createdAt }`.
 - `posts.feedbackThread`: `[{ text, by: 'client'|'you', at }]` — review history
   (the legacy single `feedback` field still holds the latest note).
 

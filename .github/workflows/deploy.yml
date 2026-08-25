@@ -36,6 +36,10 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
+          # Media authority is deliberately fixed. The workers.dev hostname is
+          # accepted only to migrate stored legacy references, never emitted.
+          VITE_PUBLIC_ORIGIN: https://spool.stitchtec.dev
+          VITE_LEGACY_MEDIA_ORIGINS: https://spool.kist.workers.dev
           VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}

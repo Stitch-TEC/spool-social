@@ -1,5 +1,7 @@
 // ⚡ OPTIMIZATION: Shared Intl.DateTimeFormat instances are ~50x faster than
 // repeated toLocaleString() calls because they avoid re-compiling formatting patterns.
+import { transformMediaDestinations } from './mediaMarkup';
+
 export const DATE_FORMATTERS = {
   short: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
   full: new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
@@ -49,8 +51,97 @@ export const imageKey = (u) => {
   if (typeof u !== 'string') return u;
   const i = u.indexOf('/media/');
   if (i === -1) return u;
-  const raw = u.slice(i + '/media/'.length).split('?')[0];
+  let raw = u.slice(i + '/media/'.length).split(/[?#]/)[0];
+  if (raw.startsWith('v2/')) raw = raw.slice(3);
   try { return decodeURIComponent(raw); } catch { return raw; }
+};
+
+const DEFAULT_SPOOL_ORIGIN = 'https://spool.stitchtec.dev';
+const DEFAULT_LEGACY_MEDIA_ORIGINS = 'https://spool.kist.workers.dev';
+
+const configuredMediaOrigin = (raw, label) => {
+  let parsed;
+  try { parsed = new URL(String(raw || '')); }
+  catch { throw new Error(`${label} must be an absolute HTTPS origin`); }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== '/'
+    || parsed.search
+    || parsed.hash
+  ) throw new Error(`${label} must be an absolute HTTPS origin with no path`);
+  return parsed.origin;
+};
+
+// The browser's current Host is deliberately irrelevant. Preview/alias hosts
+// may serve Spool, but every persisted/rendered media output belongs to this
+// exact public origin. Legacy origins are input-only migration authorities.
+export const PUBLIC_SPOOL_ORIGIN = configuredMediaOrigin(
+  import.meta.env.VITE_PUBLIC_ORIGIN || DEFAULT_SPOOL_ORIGIN,
+  'VITE_PUBLIC_ORIGIN',
+);
+export const LEGACY_SPOOL_MEDIA_ORIGINS = Object.freeze([...new Set(
+  String(import.meta.env.VITE_LEGACY_MEDIA_ORIGINS || DEFAULT_LEGACY_MEDIA_ORIGINS)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => configuredMediaOrigin(value, 'VITE_LEGACY_MEDIA_ORIGINS')),
+)].filter((origin) => origin !== PUBLIC_SPOOL_ORIGIN));
+
+// A cache-version equivalence is valid only for Spool's own media origin (or a
+// same-origin relative reference). An external CDN's `/media/v2/...` is its own
+// namespace and ordinary prose mentioning that path is content, not metadata.
+export const spoolMediaIdentity = (
+  u,
+  origin = PUBLIC_SPOOL_ORIGIN,
+  legacyOrigins = LEGACY_SPOOL_MEDIA_ORIGINS,
+) => {
+  if (typeof u !== 'string' || !u) return null;
+  const publicOrigin = String(origin || '').replace(/\/$/, '');
+  const allowedOrigins = new Set([publicOrigin, ...legacyOrigins]);
+  const relative = u.startsWith('/media/');
+  if (!relative) {
+    let parsed;
+    try { parsed = new URL(u.startsWith('//') ? `https:${u}` : u); } catch { return null; }
+    if (!parsed.pathname.startsWith('/media/')) return null;
+    if (!allowedOrigins.has(parsed.origin)) return null;
+  }
+  const i = u.indexOf('/media/');
+  let raw = u.slice(i + '/media/'.length).split(/[?#]/)[0];
+  if (raw.startsWith('v2/')) raw = raw.slice(3);
+  if (!raw) return null;
+  try { return decodeURIComponent(raw); } catch { return null; }
+};
+
+export const sameSpoolMediaReference = (a, b) => {
+  if (String(a || '') === String(b || '')) return true;
+  const aKey = spoolMediaIdentity(a);
+  const bKey = spoolMediaIdentity(b);
+  return aKey !== null && bKey !== null && aKey === bKey;
+};
+
+export const normalizeSpoolMediaContentIdentity = (value) => {
+  return transformMediaDestinations(value, (url) => {
+    const key = spoolMediaIdentity(url);
+    return key === null ? url : `spool-media:${key}`;
+  });
+};
+
+// Move stored legacy Spool references onto the v2 cache key at read time. This
+// is deliberately host-scoped: a third-party image may legitimately contain a
+// /media/ path and must not be rewritten. The legacy Worker route also redirects
+// cache misses, but browser entries already cached as immutable never reach it.
+export const versionMediaUrl = (u) => {
+  if (typeof u !== 'string' || !u) return u;
+  const key = spoolMediaIdentity(u);
+  if (key === null) return u;
+  const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+  return `${PUBLIC_SPOOL_ORIGIN}/media/v2/${encodedKey}`;
+};
+
+export const versionSpoolMediaContent = (value) => {
+  return transformMediaDestinations(value, (url) => versionMediaUrl(url));
 };
 
 // Content identity: content-addressed /media keys end in the bytes' SHA-256, so

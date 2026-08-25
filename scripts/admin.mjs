@@ -17,7 +17,7 @@
 //   FIREBASE_SERVICE_ACCOUNT_FILE=/path/...    (or GOOGLE_APPLICATION_CREDENTIALS)
 //   FIREBASE_SERVICE_ACCOUNT='{...json...}'    (inline, same as the Worker secret)
 //
-// DEPLOY ORDER (see RBAC_DEPLOY_RUNBOOK.md):
+// INITIAL RBAC ORDER (see RBAC_DEPLOY_RUNBOOK.md):
 //   1) node scripts/admin.mjs bootstrap --email dillon@stitchtec.dev --key sa.json
 //   2) firebase deploy --only firestore:rules
 //   3) node scripts/admin.mjs backfill --key sa.json            # dry-run, review
@@ -25,19 +25,42 @@
 //   4) node scripts/admin.mjs audit --key sa.json               # must be clean
 //   5) provision client users (bootstrap-style writes, role client/client_admin)
 //
+// REVIEW-STAGE SECURITY REVISION (see REVIEW_STAGE_ROLLOUT.md; do not reorder):
+//   1) id-inventory MUST be clean while OLD app/rules are live
+//   2) review-stage dry-run → --apply → audit while OLD app/rules are live;
+//      all three require the same canonical roster snapshot
+//   3) merge/deploy the stage-constrained app
+//   4) immediately deploy firestore.rules manually
+//
 // COMMANDS
 //   bootstrap --email <e> [--role super_admin] [--client-id <id>] [--force]
 //   grant     --email <e> --role <client|client_admin|super_admin> [--client-id <id>] [--force]
 //   backfill  [--apply] [--map map.json]      # add clientId to posts + clients
+//   id-inventory                              # strict post/automation/share id rollout gate
+//   review-stage [--apply] [--roster <clients.json> | --context-key <key>]
+//                                              # missing ordinary→in_review, suggestion→private
 //   restamp   [--apply] [--roster <clients.json> | --context-key <key> [--roster-url <url>]]
-//                                              # repair PRE-roster phantom clientIds → canonical roster slugs
-//   audit                                      # report orphans / anomalies (exit 1 if any)
+//                                              # repair posts/branding/automations/shares to canonical roster slugs
+//   audit     [--roster <clients.json> | --context-key <key>]
+//                                              # fail-closed roster/owner/stage audit
 //
 // FLAGS (global): --key <path> --project <id> --owner-uid <uid>
 // =============================================================================
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import {
+  auditWorkspace,
+  buildRosterRepairMap,
+  classifyPostRows,
+  fieldString,
+  listAllDocuments,
+  parseRosterSnapshot,
+  requestJsonObject,
+  reviewStageBackfillPlan,
+  rosterClaimAudit,
+  stringClaimAudit,
+} from './adminCore.mjs';
 
 // ----- args ------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -55,6 +78,8 @@ for (let i = 1; i < argv.length; i++) {
 const OWNER_UID = flags['owner-uid'] || process.env.OWNER_UID || 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
 const VALID_ROLES = new Set(['super_admin', 'client_admin', 'client']);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const FIRESTORE_AUTO_ID_RE = /^[A-Za-z0-9]{20}$/;
+const SHARE_TOKEN_RE = /^[a-f0-9]{64}$/;
 
 function die(msg) { console.error(`\n✗ ${msg}\n`); process.exit(1); }
 const slugify = (name) =>
@@ -130,38 +155,88 @@ const str = (f) => (f && 'stringValue' in f ? f.stringValue : undefined);
 
 async function api(method, urlPath, body) {
   const token = await accessToken();
-  const res = await fetch(urlPath.startsWith('http') ? urlPath : `${BASE}/${urlPath}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
+  const url = urlPath.startsWith('http') ? urlPath : `${BASE}/${urlPath}`;
+  return requestJsonObject({
+    fetchImpl: fetch,
+    url,
+    init: {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    },
+    context: `${method} ${urlPath}`,
   });
-  if (res.status === 404) return { _status: 404 };
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) die(data?.error?.message || `${method} ${urlPath} failed (${res.status})`);
-  return data;
 }
 
 // List every doc in a collection, fetching only `fields` (mask). Paginates fully.
 async function listAll(collection, fields) {
-  const out = [];
-  let pageToken = '';
-  do {
-    const params = new URLSearchParams({ pageSize: '300' });
-    if (pageToken) params.set('pageToken', pageToken);
-    for (const f of fields) params.append('mask.fieldPaths', f);
-    const data = await api('GET', `${collection}?${params}`);
-    for (const d of data.documents || []) {
-      out.push({ name: d.name, id: d.name.split('/').pop(), fields: d.fields || {} });
-    }
-    pageToken = data.nextPageToken || '';
-  } while (pageToken);
-  return out;
+  return listAllDocuments({
+    collection,
+    fields,
+    fetchPage: (path) => api('GET', path),
+  });
 }
 
-// Patch a single field on a doc identified by its full resource name.
-async function patchField(resourceName, field, value) {
-  await api('PATCH', `https://firestore.googleapis.com/v1/${resourceName}?updateMask.fieldPaths=${field}`,
-    { fields: toFields({ [field]: value }) });
+// The hardened Worker accepts only the IDs its own SDK/token generators mint.
+// Inventory all legacy rows before deploying that boundary so an old custom ID
+// cannot silently become unreachable through the API. Share IDs are bearer
+// credentials, so reports show only a short suffix.
+async function collectStrictIdInventory(posts) {
+  // IDs live in resource names; project one tiny ownership field so the gate
+  // never downloads full post bodies or feedback histories just to inspect IDs.
+  const postRows = posts || await listAll('posts', ['uid']);
+  // Empty/missing collections naturally list as an empty page. Any actual API,
+  // auth, or decoding failure is a rollout-blocking unknown—not an empty set.
+  const automations = await listAll('automations', ['ownerUid', 'client', 'clientId']);
+  const shares = await listAll('shares', ['ownerUid', 'client', 'clientId']);
+  return {
+    posts: postRows,
+    automations,
+    shares,
+    invalidPosts: postRows.filter((row) => !FIRESTORE_AUTO_ID_RE.test(row.id)),
+    invalidAutomations: automations.filter((row) => !FIRESTORE_AUTO_ID_RE.test(row.id)),
+    invalidShares: shares.filter((row) => !SHARE_TOKEN_RE.test(row.id)),
+  };
+}
+
+function reportStrictIdInventory(inventory) {
+  const { posts, automations, shares, invalidPosts, invalidAutomations, invalidShares } = inventory;
+  console.log('Strict ID inventory (required before hardened Worker rollout):');
+  console.log(`   posts .............. ${posts.length} (${invalidPosts.length} incompatible)`);
+  console.log(`   automations ........ ${automations.length} (${invalidAutomations.length} incompatible)`);
+  console.log(`   shares ............. ${shares.length} (${invalidShares.length} incompatible)`);
+  for (const row of invalidPosts.slice(0, 20)) console.log(`     incompatible post id: ${JSON.stringify(row.id)}`);
+  for (const row of invalidAutomations.slice(0, 20)) console.log(`     incompatible automation id: ${JSON.stringify(row.id)}`);
+  for (const row of invalidShares.slice(0, 20)) console.log(`     incompatible share id: …${row.id.slice(-8)}`);
+  return invalidPosts.length + invalidAutomations.length + invalidShares.length;
+}
+
+async function cmdIdInventory() {
+  console.log(`\nProject: ${PROJECT_ID}\n`);
+  const incompatible = reportStrictIdInventory(await collectStrictIdInventory());
+  if (incompatible) {
+    die(`Found ${incompatible} legacy id${incompatible === 1 ? '' : 's'} incompatible with the strict Worker boundary. Stop rollout and migrate/re-issue deliberately; do not deploy the hardened validator yet.`);
+  }
+  console.log('\n✓ Every post/automation/share id is compatible with the strict Worker boundary.\n');
+}
+
+// Every inventory-derived repair is update-time guarded. Service-account REST
+// bypasses rules, so an omitted CAS would silently merge over a concurrent edit.
+async function patchFields(resourceName, values, updateTime) {
+  if (typeof updateTime !== 'string' || !updateTime) {
+    throw new Error(`Missing updateTime for ${resourceName}; refusing an unguarded repair`);
+  }
+  const fields = Object.keys(values);
+  if (!fields.length) return;
+  const params = new URLSearchParams();
+  for (const field of fields) params.append('updateMask.fieldPaths', field);
+  params.set('currentDocument.updateTime', updateTime);
+  await api('PATCH', `https://firestore.googleapis.com/v1/${resourceName}?${params}`,
+    { fields: toFields(values) });
+}
+
+async function patchField(resourceName, field, value, updateTime) {
+  return patchFields(resourceName, { [field]: value }, updateTime);
 }
 
 // ----- commands --------------------------------------------------------------
@@ -209,12 +284,12 @@ function buildClientMap(names) {
 
 async function cmdBackfill() {
   console.log(`\nProject: ${PROJECT_ID}   OWNER_UID: ${OWNER_UID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
-  const posts = await listAll('posts', ['client', 'clientId', 'uid']);
-  let clients = [];
-  try { clients = await listAll('clients', ['name', 'clientId', 'uid']); } catch { /* collection may not exist */ }
+  const posts = await listAll('posts', ['client', 'clientId', 'uid', 'source', 'forClientId', 'reviewStage']);
+  const clients = await listAll('clients', ['name', 'clientId', 'uid']);
+  const { ordinaryPosts, suggestions, malformedSources, unsafeSuggestionTenants } = classifyPostRows(posts);
 
   const names = new Set();
-  for (const p of posts) { const c = str(p.fields.client); if (c) names.add(c); }
+  for (const p of ordinaryPosts) { const c = str(p.fields.client); if (c) names.add(c); }
   for (const c of clients) { const n = str(c.fields.name); if (n) names.add(n); }
 
   const { map, collisions, override } = buildClientMap([...names]);
@@ -222,23 +297,28 @@ async function cmdBackfill() {
   // Report the effective mapping.
   console.log('Client name → clientId:');
   for (const [name, slug] of Object.entries(map).sort()) {
-    const fromPosts = posts.filter((p) => str(p.fields.client) === name).length;
+    const fromPosts = ordinaryPosts.filter((p) => str(p.fields.client) === name).length;
     console.log(`   ${JSON.stringify(name).padEnd(28)} → ${slug.padEnd(24)} (${fromPosts} posts)${override[name] ? '  [override]' : ''}`);
   }
 
-  const orphanPosts = posts.filter((p) => !str(p.fields.client));
+  const orphanPosts = ordinaryPosts.filter((p) => !str(p.fields.client));
   const uidAnomalies = posts.filter((p) => str(p.fields.uid) && str(p.fields.uid) !== OWNER_UID);
-  const postsToFill = posts.filter((p) => str(p.fields.client) && !str(p.fields.clientId));
-  const postsHave = posts.filter((p) => str(p.fields.clientId)).length;
+  const postsToFill = ordinaryPosts.filter((p) => str(p.fields.client) && !str(p.fields.clientId));
+  const postsHave = ordinaryPosts.filter((p) => str(p.fields.clientId)).length;
   const clientsToFill = clients.filter((c) => str(c.fields.name) && !str(c.fields.clientId));
+  const suggestionTenantClaims = unsafeSuggestionTenants;
 
   console.log('\nSummary:');
   console.log(`   posts total ............ ${posts.length}`);
+  console.log(`   ordinary posts ......... ${ordinaryPosts.length}`);
+  console.log(`   suggestions (never fill) ${suggestions.length}`);
   console.log(`   posts already w/ clientId ${postsHave}`);
   console.log(`   posts to backfill ...... ${postsToFill.length}`);
   console.log(`   posts with NO client ... ${orphanPosts.length}  ${orphanPosts.length ? '⚠ cannot map → would be invisible to client users' : ''}`);
   console.log(`   uid != OWNER_UID ....... ${uidAnomalies.length}  ${uidAnomalies.length ? '⚠ unexpected owner — investigate before client logins' : ''}`);
   console.log(`   clients docs ........... ${clients.length} (${clientsToFill.length} to backfill)`);
+  console.log(`   suggestions w/ clientId  ${suggestionTenantClaims.length}  ${suggestionTenantClaims.length ? '⚠ must remain empty/private' : ''}`);
+  console.log(`   malformed source fields  ${malformedSources.length}  ${malformedSources.length ? '⚠ cannot classify safely' : ''}`);
 
   if (collisions.length) {
     console.log('\n⚠ SLUG COLLISIONS — distinct names map to the same clientId:');
@@ -249,6 +329,15 @@ async function cmdBackfill() {
   if (uidAnomalies.length) {
     for (const p of uidAnomalies.slice(0, 10)) console.log(`     post ${p.id}: uid=${str(p.fields.uid)}`);
   }
+  if (suggestionTenantClaims.length) {
+    for (const post of suggestionTenantClaims.slice(0, 10)) {
+      console.log(`     suggestion ${post.id}: clientId=${JSON.stringify(fieldString(post, 'clientId') ?? null)}`);
+    }
+    die('Refusing backfill while a suggestion has a non-empty/malformed clientId. Repair and audit it explicitly; backfill never makes suggestions tenant-readable.');
+  }
+  if (malformedSources.length) {
+    die('Refusing backfill with a non-string source field: the row cannot be safely classified as an ordinary post or suggestion.');
+  }
 
   if (!flags.apply) {
     console.log('\n(dry-run) Re-run with --apply to write clientId. Nothing was changed.\n');
@@ -258,17 +347,93 @@ async function cmdBackfill() {
   console.log('\nApplying…');
   let n = 0;
   for (const p of postsToFill) {
-    await patchField(p.name, 'clientId', map[str(p.fields.client)]);
+    await patchField(p.name, 'clientId', map[str(p.fields.client)], p.updateTime);
     if (++n % 25 === 0) console.log(`   …${n}/${postsToFill.length} posts`);
   }
   let m = 0;
   for (const c of clientsToFill) {
-    await patchField(c.name, 'clientId', map[str(c.fields.name)]);
+    await patchField(c.name, 'clientId', map[str(c.fields.name)], c.updateTime);
     m++;
   }
-  console.log(`\n✓ Backfilled clientId on ${n} posts and ${m} clients docs.`);
+  console.log(`\n✓ Backfilled clientId on ${n} ordinary posts and ${m} clients docs; ${suggestions.length} suggestions were left tenant-private.`);
   if (orphanPosts.length) console.log(`⚠ ${orphanPosts.length} posts have no client field and were skipped — run "audit" and fix.`);
   console.log('Next: node scripts/admin.mjs audit\n');
+}
+
+// reviewStage becomes a rules-enforced visibility boundary. Older documents
+// predate the field and historically meant "in review"; this additive backfill
+// makes that meaning explicit before stage-constrained queries/rules ship.
+// Every write carries the document's updateTime so a concurrent edit aborts the
+// run instead of being silently merged against a stale audit snapshot.
+async function cmdReviewStage() {
+  console.log(`\nProject: ${PROJECT_ID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
+  const incompatible = reportStrictIdInventory(await collectStrictIdInventory());
+  if (incompatible) {
+    die('Strict ID inventory is not clean. Stop rollout before review-stage backfill or application merge.');
+  }
+  console.log('');
+  const roster = await loadRoster();
+  const rosterIds = new Set(roster.map((client) => client.slug));
+  const posts = await listAll('posts', ['reviewStage', 'source', 'clientId', 'forClientId', 'uid']);
+  const suggestions = posts.filter((post) => fieldString(post, 'source') === 'suggestion');
+  const suggestionTargets = rosterClaimAudit(suggestions, 'forClientId', rosterIds);
+  const suggestionOwners = stringClaimAudit(suggestions, 'uid', OWNER_UID);
+  const suggestionClientIds = suggestions.filter((post) => fieldString(post, 'clientId') !== '');
+  const plan = reviewStageBackfillPlan(posts);
+  const ordinaryChanges = plan.changes.filter(({ row }) => fieldString(row, 'source') !== 'suggestion');
+  const suggestionChanges = plan.changes.filter(({ row }) => fieldString(row, 'source') === 'suggestion');
+  const invalidSuggestionTargets = Object.values(suggestionTargets).reduce((count, rows) => count + rows.length, 0);
+  const invalidSuggestionOwners = Object.values(suggestionOwners).reduce((count, rows) => count + rows.length, 0);
+
+  console.log(`posts total ............. ${posts.length}`);
+  console.log(`ordinary missing stage .. ${ordinaryChanges.length} (target: in_review)`);
+  console.log(`suggestions missing stage ${suggestionChanges.length} (target: private)`);
+  console.log(`invalid reviewStage ..... ${plan.invalid.length}`);
+  console.log(`unsafe staged suggestions ${plan.unsafeSuggestions.length}`);
+  console.log(`malformed source fields . ${plan.malformedSources.length}`);
+  console.log(`invalid suggestion tenant ${suggestionClientIds.length + invalidSuggestionTargets}`);
+  console.log(`invalid suggestion owner  ${invalidSuggestionOwners}`);
+  if (plan.invalid.length) {
+    for (const p of plan.invalid.slice(0, 20)) console.log(`   ${p.id}: ${JSON.stringify(str(p.fields.reviewStage) ?? null)}`);
+    die('Refusing to guess an explicit invalid reviewStage. Correct those documents first.');
+  }
+  if (plan.malformedSources.length) {
+    for (const post of plan.malformedSources.slice(0, 20)) console.log(`   ${post.id}: source is not a string`);
+    die('A non-string source cannot be safely classified for stage backfill. Correct it explicitly first.');
+  }
+  if (plan.unsafeSuggestions.length) {
+    for (const post of plan.unsafeSuggestions.slice(0, 20)) {
+      console.log(`   suggestion ${post.id}: reviewStage=${JSON.stringify(fieldString(post, 'reviewStage') ?? null)}`);
+    }
+    die('A suggestion is already tenant-readable. Move it to private or deliberately promote it before running this migration.');
+  }
+  if (suggestionClientIds.length || invalidSuggestionTargets || invalidSuggestionOwners) {
+    die('Suggestion ownership/tenant provenance is not clean. Empty clientId is allowed only with canonical forClientId, owner uid, and private/missing reviewStage.');
+  }
+  if (!flags.apply) {
+    console.log('\n(dry-run) Ordinary missing-stage posts would receive in_review; missing-stage suggestions would receive private. Nothing was changed.\n');
+    return;
+  }
+
+  let applied = 0;
+  for (const { row: p, value } of plan.changes) {
+    if (!p.updateTime) die(`Missing updateTime for posts/${p.id}; refusing an unguarded write.`);
+    await patchField(p.name, 'reviewStage', value, p.updateTime);
+    if (++applied % 25 === 0) console.log(`   …${applied}/${plan.changes.length}`);
+  }
+
+  const verify = await listAll('posts', ['reviewStage', 'source', 'clientId', 'forClientId', 'uid']);
+  const verifyPlan = reviewStageBackfillPlan(verify);
+  if (
+    verifyPlan.changes.length
+    || verifyPlan.invalid.length
+    || verifyPlan.unsafeSuggestions.length
+    || verifyPlan.malformedSources.length
+  ) {
+    die('Post-write audit found missing/invalid/tenant-readable suggestion stage values. Do NOT deploy strict rules.');
+  }
+  console.log(`\n✓ Backfilled ${applied} legacy post${applied === 1 ? '' : 's'} and verified all ${verify.length} stage values (suggestions remain private).`);
+  console.log('Next: merge/deploy the stage-constrained SPA, then immediately deploy firestore.rules (see REVIEW_STAGE_ROLLOUT.md).\n');
 }
 
 // ----- roster (restamp) --------------------------------------------------------
@@ -278,22 +443,24 @@ async function cmdBackfill() {
 async function loadRoster() {
   let raw;
   if (flags.roster) {
-    try { raw = JSON.parse(fs.readFileSync(flags.roster, 'utf8')); } catch (e) { die(`Cannot read/parse roster file ${flags.roster}: ${e.message}`); }
+    try { raw = JSON.parse(fs.readFileSync(flags.roster, 'utf8')); }
+    catch (e) { throw new Error(`Cannot read/parse roster file ${flags.roster}: ${e.message}`); }
   } else {
     const key = flags['context-key'] || process.env.CONTEXT_KEY;
-    if (!key) die('restamp needs the canonical roster. Pass --roster <clients.json> (a saved GET /clients response) or --context-key <CONTEXT_KEY> to fetch it from the broker.');
+    if (!key) throw new Error('This command needs the canonical roster. Pass --roster <clients.json> (a saved GET /clients response) or --context-key <CONTEXT_KEY> to fetch it from the broker.');
     const url = flags['roster-url'] || 'https://feedback.stitchtec.dev/clients';
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
-    if (!res.ok) die(`Roster fetch failed (${res.status}) from ${url}`);
-    raw = await res.json().catch(() => null);
+    raw = await requestJsonObject({
+      fetchImpl: fetch,
+      url,
+      init: { headers: { Authorization: `Bearer ${key}` } },
+      context: `Roster fetch from ${url}`,
+    });
   }
-  const rows = Array.isArray(raw) ? raw : raw?.clients;
-  if (!Array.isArray(rows) || !rows.length) die('Roster is empty — refusing to restamp against nothing.');
-  return rows.filter((c) => c && c.slug).map((c) => ({ slug: String(c.slug), name: String(c.name || c.slug) }));
+  return parseRosterSnapshot(raw);
 }
 
 // One-time repair for PRE-roster phantom tenant keys: posts (clientId + a suggestion's
-// forClientId), clients branding docs, and share links stamped with an id the roster never
+// forClientId), clients branding docs, automations, and share links stamped with an id the roster never
 // issued (the old slugify(name) mint — e.g. "clear-sky-aircraft-parts" vs canonical
 // "clear-sky"). Only touches NON-EMPTY off-roster ids whose display name matches a roster
 // client by slugified-name equality (the exact worker POST /api/drafts repair rule); a
@@ -303,48 +470,78 @@ async function cmdRestamp() {
   console.log(`\nProject: ${PROJECT_ID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
   const roster = await loadRoster();
   const slugSet = new Set(roster.map((c) => c.slug));
-  const slugByName = {};
-  for (const c of roster) { const k = slugify(c.name); if (k && !slugByName[k]) slugByName[k] = c.slug; }
+  const slugByName = buildRosterRepairMap(roster, slugify);
   console.log(`Roster: ${roster.length} clients (${[...slugSet].sort().join(', ')})`);
 
   // The roster slug an off-roster stamp should become, or undefined (empty / already canonical / no match).
-  const repair = (name, id) => (!id || slugSet.has(id)) ? undefined : slugByName[slugify(name || '')];
+  const repair = (name, id) => (!id || slugSet.has(id)) ? undefined : slugByName.get(slugify(name || ''));
 
-  const posts = await listAll('posts', ['client', 'clientId', 'forClientId']);
-  let clients = [];
-  try { clients = await listAll('clients', ['name', 'clientId']); } catch { /* collection may not exist */ }
-  let shares = [];
-  try { shares = await listAll('shares', ['client', 'clientId', 'revoked']); } catch { /* collection may not exist */ }
+  const posts = await listAll('posts', ['client', 'clientId', 'forClientId', 'source']);
+  const clients = await listAll('clients', ['name', 'clientId']);
+  const automations = await listAll('automations', ['client', 'clientId']);
+  const shares = await listAll('shares', ['client', 'clientId', 'revoked']);
 
-  const plan = [];    // { res, label, field, from, to }
+  const { malformedSources, suggestions, unsafeSuggestionTenants } = classifyPostRows(posts);
+  if (malformedSources.length) {
+    for (const post of malformedSources.slice(0, 20)) console.log(`   post ${post.id}: source is not a string`);
+    die('Cannot safely classify ordinary posts and suggestions for restamp. Repair malformed source fields first.');
+  }
+  if (unsafeSuggestionTenants.length) {
+    for (const post of unsafeSuggestionTenants.slice(0, 20)) {
+      console.log(`   suggestion ${post.id}: clientId=${JSON.stringify(fieldString(post, 'clientId') ?? null)}`);
+    }
+    die('Refusing restamp while a suggestion has a non-empty/malformed clientId. Suggestions must remain tenant-private.');
+  }
+
+  const plan = [];    // { res, label, fields: [{field,from,to}], updateTime }
   const orphans = []; // off-roster with no roster name match — report, never guess
   for (const p of posts) {
     const cName = str(p.fields.client);
-    for (const field of ['clientId', 'forClientId']) {
-      const id = str(p.fields[field]);
-      const to = repair(cName, id);
-      if (to) plan.push({ res: p.name, label: `post ${p.id} (${JSON.stringify(cName ?? null)})`, field, from: id, to });
-      else if (id && !slugSet.has(id)) orphans.push(`post ${p.id} ${field}=${id} client=${JSON.stringify(cName ?? null)}`);
-    }
+    const suggestion = fieldString(p, 'source') === 'suggestion';
+    const field = suggestion ? 'forClientId' : 'clientId';
+    const id = str(p.fields[field]);
+    const to = repair(cName, id);
+    if (to) plan.push({
+      res: p.name,
+      label: `${suggestion ? 'suggestion' : 'post'} ${p.id} (${JSON.stringify(cName ?? null)})`,
+      fields: [{ field, from: id, to }],
+      updateTime: p.updateTime,
+    });
+    else if (id && !slugSet.has(id)) orphans.push(`post ${p.id} ${field}=${id} client=${JSON.stringify(cName ?? null)}`);
   }
   for (const c of clients) {
     const id = str(c.fields.clientId), n = str(c.fields.name);
     const to = repair(n, id);
-    if (to) plan.push({ res: c.name, label: `clients ${c.id} (${JSON.stringify(n ?? null)})`, field: 'clientId', from: id, to });
+    if (to) plan.push({ res: c.name, label: `clients ${c.id} (${JSON.stringify(n ?? null)})`, fields: [{ field: 'clientId', from: id, to }], updateTime: c.updateTime });
     else if (id && !slugSet.has(id)) orphans.push(`clients ${c.id} clientId=${id} name=${JSON.stringify(n ?? null)}`);
+  }
+  for (const automation of automations) {
+    const id = str(automation.fields.clientId), name = str(automation.fields.client);
+    const to = repair(name, id);
+    if (to) plan.push({
+      res: automation.name,
+      label: `automation ${automation.id} (${JSON.stringify(name ?? null)})`,
+      fields: [{ field: 'clientId', from: id, to }],
+      updateTime: automation.updateTime,
+    });
+    else if (id && !slugSet.has(id)) {
+      orphans.push(`automation ${automation.id} clientId=${id} client=${JSON.stringify(name ?? null)}`);
+    }
   }
   for (const s of shares) {
     // Tokens are credentials — never print one whole, even in a local report.
     const id = str(s.fields.clientId), n = str(s.fields.client), tag = `share …${s.id.slice(-8)}`;
     const to = repair(n, id);
-    if (to) plan.push({ res: s.name, label: `${tag} (${JSON.stringify(n ?? null)})`, field: 'clientId', from: id, to });
+    if (to) plan.push({ res: s.name, label: `${tag} (${JSON.stringify(n ?? null)})`, fields: [{ field: 'clientId', from: id, to }], updateTime: s.updateTime });
     else if (id && !slugSet.has(id)) orphans.push(`${tag} clientId=${id} client=${JSON.stringify(n ?? null)}`);
   }
 
-  console.log(`Scanned: ${posts.length} posts, ${clients.length} clients docs, ${shares.length} share links.\n`);
+  console.log(`Scanned: ${posts.length} posts, ${clients.length} clients docs, ${automations.length} automations, ${shares.length} share links.\n`);
   if (plan.length) {
     console.log(`Restamp plan (${plan.length} field${plan.length === 1 ? '' : 's'}):`);
-    for (const x of plan) console.log(`   ${x.label}: ${x.field} ${x.from} → ${x.to}`);
+    for (const x of plan) {
+      for (const field of x.fields) console.log(`   ${x.label}: ${field.field} ${field.from} → ${field.to}`);
+    }
   } else {
     console.log('✓ Nothing to restamp — every non-empty tenant key is roster-issued already.');
   }
@@ -359,8 +556,9 @@ async function cmdRestamp() {
   console.log('\nApplying…');
   let n = 0;
   for (const x of plan) {
-    await patchField(x.res, x.field, x.to);
-    if (++n % 25 === 0) console.log(`   …${n}/${plan.length}`);
+    await patchFields(x.res, Object.fromEntries(x.fields.map((field) => [field.field, field.to])), x.updateTime);
+    n += x.fields.length;
+    if (n % 25 === 0) console.log(`   …${n} fields`);
   }
   console.log(`\n✓ Restamped ${n} field${n === 1 ? '' : 's'}. Share links were repaired in place (guest tokens mint from the doc at sign-in — no reissue needed).`);
   console.log('Next: node scripts/admin.mjs audit\n');
@@ -368,59 +566,109 @@ async function cmdRestamp() {
 
 async function cmdAudit() {
   console.log(`\nProject: ${PROJECT_ID}   OWNER_UID: ${OWNER_UID}\n`);
-  const posts = await listAll('posts', ['client', 'clientId', 'uid']);
-  let clients = [];
-  try { clients = await listAll('clients', ['name', 'clientId', 'uid']); } catch { /* ignore */ }
+  const roster = await loadRoster();
+  console.log(`Canonical roster: ${roster.length} clients (${roster.map((client) => client.slug).sort().join(', ')})\n`);
+  const posts = await listAll('posts', ['client', 'clientId', 'uid', 'reviewStage', 'source', 'forClientId']);
+  // Audit is a stop gate. A failed list is unknown state and must terminate;
+  // treating it as an empty collection would issue a false clean result.
+  const clients = await listAll('clients', ['name', 'clientId', 'uid']);
 
-  const orphanPosts = posts.filter((p) => !str(p.fields.clientId));
-  const uidAnomalies = posts.filter((p) => str(p.fields.uid) && str(p.fields.uid) !== OWNER_UID);
-  const clientsNoId = clients.filter((c) => !str(c.fields.clientId));
+  const idInventory = await collectStrictIdInventory(posts);
+  const incompatibleIds = reportStrictIdInventory(idInventory);
+  const { automations, shares } = idInventory;
+  const workspace = auditWorkspace({ posts, clients, automations, shares, roster, ownerUid: OWNER_UID });
+  const clientUids = stringClaimAudit(clients, 'uid', OWNER_UID);
+  const automationOwners = stringClaimAudit(automations, 'ownerUid', OWNER_UID);
+  const shareOwners = stringClaimAudit(shares, 'ownerUid', OWNER_UID);
+  const distinctIds = new Set(workspace.ordinaryPosts.map((p) => fieldString(p, 'clientId')).filter(Boolean));
+  console.log(`posts: ${posts.length} (${workspace.ordinaryPosts.length} ordinary, ${workspace.suggestions.length} suggestions)   distinct ordinary clientId: ${distinctIds.size}`);
+  console.log(`clients docs: ${clients.length}   automations: ${automations.length}   shares: ${shares.length}\n`);
 
-  // name ↔ clientId consistency across posts.
-  const nameToIds = {};
-  for (const p of posts) {
-    const name = str(p.fields.client), id = str(p.fields.clientId);
-    if (name && id) (nameToIds[name] ||= new Set()).add(id);
-  }
-  const inconsistent = Object.entries(nameToIds).filter(([, ids]) => ids.size > 1);
+  let bad = incompatibleIds ? 1 : 0;
+  const resourceId = (row, kind) => kind === 'share' ? `…${row.id.slice(-8)}` : row.id;
+  const reportRows = (title, rows, kind, detail = () => '') => {
+    if (!rows.length) return;
+    bad++;
+    console.log(`✗ ${rows.length} ${title}:`);
+    for (const row of rows.slice(0, 20)) console.log(`     ${resourceId(row, kind)}${detail(row)}`);
+    if (rows.length > 20) console.log(`     …and ${rows.length - 20} more`);
+  };
+  const reportOwner = (label, kind, audit, field) => {
+    reportRows(`${label} missing ${field}`, audit.missing, kind);
+    reportRows(`${label} with non-string ${field}`, audit.nonString, kind);
+    reportRows(`${label} with ${field} != OWNER_UID`, audit.wrong, kind,
+      (row) => `  ${field}=${JSON.stringify(fieldString(row, field) ?? null)}`);
+  };
+  const reportRosterClaim = (label, kind, field, audit) => {
+    reportRows(`${label} missing ${field}`, audit.missing, kind);
+    reportRows(`${label} with non-string ${field}`, audit.nonString, kind);
+    reportRows(`${label} with malformed/empty ${field}`, audit.invalid, kind,
+      (row) => `  ${field}=${JSON.stringify(fieldString(row, field) ?? null)}`);
+    reportRows(`${label} with off-roster ${field}`, audit.offRoster, kind,
+      (row) => `  ${field}=${JSON.stringify(fieldString(row, field))}`);
+  };
 
-  const distinctIds = new Set(posts.map((p) => str(p.fields.clientId)).filter(Boolean));
-  console.log(`posts: ${posts.length}   with clientId: ${posts.length - orphanPosts.length}   distinct clientId: ${distinctIds.size}`);
-  console.log(`clients docs: ${clients.length}   without clientId: ${clientsNoId.length}\n`);
+  reportOwner('posts', 'post', workspace.postUids, 'uid');
+  reportOwner('client branding docs', 'client', clientUids, 'uid');
+  reportOwner('automation docs', 'automation', automationOwners, 'ownerUid');
+  reportOwner('share docs', 'share', shareOwners, 'ownerUid');
+  reportRows('posts with a non-string source (cannot classify suggestion privacy)', workspace.malformedSources, 'post');
 
-  let bad = 0;
-  if (orphanPosts.length) {
-    bad++; console.log(`✗ ${orphanPosts.length} posts WITHOUT clientId (invisible to client users; operator-only via isOwner):`);
-    for (const p of orphanPosts.slice(0, 20)) console.log(`     ${p.id}  client=${JSON.stringify(str(p.fields.client) ?? null)}`);
-    if (orphanPosts.length > 20) console.log(`     …and ${orphanPosts.length - 20} more`);
+  reportRosterClaim('ordinary posts', 'post', 'clientId', workspace.claims.ordinaryPosts);
+  reportRosterClaim('suggestions', 'suggestion', 'forClientId', workspace.claims.suggestions);
+  reportRosterClaim('client branding docs', 'client', 'clientId', workspace.claims.clients);
+  reportRosterClaim('automation docs', 'automation', 'clientId', workspace.claims.automations);
+  reportRosterClaim('share docs', 'share', 'clientId', workspace.claims.shares);
+  reportRosterClaim('ordinary posts', 'post', 'client', workspace.names.ordinaryPosts);
+  reportRosterClaim('suggestions', 'suggestion', 'client', workspace.names.suggestions);
+  reportRosterClaim('client branding docs', 'client', 'name', workspace.names.clients);
+  reportRosterClaim('automation docs', 'automation', 'client', workspace.names.automations);
+  reportRosterClaim('share docs', 'share', 'client', workspace.names.shares);
+
+  reportRows('suggestions whose clientId is not exactly the empty string', workspace.suggestionClientId.invalid, 'suggestion',
+    (row) => `  clientId=${JSON.stringify(fieldString(row, 'clientId') ?? null)}`);
+  reportRows('suggestions that are not private', workspace.suggestionStage.invalid, 'suggestion',
+    (row) => `  reviewStage=${JSON.stringify(fieldString(row, 'reviewStage') ?? null)}`);
+  reportRows('ordinary posts without private/in_review reviewStage', workspace.badReviewStage, 'post',
+    (row) => `  reviewStage=${JSON.stringify(fieldString(row, 'reviewStage') ?? null)}`);
+
+  if (workspace.mappings.idToMultipleNames.length) {
+    bad++; console.log('✗ canonical client IDs map to MULTIPLE normalized display names:');
+    for (const conflict of workspace.mappings.idToMultipleNames) {
+      console.log(`     ${conflict.id} → ${conflict.names.map((name) => JSON.stringify(name)).join(', ')}`);
+    }
   }
-  if (uidAnomalies.length) {
-    bad++; console.log(`✗ ${uidAnomalies.length} posts with uid != OWNER_UID (${OWNER_UID}) — share/owner reads will miss these.`);
+  if (workspace.mappings.nameToMultipleIds.length) {
+    bad++; console.log('✗ normalized client names map to MULTIPLE client IDs:');
+    for (const conflict of workspace.mappings.nameToMultipleIds) {
+      console.log(`     ${JSON.stringify(conflict.name)} → ${conflict.ids.join(', ')}`);
+    }
   }
-  if (clientsNoId.length) {
-    bad++; console.log(`✗ ${clientsNoId.length} clients docs without clientId (branding unreadable by client users):`);
-    for (const c of clientsNoId.slice(0, 20)) console.log(`     ${c.id}  name=${JSON.stringify(str(c.fields.name) ?? null)}`);
-  }
-  if (inconsistent.length) {
-    bad++; console.log('✗ client name maps to MULTIPLE clientIds (a tenant split — fix before client logins):');
-    for (const [name, ids] of inconsistent) console.log(`     ${JSON.stringify(name)} → ${[...ids].join(', ')}`);
+  if (workspace.mappings.rosterMismatches.length) {
+    bad++; console.log('✗ resource client label/ID pairs disagree with the canonical roster snapshot:');
+    for (const mismatch of workspace.mappings.rosterMismatches.slice(0, 20)) {
+      console.log(`     ${resourceId(mismatch.row, mismatch.kind)}  ${mismatch.id}=${JSON.stringify(mismatch.name)}; roster name=${JSON.stringify(mismatch.expectedName)}`);
+    }
   }
 
-  if (!bad) { console.log('✓ Clean. Every post and client doc has a consistent clientId; all posts owned by OWNER_UID.\n'); process.exit(0); }
-  console.log('\n→ Fix the above (re-run backfill, or correct data) before provisioning client logins.\n');
+  if (!bad) { console.log('✓ Clean. Every tenant claim matches the canonical roster; IDs, ownership, suggestion privacy, and review stages are consistent.\n'); process.exit(0); }
+  console.log('\n→ Stop rollout. Repair the inventory and rerun this audit against the same canonical roster snapshot before deploying the app/rules.\n');
   process.exit(1);
 }
 
 // ----- dispatch --------------------------------------------------------------
-const COMMANDS = ['bootstrap', 'grant', 'backfill', 'restamp', 'audit'];
+const COMMANDS = ['bootstrap', 'grant', 'backfill', 'id-inventory', 'review-stage', 'restamp', 'audit'];
 (async () => {
   if (!COMMANDS.includes(cmd)) {
-    console.log('Usage: node scripts/admin.mjs <bootstrap|grant|backfill|restamp|audit> [flags]\n' +
+    console.log('Usage: node scripts/admin.mjs <bootstrap|grant|backfill|id-inventory|review-stage|restamp|audit> [flags]\n' +
       '  bootstrap --email <e> [--client-id <id>] [--force]   create/refresh a super_admin user doc\n' +
       '  grant     --email <e> --role <client|client_admin|super_admin> [--client-id <id>] [--force]\n' +
       '  backfill  [--apply] [--map map.json]                 add clientId to posts + clients\n' +
+      '  id-inventory                                        strict post/automation/share id rollout gate\n' +
+      '  review-stage [--apply] [--roster <clients.json> | --context-key <key>]\n' +
+      '                                                       missing ordinary→in_review, suggestion→private\n' +
       '  restamp   [--apply] [--roster <clients.json> | --context-key <key>]   phantom clientIds → roster slugs\n' +
-      '  audit                                                report orphans/anomalies (exit 1 if any)\n' +
+      '  audit     [--roster <clients.json> | --context-key <key>]   fail-closed roster/owner/stage audit\n' +
       '  (global)  --key <sa.json> --project <id> --owner-uid <uid>     see file header for details');
     process.exit(cmd ? 1 : 0);
   }
@@ -428,6 +676,8 @@ const COMMANDS = ['bootstrap', 'grant', 'backfill', 'restamp', 'audit'];
   if (cmd === 'bootstrap') return cmdGrant({ defaultRole: 'super_admin' });
   if (cmd === 'grant') return cmdGrant({ defaultRole: null });
   if (cmd === 'backfill') return cmdBackfill();
+  if (cmd === 'id-inventory') return cmdIdInventory();
+  if (cmd === 'review-stage') return cmdReviewStage();
   if (cmd === 'restamp') return cmdRestamp();
   if (cmd === 'audit') return cmdAudit();
 })().catch((e) => die(e?.message || String(e)));

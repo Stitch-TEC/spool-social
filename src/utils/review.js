@@ -14,8 +14,9 @@
 // `reviewStage` is the missing third axis, and it is ADDITIVE (suite invariant):
 //   'private'    → staging. Operator workspace only; kept off the review link.
 //   'in_review'  → sent. The client sees it and can act on it.
-// ABSENT === 'in_review' so every pre-existing post (and every live review link)
-// behaves EXACTLY as it did before this change — no backfill, nothing vanishes.
+// Operator-side derivation preserves the historical ABSENT === in_review meaning.
+// Client/member queries and rules now fail missing stages closed; the guarded
+// rollout backfills legacy rows before those boundaries deploy.
 // New posts are created 'private', so the staging area is opt-OUT for legacy
 // content and opt-IN for everything made from here on.
 //
@@ -24,7 +25,12 @@
 // stage: 'approved'/'changes_requested' record something the client DID, and
 // pulling a post back to staging must not erase that.
 // =============================================================================
-import { APPROVAL_STATUS, REVIEW_STAGE, REVIEW_STATE } from '../constants';
+import { APPROVAL_STATUS, REVIEW_STAGE, REVIEW_STATE, STATUS } from '../constants';
+import {
+  normalizeSpoolMediaContentIdentity,
+  sameSpoolMediaReference,
+  spoolMediaIdentity,
+} from './helpers';
 
 /** The post's stage, with the legacy default (absent = already in review). */
 export const reviewStageOf = (post) =>
@@ -46,6 +52,89 @@ export const reviewStateOf = (post) => {
 /** Does this post carry any client feedback (threaded history or the legacy field)? */
 export const hasFeedback = (post) =>
   (Array.isArray(post?.feedbackThread) && post.feedbackThread.length > 0) || !!post?.feedback;
+
+/** Stable identity of exactly the client-approved payload. Media cache-version
+ * migrations collapse to the same object key, while ordinary external URLs and
+ * copy remain byte-for-byte significant. This is also the baseline used by all
+ * review-action transactions. */
+export const approvedPayloadIdentity = (post) => {
+  const image = String(post?.imageUrl || '');
+  const mediaKey = spoolMediaIdentity(image);
+  return JSON.stringify([
+    normalizeSpoolMediaContentIdentity(String(post?.content || '')),
+    String(post?.title || ''),
+    mediaKey === null ? image : `spool-media:${mediaKey}`,
+    String(post?.platform || ''),
+  ]);
+};
+
+/** The review state a button was rendered against. Including the history and
+ * latest note prevents two reviewer/operator actions on unchanged copy from
+ * silently last-writing each other. */
+export const reviewStateIdentity = (post) => JSON.stringify([
+  String(post?.status || ''),
+  String(post?.approvalStatus || ''),
+  String(post?.reviewStage || ''),
+  String(post?.sentForReviewAt || ''),
+  String(post?.feedback || ''),
+  Array.isArray(post?.feedbackThread) ? post.feedbackThread : null,
+  String(post?.reviewedBy || ''),
+  String(post?.reviewedAt || ''),
+]);
+
+// Replacement document (not a merge patch) for promotion. Suggestions can
+// carry operator-only provenance/instructions and may gain more internal fields
+// over time. Copying an explicit client-safe allowlist ensures suggestSeed,
+// forClientId, automationId, unknown operator notes, and stale review facts are
+// physically deleted before the document acquires a tenant id.
+const PROMOTION_SAFE_FIELDS = Object.freeze([
+  'uid', 'client', 'content', 'title', 'altText', 'metaDescription', 'slug',
+  'platform', 'imageUrl', 'scheduledDate', 'createdAt',
+]);
+
+export const suggestionPromotionDocument = (post, clientId, updatedAt = new Date().toISOString()) => {
+  const promoted = {};
+  for (const field of PROMOTION_SAFE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(post || {}, field)) promoted[field] = post[field];
+  }
+  return {
+    ...promoted,
+    clientId,
+    source: 'automation',
+    status: STATUS.DRAFT,
+    reviewStage: REVIEW_STAGE.PRIVATE,
+    approvalStatus: APPROVAL_STATUS.PENDING,
+    feedback: '',
+    feedbackThread: [],
+    sentForReviewAt: null,
+    tags: (Array.isArray(post?.tags) ? post.tags : []).filter((tag) => tag !== 'suggested'),
+    isTemplate: false,
+    updatedAt,
+  };
+};
+
+/**
+ * Has an edit changed the client-approved payload?
+ *
+ * Keep this comparison pure and centralized: image-only edits are just as
+ * approval-sensitive as copy edits, while status/scheduling/metadata changes
+ * intentionally are not. Existing-post saves pass the PRE-host submitted image
+ * identity, so data-URL rehosting is storage migration rather than a rewrite;
+ * the tested preparation helper keeps upload/check ordering explicit.
+ */
+export const postWasRewritten = (post, next) => !!post && (
+  // A v1 → v2 reference is the same R2 object behind a new cache key. That can
+  // occur in either the cover field or long-form Markdown and is storage-only.
+  normalizeSpoolMediaContentIdentity(post.content) !== normalizeSpoolMediaContentIdentity(next?.content) ||
+  (post.title || '') !== (next?.title || '') ||
+  !sameSpoolMediaReference(post.imageUrl, next?.imageUrl) ||
+  String(post.platform || '') !== String(next?.platform || '') ||
+  // When a failed upload forces the final saved image to be empty, that is a
+  // real payload change even if the submitted pre-host image matched the live
+  // post. Successful data-URL → /media migration is storage-only and does not
+  // set this flag.
+  (!!next?.imageDropped && !!next?.imageUrl)
+);
 
 /**
  * Whole days a post has been sitting with the client unanswered, or null when

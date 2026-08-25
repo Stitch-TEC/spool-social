@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import Editor from './Editor';
 
 const baseProps = {
@@ -76,6 +76,25 @@ describe('Editor', () => {
   it('locks the client field for client members (save path pins it anyway)', () => {
     render(<Editor {...baseProps} initialClient="Acme" clientLocked />);
     expect(screen.getByPlaceholderText('Select or type a new client...')).toBeDisabled();
+  });
+
+  it('passes the editor-open client label and immutable ID to the atomic save boundary', async () => {
+    const onSave = vi.fn().mockResolvedValue(true);
+    render(<Editor
+      {...baseProps}
+      onSave={onSave}
+      post={{ id: 'p1', client: 'Acme', clientId: 'acme-canonical', status: 'draft', content: 'Ready' }}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p1', client: 'Acme', clientId: 'acme-canonical' }),
+      expect.objectContaining({
+        baselineStatus: 'draft',
+        baselineClient: 'Acme',
+        baselineClientId: 'acme-canonical',
+      }),
+    ));
   });
 
   it('applies bold markdown on mod+B in a long-form draft', () => {

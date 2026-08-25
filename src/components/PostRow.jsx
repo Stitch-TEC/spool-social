@@ -75,13 +75,15 @@ const Thumb = ({ post, wantsImage }) => {
  * so nothing here has to reason about a read-only viewer.
  */
 const PostRow = memo(({
-  post, clientSettings = {}, onEdit, onDelete, onStatusChange, onArchive, onRestore,
+  post, clientSettings = {}, onEdit, onDelete, onStatusChange, statusOptions, onArchive, onRestore,
   onUseTemplate, onResubmit, onSendForReview, onPromoteSuggestion, onDismissSuggestion,
   showProvenance = false, selectable = false, selected = false, onToggleSelect,
 }) => {
   const platform = PLATFORMS[post.platform] || PLATFORMS.gmb;
   const isArchived = post.status === STATUS.ARCHIVED;
   const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+  const availableStatuses = statusOptions || [STATUS.DRAFT, STATUS.SCHEDULED, STATUS.POSTED];
+  const canChangeCurrentStatus = availableStatuses.includes(post.status || STATUS.DRAFT);
   const reviewState = reviewStateOf(post);
   const isNotSent = reviewState === REVIEW_STATE.NOT_SENT;
   const waiting = daysAwaiting(post);
@@ -184,7 +186,7 @@ const PostRow = memo(({
 
       {/* Status: editable when changing it is the meaningful next step, static when the
           primary verb (send / back for review) has taken the action slot instead. */}
-      {!isSuggestion && (primaryVerb || !onStatusChange ? (
+      {!isSuggestion && (primaryVerb || !onStatusChange || !canChangeCurrentStatus ? (
         <span className={`hidden md:inline-block ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}>
           {post.status || STATUS.DRAFT}
         </span>
@@ -198,10 +200,10 @@ const PostRow = memo(({
           /* appearance-none costs the native arrow, so hover is what says "editable". */
           className={`hidden md:inline-block cursor-pointer hover:ring-1 hover:ring-indigo-300 focus:ring-2 focus:ring-indigo-500 focus:outline-none ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}
         >
-          <option value={STATUS.DRAFT}>Draft</option>
-          <option value={STATUS.SCHEDULED}>Scheduled</option>
-          <option value={STATUS.POSTED}>Posted</option>
-          {isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
+          {availableStatuses.map(status => (
+            <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>
+          ))}
+          {!statusOptions && isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
         </select>
       ))}
 
@@ -239,14 +241,14 @@ const PostRow = memo(({
             <span className="hidden sm:flex gap-0.5 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
               <button onClick={stop(() => onEdit(post))} title="Edit Thread" aria-label="Edit Thread" className={`${iconBtn} hover:text-emerald-700`}><Edit3 size={15} /></button>
               {isArchived
-                ? <button onClick={stop(() => onRestore(post.id))} title="Restore Thread" aria-label="Restore Thread" className={`${iconBtn} hover:text-indigo-600`}><ArchiveRestore size={15} /></button>
-                : <button onClick={stop(() => onArchive(post.id))} title="Archive Thread" aria-label="Archive Thread" className={`${iconBtn} hover:text-amber-600`}><Archive size={15} /></button>}
+                ? onRestore && <button onClick={stop(() => onRestore(post.id))} title="Restore Thread" aria-label="Restore Thread" className={`${iconBtn} hover:text-indigo-600`}><ArchiveRestore size={15} /></button>
+                : onArchive && <button onClick={stop(() => onArchive(post.id))} title="Archive Thread" aria-label="Archive Thread" className={`${iconBtn} hover:text-amber-600`}><Archive size={15} /></button>}
               <button onClick={stop(() => onDelete(post.id))} title="Delete Thread" aria-label="Delete Thread" className={`${iconBtn} hover:text-rose-600`}><Trash2 size={15} /></button>
             </span>
             {/* The status control lives in its own column; this slot is for the verb that
                 REPLACES it — so the two can never both claim the row. */}
             {primaryVerb === 'resubmit' && (
-              <button onClick={stop(() => onResubmit(post.id))} title="Send the revised post back to the client for review" aria-label="Back for review" className={`${iconBtn} text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50`}><RefreshCw size={15} /></button>
+              <button onClick={stop(() => onResubmit(post))} title="Send the revised post back to the client for review" aria-label="Back for review" className={`${iconBtn} text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50`}><RefreshCw size={15} /></button>
             )}
             {primaryVerb === 'send' && (
               <button onClick={stop(() => onSendForReview(post))} title="Make this visible on the client's review link" aria-label="Send for review" className={`${iconBtn} text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50`}><SendHorizontal size={15} /></button>

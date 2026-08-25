@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { versionMediaUrl } from '../utils/helpers';
 
 // Tailwind-classed renderers so we don't depend on the typography plugin.
 const components = {
@@ -16,7 +17,7 @@ const components = {
   em: (p) => <em className="italic" {...p} />,
   blockquote: (p) => <blockquote className="border-l-4 border-slate-200 pl-3 italic text-slate-500 my-3" {...p} />,
   hr: () => <hr className="border-slate-200 my-4" />,
-  img: (p) => <img className="w-full rounded-lg border border-slate-200 my-3" loading="lazy" {...p} />,
+  img: ({ src, ...p }) => <img className="w-full rounded-lg border border-slate-200 my-3" loading="lazy" src={versionMediaUrl(src)} {...p} />,
   pre: (p) => <pre className="bg-slate-900 text-slate-100 rounded-lg p-3 text-xs overflow-x-auto my-3" {...p} />,
   // Inline code (no language- class) gets a chip; fenced blocks live inside <pre>.
   code: ({ className = '', ...p }) =>

@@ -140,7 +140,7 @@ const ReadinessChips = ({ post, max = 3, className = 'mb-3' }) => {
   );
 };
 
-const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview, onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect, density = DENSITY.CARDS }) => {
+const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicate, onCloneToAll, onStatusChange, statusOptions, onArchive, onRestore, onUseTemplate, onResubmit, onSendForReview, onHoldFromReview, onPromoteSuggestion, onDismissSuggestion, onPushToSender, onPublishToSite, showProvenance = false, isReadOnly, selectable = false, selected = false, onToggleSelect, density = DENSITY.CARDS }) => {
   const [copied, setCopied] = useState(false);
   // LIST density has its own component (PostRow) — anything that isn't COMPACT falls
   // back to the original card, so an unknown value can never render a broken layout.
@@ -151,6 +151,8 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
   const isPosted = post.status === STATUS.POSTED;
   const isArchived = post.status === STATUS.ARCHIVED;
   const isChangesRequested = post.approvalStatus === APPROVAL_STATUS.CHANGES_REQUESTED;
+  const availableStatuses = statusOptions || [STATUS.DRAFT, STATUS.SCHEDULED, STATUS.POSTED];
+  const canChangeCurrentStatus = availableStatuses.includes(post.status || STATUS.DRAFT);
   const reviewState = reviewStateOf(post);
   const isNotSent = reviewState === REVIEW_STATE.NOT_SENT;
   const waiting = daysAwaiting(post);
@@ -273,11 +275,11 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               {/* Suggestion cards keep only Edit + Delete: Archive is a dead end for a parked
                   post, and Duplicate / Clone-to-All mint client-visible drafts — the ONLY way
                   off the suggestions lane is the explicit "Use this" promote below. */}
-              {!isSuggestion && (isArchived ? (
+              {!isSuggestion && (isArchived ? (onRestore && (
                 <button onClick={(e) => { e.stopPropagation(); onRestore(post.id); }} title="Restore Thread" aria-label="Restore Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><ArchiveRestore size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              ) : (
+              )) : (onArchive && (
                 <button onClick={(e) => { e.stopPropagation(); onArchive(post.id); }} title="Archive Thread" aria-label="Archive Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-amber-600 rounded-md"><Archive size={16} className="sm:w-3.5 sm:h-3.5" /></button>
-              ))}
+              )))}
               {/* Pull a sent post back off the client's review link. Only meaningful once
                   it's actually out there, so it's hidden while the post is still staged. */}
               {!isSuggestion && !post.isTemplate && !isNotSent && onHoldFromReview && (
@@ -297,7 +299,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               {!isSuggestion && onPublishToSite && post.platform === 'blog' && post.approvalStatus === APPROVAL_STATUS.APPROVED && (
                 <button onClick={(e) => { e.stopPropagation(); onPublishToSite(post); }} title="Publish to site (opens a PR via POM dispatch)" aria-label="Publish to site (opens a PR via POM dispatch)" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-600 rounded-md"><UploadCloud size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               )}
-              {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
+              {!isSuggestion && onCloneToAll && <button onClick={(e) => { e.stopPropagation(); onCloneToAll(post); }} title="Blast: Clone to All Clients" aria-label="Blast: Clone to All Clients" className="p-2 sm:p-1.5 text-slate-400 hover:text-indigo-600 rounded-md"><Layers size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               {!isSuggestion && <button onClick={(e) => { e.stopPropagation(); onDuplicate(post); }} title="Clone Draft" aria-label="Clone Draft" className="p-2 sm:p-1.5 text-slate-400 hover:text-blue-600 rounded-md"><CopyPlus size={16} className="sm:w-3.5 sm:h-3.5" /></button>}
               <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} title="Edit Thread" aria-label="Edit Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-emerald-700 rounded-md"><Edit3 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(post.id); }} title="Delete Thread" aria-label="Delete Thread" className="p-2 sm:p-1.5 text-slate-400 hover:text-rose-600 rounded-md"><Trash2 size={16} className="sm:w-3.5 sm:h-3.5" /></button>
@@ -429,7 +431,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                 back to the client (reset to pending), not moving toward posted. */}
             {isChangesRequested && onResubmit ? (
               <button
-                onClick={(e) => { e.stopPropagation(); onResubmit(post.id); }}
+                onClick={(e) => { e.stopPropagation(); onResubmit(post); }}
                 title="Send the revised post back to the client for review"
                 className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
@@ -446,7 +448,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               >
                 <SendHorizontal size={13} /> Send for review
               </button>
-            ) : (
+            ) : onStatusChange && canChangeCurrentStatus ? (
               <select
                 value={post.status}
                 onClick={(e) => e.stopPropagation()}
@@ -455,11 +457,15 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                 title="Set status"
                 className={`text-xs font-bold rounded-full px-2.5 h-7 py-0 leading-none border cursor-pointer transition-colors ${statusPill}`}
               >
-                <option value={STATUS.DRAFT}>Draft</option>
-                <option value={STATUS.SCHEDULED}>Scheduled</option>
-                <option value={STATUS.POSTED}>Posted</option>
-                {isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
+                {availableStatuses.map(status => (
+                  <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>
+                ))}
+                {!statusOptions && isArchived && <option value={STATUS.ARCHIVED}>Archived</option>}
               </select>
+            ) : (
+              <span className={`text-xs font-bold rounded-full px-2.5 py-1 border capitalize ${statusPill}`}>
+                {post.status || STATUS.DRAFT}
+              </span>
             )}
           </div>
         )}
@@ -472,7 +478,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             ) : (
               <>
                 <button onClick={(e) => { e.stopPropagation(); onEdit(post); }} className="flex-1 py-2 text-xs font-bold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">Request changes</button>
-                <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, STATUS.SCHEDULED); }} className="flex-1 py-2 text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"><CheckCircle size={14} /> Approve</button>
+                <button onClick={(e) => { e.stopPropagation(); onStatusChange(post.id, STATUS.SCHEDULED, post); }} className="flex-1 py-2 text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"><CheckCircle size={14} /> Approve</button>
               </>
             )}
           </div>

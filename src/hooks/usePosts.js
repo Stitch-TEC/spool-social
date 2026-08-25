@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { OPERATOR_UID } from '../config/roles';
+import { versionMediaUrl, versionSpoolMediaContent } from '../utils/helpers';
 
 // Firestore TERMINATES a listener when it errors and never re-attaches it. The
 // dashboard's banner promised "Retrying automatically…" and nothing was: one
@@ -17,8 +18,8 @@ const MAX_RETRIES = 6;
  *
  * Security model (mirrors firestore.rules):
  * - Operator: all posts + every client's branding (scoped by uid == OWNER_UID).
- * - Client member: only their own clientId's posts + branding (where clientId ==).
- * - Share guest: only their token's clientId (where clientId == shareClientId).
+ * - Client member: their own clientId's in-review posts + branding.
+ * - Share guest: their token's clientId, owner uid, and in-review posts.
  * Queries MUST filter so the rule resolves against the result set — the
  * immutable clientId is the scope key (never the free-text client name).
  */
@@ -67,15 +68,15 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
       return;
     }
 
-    // Scope by clientId (guest + client member) or by uid (operator). GUESTS additionally filter by
+    // Scope by clientId + in_review (guest + client member) or by uid (operator). GUESTS additionally filter by
     // the owner uid: the rules' isShareGuest requires shareOwner == resource.data.uid, and Firestore
     // list evaluation can't prove that from a clientId-only query ("rules are not filters") — without
     // the uid clause the guest subscription is permission-denied wholesale. Members must NOT get the
     // uid filter (their targetUid is their own uid; posts carry the owner's).
     const constraints = scopeClientId
       ? (isGuest
-          ? [where('clientId', '==', scopeClientId), where('uid', '==', targetUid)]
-          : [where('clientId', '==', scopeClientId)])
+          ? [where('clientId', '==', scopeClientId), where('uid', '==', targetUid), where('reviewStage', '==', 'in_review')]
+          : [where('clientId', '==', scopeClientId), where('reviewStage', '==', 'in_review')])
       : [where('uid', '==', targetUid)];
 
     const q = query(collection(db, 'posts'), ...constraints);
@@ -113,6 +114,11 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
             postMap.set(change.doc.id, {
               id: change.doc.id,
               ...data,
+              // Old /media URLs were browser-cacheable for one year. Read them
+              // through the v2 cache key without mutating Firestore so the SPA
+              // never reuses an already-cached legacy response.
+              imageUrl: versionMediaUrl(data.imageUrl || ''),
+              content: versionSpoolMediaContent(data.content || ''),
               scheduledDate,
               createdAt,
               _raw_scheduledDate: data.scheduledDate,
@@ -120,7 +126,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               _sortTs,
               // Cached lowercase fields for fast search filtering. Title is folded
               // into content so long-form posts are findable by their headline.
-              _searchContent: `${data.title || ""}\n${data.content || ""}`.toLowerCase(),
+              _searchContent: `${data.title || ""}\n${versionSpoolMediaContent(data.content || "")}`.toLowerCase(),
               _searchClient: (data.client || "").toLowerCase()
             });
             hasChanges = true;

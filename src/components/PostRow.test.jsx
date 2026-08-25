@@ -63,7 +63,7 @@ describe('PostRow', () => {
     );
     expect(screen.queryByLabelText('Set post status')).toBeNull();
     fireEvent.click(screen.getByLabelText('Back for review'));
-    expect(onResubmit).toHaveBeenCalledWith('p1');
+    expect(onResubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }));
   });
 
   it('keeps the status control for a post already in front of the client', () => {
@@ -72,6 +72,21 @@ describe('PostRow', () => {
     expect(screen.getByText('Awaiting')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Set post status'), { target: { value: 'scheduled' } });
     expect(onStatusChange).toHaveBeenCalledWith('p1', 'scheduled');
+  });
+
+  it('limits member workflow controls to rule-permitted statuses', () => {
+    render(
+      <PostRow
+        post={{ ...basePost, reviewStage: 'in_review' }}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onStatusChange={() => {}}
+        statusOptions={['draft', 'scheduled']}
+      />
+    );
+    const values = [...screen.getByLabelText('Set post status').options].map(option => option.value);
+    expect(values).toEqual(['draft', 'scheduled']);
+    expect(screen.queryByLabelText('Archive Thread')).toBeNull();
   });
 
   it('swaps Archive for Restore on an archived post', () => {

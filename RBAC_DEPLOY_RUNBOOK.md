@@ -5,6 +5,16 @@ load-bearing: several Firestore rules flip to `isSuperAdmin()`, which reads your
 `users/{email}` doc — deploy the rules before that doc exists and **you lock
 yourself out of provisioning.** Do the steps in sequence; don't skip the audit.
 
+> **Current-rules addendum (2026-08-24):** `firestore.rules` now also enforces
+> `reviewStage` as a client/guest visibility boundary. Before deploying the
+> current file, follow [`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md): strict
+> legacy-ID inventory gate → guarded stage backfill under old code/rules →
+> internal PATCH-caller baseline compatibility → application deploy → immediate
+> rules deploy. That sequence supersedes Step 1
+> below for this revision; deploying the
+> current rules before the backfill/app would hide legacy posts and deny old
+> client query shapes.
+
 > What's now implemented (working tree, pending deploy): `firestore.rules`, the
 > `users/{email}` model + `clientId` backfill, the role-aware app
 > (`useAuth`/`usePosts`/`App.jsx` gating + the operator "Manage Users" screen),
@@ -67,20 +77,35 @@ slug, or you want specific slugs (`cadden`, `omni-nde`, `the-bdr`), supply overr
 node scripts/admin.mjs backfill --key sa.json --map map.json          # re-review
 node scripts/admin.mjs backfill --key sa.json --map map.json --apply  # write it
 ```
-Only posts/clients **missing** `clientId` are written (idempotent; safe to re-run).
-Posts with no `client` field are skipped and reported — they can't be mapped.
+Only ordinary posts/clients **missing** `clientId` are written (idempotent; safe
+to re-run). `source: suggestion` rows are explicitly excluded: their `clientId`
+must stay empty until the transactional promotion path resets their review
+lifecycle. A non-empty/non-string suggestion tenant or malformed source is a hard
+stop, including in dry-run. Every applied repair is guarded by the inventoried
+Firestore `updateTime`; a conflict requires a fresh inventory. Posts with no
+`client` field are skipped and reported — they can't be mapped.
 
 ## Step 3 — Audit (must be clean before any client login)
 ```bash
-node scripts/admin.mjs audit --key sa.json
+node scripts/admin.mjs audit --key sa.json --roster /secure/path/clients.json
 ```
 Exits non-zero and lists offenders if any:
-- **posts without `clientId`** — invisible to client users (operator-only via
-  `isOwner`). Fix the source `client` value, then re-backfill.
-- **posts with `uid != OWNER_UID`** — a share token (which pins `shareOwner ==
-  post.uid`) would miss these; investigate.
+- **legacy post/automation/share IDs that do not match the hardened route
+  formats** — stop the Worker rollout and migrate/re-issue deliberately.
+- **ordinary posts without/carrying an off-roster `clientId`** — invisible to or
+  misrouted for client users. Fix the source mapping, then re-backfill/restamp.
+- **suggestions without canonical `forClientId`, exact empty `clientId`, owner
+  uid, and `reviewStage: private`** — stop; never repair these by making them
+  tenant-readable.
+- **posts with missing, non-string, or wrong `uid`** — reported separately; a
+  share token (which pins `shareOwner == post.uid`) would miss these.
 - **clients docs without `clientId`** — branding unreadable by client users.
-- **one client name → multiple clientIds** — a tenant split; resolve before logins.
+- **clients docs with missing, non-string, or wrong `uid`** — owner/guest
+  branding reads are invalid.
+- **one client name → multiple IDs or one ID → multiple names** — a tenant split;
+  all resource claims are checked against the same canonical roster snapshot.
+- **posts without `reviewStage: private|in_review`** — hidden by the current
+  strict client/guest rules; run the guarded review-stage procedure first.
 
 ## Step 4 — Provision client users (super_admin only)
 Once the audit is clean *and* the app + Worker + rules are deployed, either use the
@@ -109,5 +134,6 @@ extra `clientId` field is harmless under the old rules.
 `.github/workflows/deploy.yml` deploys the Worker + SPA on push to `main` but has
 **no** `firestore:rules` step — rules are manual (`firebase deploy`). For the app/
 Worker phase, add a `firebase-tools` step (gated on a `FIREBASE_TOKEN` /
-service-account secret) ordered **before** the Worker publish, so rules and app
-ship together (per `SHARE_LINKS.md`'s deploy-ordering hazard).
+service-account secret) as a coordinated migration. The current stage boundary
+requires data backfill first, then application, then rules; do not blindly put a
+rules step before the Worker publish (see `REVIEW_STAGE_ROLLOUT.md`).
