@@ -15,6 +15,14 @@ perform **no send/hold/approve/request-changes/resubmit actions from the first
 companion deploy until the post-rules smoke tests pass**. Draft editing can also
 wait; this keeps a human approval from racing the three-service contract change.
 
+Before the window, synchronize the release-manifest blocks in PRs #10/#50/#100.
+For every repository record the up-to-date head commit, head tree OID, and base
+OID after final tests/review. Use merge-commit only—never squash, rebase-merge,
+auto-update, or make conflict edits after review. Immediately after each merge,
+record the resulting `main` OID and prove its tree equals the reviewed head tree;
+then verify the deployed source revision. A different tree or deployment is a
+stop/rollback event. Current pre-rebase candidate hashes are not deployable.
+
 1. **While the old SPA and old rules are still live, prepare the data and
    indexes.** Obtain a fresh service-account key outside the repository. Export
    one fresh canonical broker `GET /clients` response to
@@ -89,8 +97,10 @@ wait; this keeps a human approval from racing the three-service contract change.
    approval, but it is part of `reviewRevision`, so a schedule race returns 409.
    Archived rows are not actionable.
 
-4. **Merge/deploy the final Spool PR third.** Worker/SPA auto-deploys from
-   `main`. Its list/get output normalizes legacy missing preview fields to
+4. **Merge/deploy the final Spool PR third using merge-commit only.** Worker/SPA
+   auto-deploys from `main`. Record the merge OID, prove its tree equals the
+   manifested Spool head tree, and verify the Worker reports that source revision
+   before proceeding. Its list/get output normalizes legacy missing preview fields to
    explicit strings and derives a missing long-form publication slug from the
    same bound title/content fallback the publisher uses. The full serialized
    list envelope—including normalized rows, both revisions, totals, and cursor—
