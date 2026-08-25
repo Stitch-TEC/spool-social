@@ -63,7 +63,7 @@ describe('PostRow', () => {
     );
     expect(screen.queryByLabelText('Set post status')).toBeNull();
     fireEvent.click(screen.getByLabelText('Back for review'));
-    expect(onResubmit).toHaveBeenCalledWith('p1');
+    expect(onResubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }));
   });
 
   it('keeps the status control for a post already in front of the client', () => {
@@ -74,12 +74,38 @@ describe('PostRow', () => {
     expect(onStatusChange).toHaveBeenCalledWith('p1', 'scheduled');
   });
 
+  it('limits member workflow controls to rule-permitted statuses', () => {
+    render(
+      <PostRow
+        post={{ ...basePost, reviewStage: 'in_review' }}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onStatusChange={() => {}}
+        statusOptions={['draft', 'scheduled']}
+      />
+    );
+    const values = [...screen.getByLabelText('Set post status').options].map(option => option.value);
+    expect(values).toEqual(['draft', 'scheduled']);
+    expect(screen.queryByLabelText('Archive Thread')).toBeNull();
+  });
+
   it('swaps Archive for Restore on an archived post', () => {
     const onRestore = vi.fn();
     render(<PostRow post={{ ...basePost, status: 'archived' }} onEdit={() => {}} onRestore={onRestore} onArchive={() => {}} />);
     expect(screen.queryByLabelText('Archive Thread')).toBeNull();
     fireEvent.click(screen.getByLabelText('Restore Thread'));
     expect(onRestore).toHaveBeenCalledWith('p1');
+  });
+
+  it('does not offer review actions for archived rows', () => {
+    const props = { onEdit: () => {}, onResubmit: vi.fn(), onSendForReview: vi.fn() };
+    const { rerender } = render(<PostRow
+      post={{ ...basePost, status: 'archived', approvalStatus: 'changes_requested', reviewStage: 'in_review' }}
+      {...props}
+    />);
+    expect(screen.queryByLabelText('Back for review')).toBeNull();
+    rerender(<PostRow post={{ ...basePost, status: 'archived', reviewStage: 'private' }} {...props} />);
+    expect(screen.queryByLabelText('Send for review')).toBeNull();
   });
 
   it('counts what is missing and names it on hover instead of spending a line on chips', () => {

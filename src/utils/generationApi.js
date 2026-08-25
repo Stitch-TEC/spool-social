@@ -5,6 +5,7 @@
 // local `wrangler dev` server (see vite.config.js).
 
 import { auth } from '../config/firebase';
+import { versionMediaUrl } from './helpers';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -110,7 +111,7 @@ export async function fetchIndexPage(client, pageUrl) {
  */
 export async function importSiteImage(client, imageUrl) {
   const data = await postJSON('/api/site-image-import', { client, url: imageUrl });
-  return data.url;
+  return versionMediaUrl(data.url);
 }
 
 /** List the reusable generated/uploaded images (the media pool). When `forClient` (a suite slug) is
@@ -162,7 +163,7 @@ export async function uploadPostImage(base64, forClient = '') {
  * so the reuse picker can scope "Generated images" per client.
  */
 export async function ensureHostedImage(imageUrl, forClient = '') {
-  if (typeof imageUrl !== 'string' || !imageUrl.startsWith('data:image/')) return imageUrl;
+  if (typeof imageUrl !== 'string' || !imageUrl.startsWith('data:image/')) return versionMediaUrl(imageUrl);
   try {
     return await uploadPostImage(imageUrl, forClient);
   } catch {

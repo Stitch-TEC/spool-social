@@ -65,8 +65,16 @@ Spool has THREE axes, and until this date the UI conflated the first two:
 - `approvalStatus` — the CLIENT axis: `pending / approved / changes_requested`.
 - **`reviewStage`** — the STAGING axis (new, additive): `private` | `in_review`.
 
-**`reviewStage` ABSENT === `in_review`.** That default is load-bearing: it is why no
-backfill was needed and why no live review link lost content. Never "normalize" it away.
+**At runtime/rules, `reviewStage` ABSENT now fails client access closed.** Legacy
+absence historically meant `in_review` for ordinary posts, while legacy
+`source:'suggestion'` rows must backfill to `private`; the roster-aware
+`scripts/admin.mjs review-stage --apply` makes those meanings explicit and also
+fills a missing canonical `updatedAt` from Firestore `updateTime` before the
+newest-first app/rules rollout. Deploy `firestore.indexes.json`, wait until the
+`posts(uid, updatedAt DESC)` index is READY, then follow the frozen
+feedback-worker → POM → Spool → rules → verification order. See
+`REVIEW_STAGE_ROLLOUT.md`; its `id-inventory` compatibility gate runs first.
+Never deploy the rules first, skip an incompatible legacy ID, or guess invalid values.
 
 `src/utils/review.js` is the single derivation — `reviewStateOf()` folds the client-facing
 axes into the four buckets the UI triages by: `not_sent · awaiting · changes · approved`.
@@ -77,20 +85,24 @@ something the client did; pulling a post back to staging must not erase it.
   `in_review`). So do imports, blasts, clones, repurposed drafts, promoted suggestions,
   API-created drafts, and cron/automation output. Only the explicit **Send for review**
   verb (or `PATCH {reviewStage:'in_review'}`) puts a post in front of a client.
-- **Only the OPERATOR sees staged posts** — enforced in `App.jsx`'s lane partition, gated on
-  `!isOperator` (not `isReadOnly`): a client member with a real login is just as much the
-  audience staging hides unfinished work from as a share-link guest. Note this is
-  a WORKFLOW boundary, not a security one: the tenant boundary is still `clientId` in
-  `firestore.rules`, and a guest is already authorized for their own tenant's data.
-  Rules-level enforcement would need every post to carry the field (Firestore `==` skips
-  docs missing it), i.e. a backfill — deliberately not done.
+- **Only the OPERATOR sees staged posts** — enforced both by stage-constrained client
+  queries and `firestore.rules`; `private` is now a real security boundary for guests
+  and members. `App.jsx` still partitions the operator lanes. The guarded legacy
+  backfill is a required pre-merge production step, not part of code deployment.
 - **An edit invalidates an approval.** `handleSavePost` resets `approved → pending` when
-  content/title/image changed, and reads approval + feedback from the LIVE post (never
+  platform/title/content/image/altText/metaDescription/effective publication slug changed, and reads approval + feedback from the LIVE post (never
   from the editor's stale formData). Both downstream gates (publish-to-site, push-to-Sender)
   admit anything marked `approved` — that reset is what keeps them meaningful.
-- **Review state never crosses a tenant boundary**: bulk client-reassign and client MERGE
-  clear `approvalStatus`/`feedback`/`feedbackThread` and re-stage (a pure RENAME does not —
-  same client, new label).
+  Tags are internal and do not affect approval. Scheduling is workflow-only and
+  does not revoke approval, but it is part of the review-action revision so a
+  racing review click conflicts. Archived rows are non-actionable.
+- **Review state never crosses a tenant boundary**: editor save, bulk client-reassign,
+  and client MERGE clear approval, feedback/history, send time, and legacy reviewer
+  attribution, then re-stage atomically with the tenant move (a pure RENAME does not —
+  same client, new label). Any concurrent live `clientId` change aborts a stale editor
+  save and requires reload—even when both editors chose the same destination—so copy
+  prepared under the old tenant is never replayed into the new one. A concurrent
+  same-ID display-label rename is preserved when the editor did not rename it.
 - `worker/firestore.js countDraftSummary` counts `staged` separately from `pendingReview`,
   so POM's attention strip stops reporting drafts the client has never been shown.
 - `src/utils/readiness.js` derives per-post blockers/warnings (needs an image, over the

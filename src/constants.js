@@ -99,9 +99,10 @@ export const APPROVAL_STATUS = {
   CHANGES_REQUESTED: 'changes_requested'
 };
 
-// The staging axis (see src/utils/review.js for the full rationale). ADDITIVE:
-// a post with NO reviewStage field is treated as IN_REVIEW, so every pre-existing
-// post and every live review link behaves exactly as it did before this existed.
+// The staging axis (see src/utils/review.js for the full rationale). The
+// operator-side derivation keeps the historical absent=IN_REVIEW fallback only
+// for migration visibility. Guest/member rules fail missing values closed; the
+// guarded rollout backfills every legacy row before those rules are deployed.
 export const REVIEW_STAGE = {
   PRIVATE: 'private',     // staging — operator workspace only, kept off review links
   IN_REVIEW: 'in_review'  // sent — the client sees it and can act on it

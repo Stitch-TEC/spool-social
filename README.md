@@ -166,6 +166,10 @@ The Worker also pulls per-client knowledge from the suite broker (**feedback-wor
     VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
     VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
     VITE_FIREBASE_APP_ID=your_app_id
+    # Production is pinned by deploy.yml; aliases are accepted only as legacy
+    # media inputs and all generated URLs use VITE_PUBLIC_ORIGIN.
+    VITE_PUBLIC_ORIGIN=https://spool.stitchtec.dev
+    VITE_LEGACY_MEDIA_ORIGINS=https://spool.kist.workers.dev
     ```
 
 4.  **Run Locally:**
@@ -178,6 +182,18 @@ The Worker also pulls per-client knowledge from the suite broker (**feedback-wor
 ## 📦 Deployment
 
 Every push to `main` is automatically built and deployed to **Cloudflare Workers** via GitHub Actions (`.github/workflows/deploy.yml`), authenticated with the `CLOUDFLARE_API_TOKEN` repo secret. The Firebase web config is injected from repository **Actions variables**.
+
+Media hardening has an additional operational checklist: R2 inventory/signature
+audit, legacy Cloudflare cache purge, browser-cache residual, and the manual
+Firestore rules deploy. Follow [`MEDIA_SECURITY_ROLLOUT.md`](MEDIA_SECURITY_ROLLOUT.md);
+merging origin code alone does not complete that rollout.
+
+The private review-stage/newest-first boundary has mandatory guarded legacy-data
+and index steps before merge. The actual release is a frozen maintenance window:
+feedback-worker → POM → Spool → immediate manual rules → contract/security checks
+→ R2/cache verification, with no approval actions during it. Follow
+[`REVIEW_STAGE_ROLLOUT.md`](REVIEW_STAGE_ROLLOUT.md); do not deploy strict rules
+against missing stage/order values or an old SPA query.
 
 ### Manual Deploy (fallback)
 To build and deploy from your local machine:
@@ -199,7 +215,11 @@ node scripts/admin.mjs bootstrap --email you@example.com --key sa.json
 # 2. Tag all existing content with which client it belongs to, then double-check
 node scripts/admin.mjs backfill --key sa.json            # preview
 node scripts/admin.mjs backfill --key sa.json --apply
-node scripts/admin.mjs audit   --key sa.json             # should report "clean"
+node scripts/admin.mjs id-inventory --key sa.json         # must be compatible
+node scripts/admin.mjs review-stage --key sa.json --roster /secure/path/clients.json         # preview
+node scripts/admin.mjs review-stage --key sa.json --roster /secure/path/clients.json --apply # ordinary→in_review; suggestions→private
+node scripts/admin.mjs audit --key sa.json --roster /secure/path/clients.json                 # should report "clean"
+firebase deploy --only firestore:indexes --project spool-social                              # wait until READY
 
 # 3. (Future) give a client teammate access — only once client logins are turned on
 node scripts/admin.mjs grant --email person@client.com --role client --client-id their-id --key sa.json

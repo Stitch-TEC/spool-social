@@ -393,7 +393,19 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       // onSave returns true only when the write actually happened (validation
       // failures toast and return false) — only then is the local autosave
       // safety net obsolete.
-      const ok = await onSave(formData);
+      // Carry the value that was loaded into the editor separately from the
+      // submitted value. The transactional save can then distinguish an
+      // intentional workflow-status edit from a client approval that advanced
+      // status concurrently while this editor was open.
+      const ok = await onSave(formData, {
+        baselineStatus: pristineRef.current?.status,
+        // Tenant intent needs the editor-open baseline just like workflow
+        // status. postsRef may advance while the editor is open, so deriving
+        // this at save time would mistake a concurrent reassignment for the
+        // operator's request and could move the post back across tenants.
+        baselineClientId: pristineRef.current?.clientId,
+        baselineClient: pristineRef.current?.client,
+      });
       if (ok === true) {
         pristineRef.current = formData;
         clearAutosave();

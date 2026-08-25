@@ -29,10 +29,10 @@ rules_version = '2';
 // isEntityMember branch. This keeps the reviewer flow working in the window
 // after these rules deploy but before the clientId backfill runs.
 //
-// ⚠️  DEPLOY ORDER (see RBAC_DEPLOY_RUNBOOK.md): create your own super_admin doc
-//     out-of-band (scripts/admin.mjs bootstrap) BEFORE deploying these rules, or
-//     several isSuperAdmin() gates lock you out of provisioning. Sequence:
-//     bootstrap → deploy rules → backfill clientId → verify audit → provision.
+// ⚠️  DEPLOY ORDER: initial RBAC bootstrap still requires the super_admin doc
+//     out-of-band before rules. This revision ALSO requires the guarded
+//     reviewStage backfill before the app merge, then app before rules; see
+//     REVIEW_STAGE_ROLLOUT.md. Never deploy this file first.
 //       firebase deploy --only firestore:rules
 //     get(users/$(email)) is called by several helpers per evaluation, but
 //     Firestore caches same-path reads within one evaluation — ONE read, not N.
@@ -135,14 +135,270 @@ service cloud.firestore {
         && shareStillLive();
     }
 
+    // Client-facing review access is an explicit state, not a UI convention.
+    // Missing/invalid legacy values fail closed; the rollout runbook requires
+    // the update-time-precondition backfill before these rules are deployed.
+    function isReviewVisible(data) {
+      return data.get('reviewStage', null) == 'in_review';
+    }
+
     // A guest may ONLY approve / request changes / append feedback — never edit
-    // content, reassign ownership, or change the client/clientId.
+    // content, reassign ownership, or change the client/clientId. Value and
+    // transition checks matter as much as the field allowlist: without them a
+    // guest could write arbitrary workflow/status strings or replace the whole
+    // feedback history while technically touching only approved field names.
+    function isIsoUtc(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$');
+    }
+
+    function reviewThreadAppendsOne(actor) {
+      let before = resource.data.get('feedbackThread', []);
+      let after = request.resource.data.get('feedbackThread', []);
+      let entry = after[after.size() - 1];
+      return before is list
+        && after is list
+        && after.size() == before.size() + 1
+        && after.size() <= 200
+        && (before.size() == 0 || after[0:before.size()] == before)
+        && entry is map
+        && entry.keys().hasOnly(['text', 'by', 'at'])
+        && entry.text is string
+        && entry.text.size() > 0
+        && entry.text.size() <= 500
+        && entry.text.matches('(?s).*\\S.*')
+        && entry.text == request.resource.data.feedback
+        && entry.by == actor
+        && isIsoUtc(entry.at)
+        // One client-clock value drives both fields in the app. This does not
+        // make it an authoritative audit timestamp, but it prevents a forged
+        // history time from diverging from the review update it belongs to.
+        && entry.at == request.resource.data.updatedAt;
+    }
+
+    function reviewValuesAreValid(actor) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let feedbackChanged = changed.hasAny(['feedback']);
+      let threadChanged = changed.hasAny(['feedbackThread']);
+      let approving = request.resource.data.approvalStatus == 'approved';
+      let requesting = request.resource.data.approvalStatus == 'changes_requested';
+      return changed.hasAny(['approvalStatus', 'feedbackThread'])
+        && changed.hasAll(['updatedAt'])
+        // reviewedBy may already equal the actor after an earlier review round;
+        // affectedKeys excludes same-value writes. The value check below still
+        // requires missing/different attribution to be written correctly.
+        && changed.hasAll(['reviewedAt'])
+        && isIsoUtc(request.resource.data.updatedAt)
+        && request.resource.data.reviewedBy == actor
+        && request.resource.data.reviewedAt == request.resource.data.updatedAt
+        && resource.data.get('status', 'draft') != 'archived'
+        && (approving || requesting)
+        // The app advances workflow only when approving a still-draft post.
+        // An already scheduled/posted post keeps its workflow state. Archived
+        // rows are rejected above and are not review actions at all.
+        && (!changed.hasAny(['status'])
+          || (resource.data.get('status', 'draft') == 'draft'
+            && request.resource.data.status == 'scheduled'
+            && approving))
+        // Feedback and its history entry are one atomic review action. They may
+        // only accompany a changes-requested result, never an approval.
+        && (!feedbackChanged || threadChanged)
+        && (!threadChanged
+          || (requesting
+            && request.resource.data.feedback is string
+            && request.resource.data.feedback.size() > 0
+            && request.resource.data.feedback.size() <= 500
+            && reviewThreadAppendsOne(actor)))
+        // Repeating the same text in a later round leaves the compatibility
+        // `feedback` scalar unchanged, but the new history entry is still the
+        // review action. Require the append; do not require a scalar diff.
+        && (!requesting || threadChanged)
+        && (!approving || (!feedbackChanged && !threadChanged));
+    }
+
     function isGuestReviewUpdate() {
       return isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+        && isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread', 'updatedAt'])
+             .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread',
+                       'reviewedBy', 'reviewedAt', 'updatedAt'])
         && request.resource.data.uid == resource.data.uid
-        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null);
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && reviewValuesAreValid('client');
+    }
+
+    // --- Member data contracts ---------------------------------------------
+    function validPostEnums(data) {
+      return data.get('platform', null) in ['gmb', 'instagram', 'facebook', 'linkedin', 'twitter', 'blog', 'job']
+        && data.get('status', null) in ['draft', 'scheduled', 'posted', 'archived']
+        && data.get('approvalStatus', null) in ['pending', 'approved', 'changes_requested']
+        && data.get('reviewStage', null) in ['private', 'in_review'];
+    }
+
+    function validTagAt(tags, index) {
+      return tags.size() <= index
+        || (tags[index] is string && tags[index].size() > 0 && tags[index].size() <= 20);
+    }
+
+    function validTags(tags) {
+      return tags is list
+        && tags.size() <= 10
+        && validTagAt(tags, 0)
+        && validTagAt(tags, 1)
+        && validTagAt(tags, 2)
+        && validTagAt(tags, 3)
+        && validTagAt(tags, 4)
+        && validTagAt(tags, 5)
+        && validTagAt(tags, 6)
+        && validTagAt(tags, 7)
+        && validTagAt(tags, 8)
+        && validTagAt(tags, 9);
+    }
+
+    function validMemberCreate() {
+      let data = request.resource.data;
+      let tags = data.get('tags', []);
+      let thread = data.get('feedbackThread', []);
+      let scheduled = data.get('scheduledDate', null);
+      return data.keys().hasOnly([
+          'uid', 'clientId', 'client', 'content', 'title', 'altText',
+          'metaDescription', 'slug', 'platform', 'status', 'approvalStatus',
+          'feedback', 'feedbackThread', 'reviewStage', 'imageUrl', 'tags',
+          'isTemplate', 'scheduledDate', 'createdAt', 'updatedAt', 'source'
+        ])
+        && data.keys().hasAll([
+          'uid', 'clientId', 'client', 'content', 'platform', 'status',
+          'approvalStatus', 'feedback', 'reviewStage', 'createdAt', 'updatedAt'
+        ])
+        && validPostEnums(data)
+        // Member-created content starts as a fresh, visible review draft. It
+        // cannot be born posted/approved or parked in operator-only staging.
+        && data.status == 'draft'
+        && data.approvalStatus == 'pending'
+        && data.reviewStage == 'in_review'
+        && data.feedback == ''
+        && thread is list && thread.size() == 0
+        && data.get('source', '') in ['', 'import']
+        && data.get('isTemplate', false) == false
+        && data.clientId is string && data.clientId.matches('^[a-z0-9]+(-[a-z0-9]+)*$')
+        && data.clientId.size() <= 64
+        && data.client is string && data.client.size() > 0 && data.client.size() <= 50
+        && data.content is string && data.content.size() > 0 && data.content.size() <= 100000
+        && data.get('title', '') is string && data.get('title', '').size() <= 200
+        && data.get('altText', '') is string && data.get('altText', '').size() <= 300
+        && data.get('metaDescription', '') is string && data.get('metaDescription', '').size() <= 200
+        && data.get('slug', '') is string && data.get('slug', '').size() <= 80
+        && (data.get('slug', '') == '' || data.get('slug', '').matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
+        && data.get('imageUrl', '') is string && data.get('imageUrl', '').size() <= 500000
+        && validTags(tags)
+        && (scheduled == null || (scheduled is string && scheduled.size() <= 40))
+        && isIsoUtc(data.createdAt)
+        && isIsoUtc(data.updatedAt);
+    }
+
+    function memberStatusTransitionIsValid() {
+      let before = resource.data.status;
+      let after = request.resource.data.status;
+      return after == before
+        || (before == 'draft' && after == 'scheduled')
+        || (before == 'scheduled' && after == 'draft');
+    }
+
+    function memberEditorialValuesAreValid() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      // Every field shown in the approval preview or used as its publication
+      // target is consent-bearing. approvalSafeStoragePatch removes
+      // missing→empty and canonical-equivalent representations before a member
+      // write reaches rules. Keeping the rule itself as a compact affected-key
+      // boundary rejects direct bypasses and stays below Firestore's
+      // 1,000-expression evaluation ceiling. Tags and scheduledDate remain
+      // internal workflow metadata; they do not revoke approval.
+      let payloadChanged = changed.hasAny([
+        'content', 'title', 'imageUrl', 'platform', 'altText',
+        'metaDescription', 'slug'
+      ]);
+      let approvalChanged = changed.hasAny(['approvalStatus']);
+      let tags = request.resource.data.get('tags', []);
+      let scheduled = request.resource.data.get('scheduledDate', null);
+      return changed.hasAny([
+          'content', 'title', 'altText', 'metaDescription', 'slug', 'platform',
+          'status', 'tags', 'isTemplate', 'scheduledDate', 'imageUrl'
+        ])
+        && changed.hasAll(['updatedAt'])
+        && changed.hasOnly([
+          'content', 'title', 'altText', 'metaDescription', 'slug', 'platform',
+          'status', 'tags', 'isTemplate', 'scheduledDate', 'imageUrl',
+          'approvalStatus', 'updatedAt'
+        ])
+        && validPostEnums(request.resource.data)
+        && memberStatusTransitionIsValid()
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0
+        && request.resource.data.content.size() <= 100000
+        && request.resource.data.get('title', '') is string
+        && request.resource.data.get('title', '').size() <= 200
+        && request.resource.data.get('altText', '') is string
+        && request.resource.data.get('altText', '').size() <= 300
+        && request.resource.data.get('metaDescription', '') is string
+        && request.resource.data.get('metaDescription', '').size() <= 200
+        && request.resource.data.get('slug', '') is string
+        && request.resource.data.get('slug', '').size() <= 80
+        && (request.resource.data.get('slug', '') == ''
+          || request.resource.data.get('slug', '').matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
+        && request.resource.data.get('imageUrl', '') is string
+        && request.resource.data.get('imageUrl', '').size() <= 500000
+        && validTags(tags)
+        && request.resource.data.get('isTemplate', false) == false
+        && (scheduled == null || (scheduled is string && scheduled.size() <= 40))
+        && isIsoUtc(request.resource.data.updatedAt)
+        // Members cannot grant approval through the editorial path. Editing an
+        // approved payload must revoke it in the same atomic update.
+        && (!approvalChanged
+          || (resource.data.approvalStatus == 'approved'
+            && payloadChanged
+            && request.resource.data.approvalStatus == 'pending'))
+        && (!(resource.data.approvalStatus == 'approved' && payloadChanged)
+          || request.resource.data.approvalStatus == 'pending');
+    }
+
+    function isMemberEditorialUpdate() {
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && request.resource.data.client == resource.data.client
+        && memberEditorialValuesAreValid();
+    }
+
+    function isMemberResubmitUpdate() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && changed.hasOnly(['approvalStatus', 'feedback', 'sentForReviewAt', 'updatedAt'])
+        && changed.hasAll(['approvalStatus', 'sentForReviewAt', 'updatedAt'])
+        && resource.data.approvalStatus == 'changes_requested'
+        && resource.data.get('status', 'draft') != 'archived'
+        && request.resource.data.approvalStatus == 'pending'
+        && request.resource.data.feedback == ''
+        && isIsoUtc(request.resource.data.sentForReviewAt)
+        && request.resource.data.sentForReviewAt == request.resource.data.updatedAt;
+    }
+
+    function isMemberReviewUpdate() {
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && request.resource.data.client == resource.data.client
+        && ((request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread',
+                        'reviewedBy', 'reviewedAt', 'updatedAt'])
+            && reviewValuesAreValid('client'))
+          || isMemberResubmitUpdate());
     }
 
     // --- Posts ---------------------------------------------------------------
@@ -150,14 +406,15 @@ service cloud.firestore {
     // operator's uid-scoped query and the single per-client share token both
     // resolve across multi-author client content). App queries MUST filter so
     // the read rule resolves: operator/super_admin read unscoped or by uid;
-    // a client member queries where('clientId','==', their clientId); a guest
-    // filters by uid + client. (Guest branches precede isEntityMember so an
+    // a client member queries by clientId + reviewStage=in_review; a guest
+    // filters by uid + clientId + reviewStage. (Guest branches precede isEntityMember so an
     // un-backfilled doc can't throw before the guest grant is evaluated.)
     match /posts/{postId} {
       allow read: if isOwner(resource.data.uid)
         || isSuperAdmin()
-        || isShareGuest(resource.data.uid, resource.data.get('clientId', null))
-        || isEntityMember(resource.data.get('clientId', null));
+        || (isReviewVisible(resource.data)
+            && (isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+                || isEntityMember(resource.data.get('clientId', null))));
 
       // Operator creates via super_admin OR the ownerUid() fallback (no users
       // doc required). A client member creates ONLY within their OWN clientId
@@ -173,22 +430,25 @@ service cloud.firestore {
       allow create: if isSuperAdmin()
         || isOwner(ownerUid())
         || (isEntityMember(request.resource.data.get('clientId', null))
-            && request.resource.data.uid == ownerUid());
+            && request.resource.data.uid == ownerUid()
+            && validMemberCreate());
 
       // A client member edits content only — uid, clientId, and the client
       // display name are all immutable on their path (reassignment/rename are
       // operator-only). Guests get the field allowlist (evaluated first).
-      allow update: if isSuperAdmin()
+      // Guest first: custom-token guests intentionally have no email claim,
+      // and a successful narrow review branch should not spend the expression
+      // budget evaluating email/RBAC editorial branches.
+      allow update: if isGuestReviewUpdate()
+        || isSuperAdmin()
         || isOwner(resource.data.uid)
-        || isGuestReviewUpdate()
-        || (isEntityMember(resource.data.get('clientId', null))
-            && request.resource.data.uid == resource.data.uid
-            && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
-            && request.resource.data.client == resource.data.client);
+        || isMemberEditorialUpdate()
+        || isMemberReviewUpdate();
 
       allow delete: if isSuperAdmin()
         || isOwner(resource.data.uid)
-        || isEntityMember(resource.data.get('clientId', null));
+        || (isReviewVisible(resource.data)
+            && isEntityMember(resource.data.get('clientId', null)));
     }
 
     // --- Client branding -----------------------------------------------------
