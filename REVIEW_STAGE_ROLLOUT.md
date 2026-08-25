@@ -27,7 +27,9 @@ version was already active, record that no-op log evidence and the still-active
 version rather than expecting a new release ID. The providers do not expose a
 trustworthy runtime Git SHA, so the merge-tree proof plus OID-keyed run is the
 source chain of custody. A different tree, run OID, or deployment is a
-stop/rollback event. Current pre-rebase candidate hashes are not deployable.
+stop/rollback event. Any superseded pre-rebase hashes previously recorded in
+the PR bodies remain non-deployable; only the synchronized final tuple is
+eligible under the freeze.
 
 From manifest verification until the review freeze is lifted, allow no unrelated
 push, merge, manual deployment, or `workflow_dispatch` run in broker, POM, or
