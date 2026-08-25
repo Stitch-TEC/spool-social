@@ -20,8 +20,20 @@ For every repository record the up-to-date head commit, head tree OID, and base
 OID after final tests/review. Use merge-commit only—never squash, rebase-merge,
 auto-update, or make conflict edits after review. Immediately after each merge,
 record the resulting `main` OID and prove its tree equals the reviewed head tree;
-then verify the deployed source revision. A different tree or deployment is a
+for each auto-deploy, require the successful GitHub Actions deployment run whose
+event SHA is that exact `main` OID and record both the run URL/ID and downstream
+provider deployment/version ID. If POM's exact-OID run reports that its Hosting
+version was already active, record that no-op log evidence and the still-active
+version rather than expecting a new release ID. The providers do not expose a
+trustworthy runtime Git SHA, so the merge-tree proof plus OID-keyed run is the
+source chain of custody. A different tree, run OID, or deployment is a
 stop/rollback event. Current pre-rebase candidate hashes are not deployable.
+
+From manifest verification until the review freeze is lifted, allow no unrelated
+push, merge, manual deployment, or `workflow_dispatch` run in broker, POM, or
+Spool. Immediately before advancing each boundary and again before lifting the
+freeze, prove each recorded provider deployment/version is still active. A
+superseding deployment invalidates the smoke result and stops the rollout.
 
 1. **While the old SPA and old rules are still live, prepare the data and
    indexes.** Obtain a fresh service-account key outside the repository. Export
@@ -99,8 +111,10 @@ stop/rollback event. Current pre-rebase candidate hashes are not deployable.
 
 4. **Merge/deploy the final Spool PR third using merge-commit only.** Worker/SPA
    auto-deploys from `main`. Record the merge OID, prove its tree equals the
-   manifested Spool head tree, and verify the Worker reports that source revision
-   before proceeding. Its list/get output normalizes legacy missing preview fields to
+   manifested Spool head tree, require the successful GitHub Actions deployment
+   run whose event SHA is that exact OID, and record its run URL/ID plus the
+   Cloudflare deployment/version ID. Prove that exact version is active before
+   proceeding. Its list/get output normalizes legacy missing preview fields to
    explicit strings and derives a missing long-form publication slug from the
    same bound title/content fallback the publisher uses. The full serialized
    list envelope—including normalized rows, both revisions, totals, and cursor—
@@ -111,11 +125,28 @@ stop/rollback event. Current pre-rebase candidate hashes are not deployable.
    `feedback_invalid`, `feedback_thread_full`, `feedback_thread_invalid`, and
    `draft_cursor_invalid`. Do not end the freeze yet.
 
-5. **Immediately deploy the rules manually:**
+5. **Immediately deploy the rules manually from a separate clean checkout.** Set
+   the two recorded OIDs and choose a new operator-approved absolute worktree path;
+   do not use the ordinary Spool checkout. Prove both the full tree and the rules
+   blob before running Firebase:
 
    ```bash
+   set -euo pipefail
+   SPOOL_RELEASE_OID=RECORD_THE_SPOOL_MAIN_MERGE_OID
+   SPOOL_REVIEWED_TREE_OID=RECORD_THE_MANIFESTED_SPOOL_TREE_OID
+   SPOOL_RULES_CHECKOUT=/absolute/operator-approved/spool-rules-checkout
+   git fetch origin main
+   test "$(git rev-parse origin/main)" = "$SPOOL_RELEASE_OID"
+   git worktree add --detach "$SPOOL_RULES_CHECKOUT" "$SPOOL_RELEASE_OID"
+   cd "$SPOOL_RULES_CHECKOUT"
+   test -z "$(git status --porcelain --untracked-files=all)"
+   test "$(git rev-parse 'HEAD^{tree}')" = "$SPOOL_REVIEWED_TREE_OID"
+   test "$(git hash-object firestore.rules)" = "$(git rev-parse HEAD:firestore.rules)"
    firebase deploy --only firestore:rules --project spool-social
    ```
+
+   Record the Firebase rules release/deployment result. Any failed equality test,
+   dirty status, wrong checkout, or mismatched rules blob stops the rollout.
 
 6. **Run contract and authorization smoke tests before lifting the freeze.**
    Confirm the operator sees private posts; old POM/guest/member query shapes fail
@@ -138,7 +169,10 @@ stop/rollback event. Current pre-rebase candidate hashes are not deployable.
    both-host Cloudflare cache verification in `MEDIA_SECURITY_ROLLOUT.md`.** Do
    not delete or rewrite objects. Verify canonical v2 URLs, the exact legacy
    alias redirect, attachment handling for unsafe legacy objects, and both
-   hostname cache surfaces. Then lift the maintenance freeze.
+   hostname cache surfaces. Immediately before lifting the freeze, re-check that
+   the recorded broker, POM, and Spool provider versions are all still active and
+   that no unrelated repository or deployment event occurred during the window.
+   Then lift the maintenance freeze.
 
 ## Failure handling
 
