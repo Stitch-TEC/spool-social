@@ -15,6 +15,12 @@ export default defineConfig({
     },
   },
   build: {
+    // Spool is installed and used from iPhones. Vite 7's moving default targets
+    // substantially newer Safari releases; pin the compatibility floor so a
+    // dependency refresh cannot silently emit syntax an otherwise-working
+    // iPhone cannot parse. Built-ins used on the cold path are kept to this
+    // floor in source as well (notably no String#replaceAll requirement).
+    target: ['es2020', 'safari14'],
     rollupOptions: {
       output: {
         // Split heavyweight vendors into separate long-term-cacheable chunks

@@ -113,6 +113,12 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
 
             const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
             const createdAt = getStableDate(data.createdAt, 'createdAt') || new Date();
+            // Media migration parsing used to run twice for every document in
+            // the initial snapshot (once for display, once for search). Besides
+            // doubling the work, that made a 400-post workspace a large
+            // synchronous allocation spike on iPhone Safari. Normalize once and
+            // reuse the exact string for both fields.
+            const content = versionSpoolMediaContent(data.content || '');
 
             // Pre-calculate numeric timestamp for O(1) sort comparisons.
             const _sortTs = (scheduledDate || createdAt).getTime();
@@ -124,7 +130,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               // through the v2 cache key without mutating Firestore so the SPA
               // never reuses an already-cached legacy response.
               imageUrl: versionMediaUrl(data.imageUrl || ''),
-              content: versionSpoolMediaContent(data.content || ''),
+              content,
               scheduledDate,
               createdAt,
               _raw_scheduledDate: data.scheduledDate,
@@ -132,7 +138,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               _sortTs,
               // Cached lowercase fields for fast search filtering. Title is folded
               // into content so long-form posts are findable by their headline.
-              _searchContent: `${data.title || ""}\n${versionSpoolMediaContent(data.content || "")}`.toLowerCase(),
+              _searchContent: `${data.title || ""}\n${content}`.toLowerCase(),
               _searchClient: (data.client || "").toLowerCase()
             });
             hasChanges = true;

@@ -122,10 +122,25 @@ export const sameSpoolMediaReference = (a, b) => {
 };
 
 export const normalizeSpoolMediaContentIdentity = (value) => {
-  return transformMediaDestinations(value, (url) => {
-    const key = spoolMediaIdentity(url);
-    return key === null ? url : `spool-media:${key}`;
-  });
+  const content = String(value || '');
+  // Almost every post is ordinary copy. Running the full CommonMark + HTML
+  // parser over all ~400 posts during the first Firestore snapshot (twice per
+  // post before this fix) can exhaust mobile Safari before it paints the feed.
+  // Every reference this function can canonicalize contains the case-sensitive
+  // path segment `media/`, including numeric-entity HTML such as `&#47media/`.
+  if (!content.includes('media/')) return content;
+  try {
+    return transformMediaDestinations(content, (url) => {
+      const key = spoolMediaIdentity(url);
+      return key === null ? url : `spool-media:${key}`;
+    });
+  } catch (error) {
+    // Read/display normalization is compatibility work, never an authority
+    // boundary. A parser/runtime incompatibility must leave the stored copy
+    // visible rather than take down the entire dashboard.
+    console.warn('Spool media identity normalization skipped:', error);
+    return content;
+  }
 };
 
 // Move stored legacy Spool references onto the v2 cache key at read time. This
@@ -141,7 +156,14 @@ export const versionMediaUrl = (u) => {
 };
 
 export const versionSpoolMediaContent = (value) => {
-  return transformMediaDestinations(value, (url) => versionMediaUrl(url));
+  const content = String(value || '');
+  if (!content.includes('media/')) return content;
+  try {
+    return transformMediaDestinations(content, (url) => versionMediaUrl(url));
+  } catch (error) {
+    console.warn('Spool media URL normalization skipped:', error);
+    return content;
+  }
 };
 
 // Content identity: content-addressed /media keys end in the bytes' SHA-256, so

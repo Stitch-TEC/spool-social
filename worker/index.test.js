@@ -8,6 +8,8 @@ import worker, {
   purgeClient,
   runGC,
   serializedJsonBytes,
+  serveSpaAsset,
+  staleAssetRecoveryScript,
   symbolicErrorPayload,
 } from './index.js';
 import { collectPostImageReferences, readRunQueryDocuments } from './firestore.js';
@@ -303,6 +305,106 @@ describe('/media response hardening', () => {
 });
 
 describe('Worker boundary responses', () => {
+  it('passes a real hashed JavaScript asset through unchanged', async () => {
+    const asset = 'export const current = true;';
+    const response = await serveSpaAsset(
+      new Request('https://spool.example/assets/index-current.js'),
+      {
+        ASSETS: {
+          fetch: vi.fn().mockResolvedValue(new Response(asset, {
+            headers: { 'Content-Type': 'application/javascript' },
+          })),
+        },
+      },
+    );
+
+    expect(response.headers.get('X-Spool-Asset-Recovery')).toBeNull();
+    expect(response.headers.get('Content-Type')).toContain('application/javascript');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    await expect(response.text()).resolves.toBe(asset);
+  });
+
+  it('keeps an ordinary SPA route as HTML', async () => {
+    const html = '<!doctype html><div id="root"></div>';
+    const response = await serveSpaAsset(
+      new Request('https://spool.example/clients/acme'),
+      {
+        ASSETS: {
+          fetch: vi.fn().mockResolvedValue(new Response(html, {
+            headers: { 'Content-Type': 'text/html' },
+          })),
+        },
+      },
+    );
+
+    expect(response.headers.get('X-Spool-Asset-Recovery')).toBeNull();
+    expect(response.headers.get('Content-Type')).toContain('text/html');
+    await expect(response.text()).resolves.toBe(html);
+  });
+
+  it('turns an HTML fallback for a stale entry module into one-shot recovery JavaScript', async () => {
+    const response = await serveSpaAsset(
+      // This is the entry hash from production immediately before PR #100.
+      // Keeping the real incident URL here prevents the regression test from
+      // drifting away from the failure the installed iPhone shell encountered.
+      new Request('https://spool.example/assets/index-DadP79P7.js'),
+      {
+        ASSETS: {
+          fetch: vi.fn().mockResolvedValue(new Response('<!doctype html>old fallback', {
+            headers: { 'Content-Type': 'text/html' },
+          })),
+        },
+      },
+    );
+    const script = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('application/javascript');
+    expect(response.headers.get('Cache-Control')).toContain('no-store');
+    expect(response.headers.get('X-Spool-Asset-Recovery')).toBe('1');
+    expect(script).toBe(staleAssetRecoveryScript());
+    expect(script).toContain("url.searchParams.has(marker)");
+    expect(script).toContain('showFallback();return;');
+    expect(script).not.toContain('spool.example/assets/index-DadP79P7.js');
+  });
+
+  it('turns an HTML fallback for a stale stylesheet into safe empty CSS', async () => {
+    const response = await serveSpaAsset(
+      new Request('https://spool.example/assets/index-DrwGBARD.css'),
+      {
+        ASSETS: {
+          fetch: vi.fn().mockResolvedValue(new Response('<!doctype html>old fallback', {
+            headers: { 'Content-Type': 'text/html' },
+          })),
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('text/css');
+    expect(response.headers.get('Cache-Control')).toContain('no-store');
+    expect(response.headers.get('X-Spool-Asset-Recovery')).toBe('style');
+    expect(await response.text()).not.toContain('<!doctype html>');
+  });
+
+  it('returns an honest 404 for another missing asset instead of SPA HTML', async () => {
+    const response = await serveSpaAsset(
+      new Request('https://spool.example/assets/deleted-image.png'),
+      {
+        ASSETS: {
+          fetch: vi.fn().mockResolvedValue(new Response('<!doctype html>old fallback', {
+            headers: { 'Content-Type': 'text/html' },
+          })),
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('Content-Type')).toContain('text/plain');
+    expect(response.headers.get('Cache-Control')).toContain('no-store');
+    await expect(response.text()).resolves.toBe('Not found');
+  });
+
   it('keeps symbolic error codes separate from human-safe messages', () => {
     for (const code of [
       'review_conflict',
