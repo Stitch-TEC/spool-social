@@ -122,10 +122,14 @@ function encodeHtmlAttributeValue(value, quote) {
   // semicolons browser-correct. Re-escape it for the attribute's original quote
   // style so decoded ampersands/quotes cannot escape the value.
   let output = String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;');
-  if (quote === '"') return output.replaceAll('"', '&quot;');
-  if (quote === "'") return output.replaceAll("'", '&#39;');
+    // Deliberately use global regular expressions rather than replaceAll().
+    // The parser runs while the first Firestore snapshot is applied. Mobile
+    // Safari before 14.5 has no replaceAll(), so one legacy HTML image made the
+    // state updater throw and React unmounted the whole app to a white screen.
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;');
+  if (quote === '"') return output.replace(/"/g, '&quot;');
+  if (quote === "'") return output.replace(/'/g, '&#39;');
   return output.replace(/[\t\n\f\r "'`=>]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 

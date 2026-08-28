@@ -66,6 +66,7 @@ import {
   versionDraftMedia,
 } from './draftUpdate.js';
 import { applySecurityHeaders, forceMediaDownload, withSecurityHeaders } from './security.js';
+import { STALE_ASSET_RECOVERY_PARAM } from '../src/staleAssetRecovery.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
 import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, renderSenderPreview, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
 // Shared with the SPA editor (pure string helpers — no DOM at module scope).
@@ -590,6 +591,109 @@ export async function purgeClient(env, clientId, {
   }
   if (env.MEDIA) await lifecycleStep(results, 'media', () => removeObjects(env.MEDIA, mediaKeys));
   return results;
+}
+
+const ASSET_PATH = /^\/assets\//;
+const JAVASCRIPT_ASSET_PATH = /^\/assets\/[^/]+\.js$/;
+const STYLESHEET_ASSET_PATH = /^\/assets\/[^/]+\.css$/;
+const HTML_CONTENT_TYPE = /text\/html/i;
+
+// A stale Vite entry module cannot run any code from the current bundle, so its
+// recovery has to come from the exact old URL it is already requesting. Keep
+// this deliberately ES5-shaped: it is the last-resort path for older iPhones.
+export function staleAssetRecoveryScript() {
+  const marker = JSON.stringify(STALE_ASSET_RECOVERY_PARAM);
+  return `(function(){
+var marker=${marker};
+function showFallback(){
+  var root=document.getElementById('root')||document.body;
+  if(!root){return;}
+  while(root.firstChild){root.removeChild(root.firstChild);}
+  var box=document.createElement('div');
+  box.style.cssText='font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:30rem;margin:12vh auto;padding:2rem;text-align:center;color:#334155';
+  var title=document.createElement('h1');
+  title.textContent='Spool needs a fresh start';
+  title.style.cssText='font-size:1.25rem;margin:0 0 .75rem';
+  var copy=document.createElement('p');
+  copy.textContent='The app updated while this copy was open. Close and reopen Spool, or try again below.';
+  copy.style.cssText='line-height:1.5;margin:0 0 1rem';
+  var button=document.createElement('button');
+  button.textContent='Try again';
+  button.style.cssText='border:0;border-radius:.75rem;background:#0f172a;color:white;padding:.75rem 1rem;font-weight:700';
+  button.onclick=function(){
+    var retry=new URL(window.location.href);
+    retry.searchParams.delete(marker);
+    retry.searchParams.set('__spool_asset_retry',String(Date.now()));
+    window.location.replace(retry.toString());
+  };
+  box.appendChild(title);box.appendChild(copy);box.appendChild(button);root.appendChild(box);
+}
+try{
+  var url=new URL(window.location.href);
+  if(url.searchParams.has(marker)){showFallback();return;}
+  url.searchParams.set(marker,String(Date.now()));
+  window.location.replace(url.toString());
+}catch(error){showFallback();}
+})();`;
+}
+
+export async function serveSpaAsset(request, env) {
+  const response = await env.ASSETS.fetch(request);
+  const url = new URL(request.url);
+  const isAssetPath = ASSET_PATH.test(url.pathname);
+  const isHtmlFallback = HTML_CONTENT_TYPE.test(response.headers.get('Content-Type') || '');
+
+  // `single-page-application` fallback normally turns a missing hashed asset
+  // into index.html with HTTP 200. A module loader rejects that MIME before
+  // React can render an error boundary. Only reinterpret HTML under /assets/;
+  // real assets and ordinary client-side routes keep their original bodies.
+  if (isAssetPath && isHtmlFallback && (request.method === 'GET' || request.method === 'HEAD')) {
+    try { await response.body?.cancel(); } catch { /* response is being replaced */ }
+    const noStoreHeaders = {
+      'Cache-Control': 'no-store, max-age=0',
+      'Pragma': 'no-cache',
+    };
+
+    if (JAVASCRIPT_ASSET_PATH.test(url.pathname)) {
+      const headers = applySecurityHeaders(new Headers({
+        ...noStoreHeaders,
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'X-Spool-Asset-Recovery': '1',
+      }));
+      return new Response(request.method === 'HEAD' ? null : staleAssetRecoveryScript(), {
+        status: 200,
+        headers,
+      });
+    }
+
+    // Old HTML commonly references both an expired entry module and stylesheet.
+    // An empty stylesheet is MIME-correct and harmless while the recovery entry
+    // reloads the current shell; returning HTML here adds a noisy Safari error.
+    if (STYLESHEET_ASSET_PATH.test(url.pathname)) {
+      const headers = applySecurityHeaders(new Headers({
+        ...noStoreHeaders,
+        'Content-Type': 'text/css; charset=utf-8',
+        'X-Spool-Asset-Recovery': 'style',
+      }));
+      return new Response(request.method === 'HEAD' ? null : '/* stale Spool stylesheet */', {
+        status: 200,
+        headers,
+      });
+    }
+
+    // The SPA fallback is useful only for navigations. Images, maps, fonts, and
+    // other missing asset URLs must remain honest 404s instead of HTML-shaped
+    // successes that poison browser caches and hide broken references.
+    return new Response(request.method === 'HEAD' ? null : 'Not found', {
+      status: 404,
+      headers: applySecurityHeaders(new Headers({
+        ...noStoreHeaders,
+        'Content-Type': 'text/plain; charset=utf-8',
+      })),
+    });
+  }
+
+  return withSecurityHeaders(response);
 }
 
 export default {
@@ -2536,7 +2640,7 @@ export default {
     }
 
     // --- Everything else: the SPA / static assets ---
-      return withSecurityHeaders(await env.ASSETS.fetch(request));
+      return await serveSpaAsset(request, env);
     } catch (err) {
       // One final boundary for dependencies and static assets. Individual
       // routes still map expected errors precisely; an unexpected throw must

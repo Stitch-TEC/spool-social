@@ -38,6 +38,9 @@ crons = ["0 4 * * *", "*/15 * * * *"]
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+# Keep the default asset routing: exact static files are served directly and
+# misses fall through to the Worker. This preserves /api/* and /media/* while
+# letting serveSpaAsset repair stale /assets/* hashes.
 
 # Generated-image storage. R2 has no egress fees, so serving images is ~free.
 [[r2_buckets]]

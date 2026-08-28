@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   normalizeSpoolMediaContentIdentity,
   sameSpoolMediaReference,
@@ -46,6 +46,20 @@ describe('versionMediaUrl', () => {
 });
 
 describe('scoped Spool media identity', () => {
+  it('keeps a large ordinary-copy snapshot on the parser-free fast path', () => {
+    const ordinary = '# Update\n\nClient copy with [an external link](https://example.com). '.repeat(30);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 500; i++) {
+        expect(versionSpoolMediaContent(`${ordinary}${i}`)).toBe(`${ordinary}${i}`);
+        expect(normalizeSpoolMediaContentIdentity(`${ordinary}${i}`)).toBe(`${ordinary}${i}`);
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('equates only recognized Spool references across cache versions', () => {
     expect(sameSpoolMediaReference('/media/a.png', '/media/v2/a.png')).toBe(true);
     expect(sameSpoolMediaReference(
