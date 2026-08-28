@@ -3,7 +3,7 @@ import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { OPERATOR_UID } from '../config/roles';
 import { versionMediaUrl, versionSpoolMediaContent } from '../utils/helpers';
-import { reviewScheduledDateAsDate } from '../utils/reviewIdentity';
+import { displayReviewScheduledDateAsDate } from '../utils/reviewIdentity';
 
 // Firestore TERMINATES a listener when it errors and never re-attaches it. The
 // dashboard's banner promised "Retrying automatically…" and nothing was: one
@@ -104,11 +104,13 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               }
               // Firestore may return a Timestamp object. Date(Timestamp) is
               // invalid in the browser, which used to erase the hook baseline
-              // even though the transaction still saw the real schedule.
+              // even though the transaction still saw the real schedule. This
+              // read path also tolerates the exact datetime-local shape written
+              // by older Spool builds; approval identity remains strict.
               const d = field === 'scheduledDate'
-                ? reviewScheduledDateAsDate(newVal)
+                ? displayReviewScheduledDateAsDate(newVal)
                 : new Date(newVal);
-              return isNaN(d.getTime()) ? null : d;
+              return d instanceof Date && Number.isFinite(d.getTime()) ? d : null;
             };
 
             const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
@@ -139,7 +141,12 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               // Cached lowercase fields for fast search filtering. Title is folded
               // into content so long-form posts are findable by their headline.
               _searchContent: `${data.title || ""}\n${content}`.toLowerCase(),
-              _searchClient: (data.client || "").toLowerCase()
+              _searchClient: String(data.client || "").toLowerCase(),
+              // A malformed legacy row must not make PostCard call slice/map on
+              // a non-array and take down the full feed.
+              tags: Array.isArray(data.tags)
+                ? data.tags.filter((tag) => typeof tag === 'string').slice(0, 10)
+                : [],
             });
             hasChanges = true;
           } else if (change.type === 'removed') {

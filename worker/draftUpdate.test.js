@@ -92,6 +92,28 @@ describe('draft API optimistic review preservation', () => {
       .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
   });
 
+  it('versions and baseline-binds exact legacy local-minute schedules', async () => {
+    const legacy = {
+      clientId: 'acme', content: 'Copy', status: 'draft',
+      approvalStatus: 'pending', reviewStage: 'in_review',
+      scheduledDate: '2026-09-01T12:34',
+    };
+    const rendered = await versionDraftMedia(origin, legacy);
+
+    expect(rendered).toMatchObject({
+      scheduledDate: legacy.scheduledDate,
+      reviewRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    await expect(assertDraftBaseline(origin, legacy, {
+      clientId: legacy.clientId,
+      payloadRevision: rendered.payloadRevision,
+      reviewRevision: rendered.reviewRevision,
+    }, [], { review: true })).resolves.toBe(true);
+    await expect(draftReviewRevision({
+      ...legacy, scheduledDate: '2026-09-01T12:35',
+    })).resolves.not.toBe(rendered.reviewRevision);
+  });
+
   it('requires edits and review verbs to be separate baseline-bound requests', () => {
     for (const body of [
       { content: 'Unseen replacement', approvalStatus: 'approved' },

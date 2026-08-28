@@ -6,7 +6,7 @@ import {
   versionMediaMarkdownReferences,
   versionMediaReference,
 } from './media.js';
-import { canonicalReviewScheduledDate } from '../src/utils/reviewIdentity.js';
+import { reviewScheduledDateIdentity } from '../src/utils/reviewIdentity.js';
 
 function dataImageParts(value, fallbackMime = '') {
   const text = String(value || '').trim();
@@ -124,7 +124,7 @@ export function draftReviewIdentity(draft) {
     Array.isArray(draft?.feedbackThread) ? draft.feedbackThread : null,
     String(draft?.reviewedBy || ''),
     String(draft?.reviewedAt || ''),
-    canonicalReviewScheduledDate(draft?.scheduledDate),
+    reviewScheduledDateIdentity(draft?.scheduledDate),
   ]);
 }
 

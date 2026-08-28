@@ -31,7 +31,7 @@ import {
   sameSpoolMediaReference,
   spoolMediaIdentity,
 } from './helpers';
-import { canonicalReviewScheduledDate } from './reviewIdentity';
+import { reviewScheduledDateIdentity } from './reviewIdentity';
 
 /** The post's stage, with the legacy default (absent = already in review). */
 export const reviewStageOf = (post) =>
@@ -144,7 +144,10 @@ export const reviewStateIdentity = (post) => JSON.stringify([
   String(post?.reviewedAt || ''),
   // Scheduling is workflow, not approved copy: changing it does not revoke an
   // approval, but a review button rendered before the change is stale.
-  canonicalReviewScheduledDate(post?.scheduledDate),
+  // usePosts retains the exact storage value alongside its Date read model.
+  // That lets legacy datetime-local rows bind byte-for-byte to the live
+  // transaction without teaching the strict canonicalizer to guess a zone.
+  reviewScheduledDateIdentity(post?._raw_scheduledDate ?? post?.scheduledDate),
 ]);
 
 // Replacement document (not a merge patch) for promotion. Suggestions can

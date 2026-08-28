@@ -633,6 +633,35 @@ describe('applyReviewActionAtomically', () => {
     expect(update).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    [REVIEW_ACTION.APPROVE, {}, {}],
+    [REVIEW_ACTION.REQUEST_CHANGES, {}, { feedback: 'Exact note' }],
+    [REVIEW_ACTION.SEND, { reviewStage: 'private' }, {}],
+    [REVIEW_ACTION.HOLD, {}, {}],
+    [REVIEW_ACTION.RESUBMIT, {
+      approvalStatus: 'changes_requested', feedback: 'Prior note',
+      feedbackThread: [{ text: 'Prior note', by: 'client', at: '2026-08-24T00:00:00.000Z' }],
+    }, {}],
+  ])('binds an exact legacy local-minute schedule for %s without guessing its timezone', async (action, state, extra) => {
+    const raw = '2026-09-01T12:34';
+    const live = { ...reviewPost, ...state, scheduledDate: raw };
+    const rendered = {
+      ...live,
+      scheduledDate: new Date(2026, 8, 1, 12, 34),
+      _raw_scheduledDate: raw,
+    };
+    const update = vi.fn();
+    runTransaction.mockImplementation(async (_db, callback) => callback({
+      get: vi.fn().mockResolvedValue(snapshot(live)),
+      update,
+    }));
+
+    await expect(applyReviewActionAtomically({
+      db: {}, postRef: { id: 'p1' }, baseline: rendered, action, ...extra,
+    })).resolves.toMatchObject({ action });
+    expect(update).toHaveBeenCalledOnce();
+  });
+
   it('rejects a racing tenant move even when the approved payload is identical', async () => {
     const update = vi.fn();
     runTransaction.mockImplementation(async (_db, callback) => callback({
