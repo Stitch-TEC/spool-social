@@ -16,6 +16,7 @@ import {
   REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, DENSITY, DENSITY_VALUES
 } from './constants';
 import { reviewStageOf, isStaged, reviewStateOf, hasFeedback, publicationSlugOf } from './utils/review';
+import { reviewScheduledDateForStorage } from './utils/reviewIdentity';
 import { needsImage, hasBlockers, isOverdue, readinessOf, READINESS_LABELS } from './utils/readiness';
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
@@ -315,13 +316,10 @@ const App = () => {
     }
 
     try {
-      // Safe Date Conversion Helper
-      const getSafeDateString = (val) => {
-        if (!val) return null;
-        if (typeof val === 'string') return val; // Already a string from the input
-        if (val instanceof Date && !isNaN(val)) return val.toISOString(); // Valid Date object
-        return null; // Invalid/Empty
-      };
+      // Canonicalize the Editor's timezone-less datetime-local value at the
+      // write boundary. This prevents new rows from depending on lenient
+      // display compatibility and keeps review/CAS identity unambiguous.
+      const getSafeDateString = reviewScheduledDateForStorage;
 
       // 🔒 EXPLICIT MAPPING to prevent mass assignment
       const status = isClientMember && !formData.id

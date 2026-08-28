@@ -12,7 +12,13 @@ import {
   reviewStateIdentity,
   suggestionPromotionDocument,
 } from './review';
-import { canonicalReviewScheduledDate, reviewScheduledDateAsDate } from './reviewIdentity';
+import {
+  canonicalReviewScheduledDate,
+  displayReviewScheduledDateAsDate,
+  reviewScheduledDateAsDate,
+  reviewScheduledDateForStorage,
+  reviewScheduledDateIdentity,
+} from './reviewIdentity';
 import { REVIEW_STAGE, REVIEW_STATE } from '../constants';
 
 describe('reviewStageOf', () => {
@@ -151,6 +157,33 @@ describe('reviewStateIdentity workflow semantics', () => {
     expect(() => reviewScheduledDateAsDate({ toDate: () => new Date('invalid') }))
       .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
     expect(reviewStateIdentity({ scheduledDate: null })).toBe(reviewStateIdentity({ scheduledDate: '' }));
+  });
+
+  it('loads exact legacy datetime-local schedules without weakening approval identity', () => {
+    const legacy = '2026-09-01T12:34';
+    const displayed = displayReviewScheduledDateAsDate(legacy);
+
+    expect(displayed).toBeInstanceOf(Date);
+    expect(displayed.getFullYear()).toBe(2026);
+    expect(displayed.getMonth()).toBe(8);
+    expect(displayed.getDate()).toBe(1);
+    expect(displayed.getHours()).toBe(12);
+    expect(displayed.getMinutes()).toBe(34);
+    expect(() => canonicalReviewScheduledDate(legacy))
+      .toThrow(expect.objectContaining({ code: 'review_date_invalid' }));
+    expect(reviewScheduledDateIdentity(legacy)).toBe(`legacy-local:${legacy}`);
+    expect(reviewStateIdentity({
+      status: 'draft', scheduledDate: displayed, _raw_scheduledDate: legacy,
+    })).toBe(reviewStateIdentity({ status: 'draft', scheduledDate: legacy }));
+  });
+
+  it('degrades malformed display schedules and canonicalizes future Editor saves', () => {
+    expect(displayReviewScheduledDateAsDate('not-a-date')).toBeNull();
+    expect(displayReviewScheduledDateAsDate('2026-02-31T12:34')).toBeNull();
+
+    const stored = reviewScheduledDateForStorage('2026-09-01T12:34');
+    expect(stored).toBe(new Date(2026, 8, 1, 12, 34).toISOString());
+    expect(canonicalReviewScheduledDate(stored)).toBe(stored);
   });
 });
 
