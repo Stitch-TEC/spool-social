@@ -28,8 +28,10 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
-  `GEMINI_API_KEY`, `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
+  `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
   (the POM context/ideas seam — must match feedback-worker's). Never commit values.
+  A legacy deployed `GEMINI_API_KEY` may linger until post-release cleanup, but no runtime
+  source reads it and its presence cannot restore a direct-provider path.
 - Two cron triggers run in the Worker (`wrangler.toml [triggers]`): nightly R2 orphan GC (`0 4 * * *`)
   and due-automation draft generation (`*/15 * * * *`).
 
@@ -38,10 +40,12 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - ~~This env's main shell cannot reach api.cloudflare.com~~ — **FALSE (corrected 2026-07-14):**
   with the `NODE_OPTIONS` prefix, wrangler works from the main shell. Verify prod state directly.
 - `wrangler deploy` ships the **working tree** but does NOT commit — commit source alongside deploys.
-- AI **fails OPEN**: if any gateway call fails (or `STITCH_AI_KEY` is absent) Spool falls back to
-  direct Gemini; **image-INPUT text generation always goes direct (UNMETERED — the suite's one live
-  meter hole; image *generation* is gatewayed and honors the 429)**. Instant revert =
-  `wrangler secret delete STITCH_AI_KEY` — but note that revert routes EVERYTHING through unmetered Gemini.
+- AI **fails OPEN at the product boundary**: if the gateway binding/key/provider is unavailable,
+  the optional AI action returns a safe, actionable 503 and the draft/editor remains usable. It
+  never falls through to a direct provider. `STITCH_AI_KEY` deletion is therefore a real Spool AI
+  kill switch. Image generation remains gatewayed and quota-aware. Image-INPUT text (vision alt
+  text) is truthfully unavailable until ai-worker accepts normalized image content; manual alt text
+  remains available and existing draft fields are preserved.
 - Auth **fails CLOSED**: anonymous/guest tokens are always rejected for generation + drafts.
 - `usePosts` RE-SUBSCRIBES on a retryable Firestore error (capped backoff) and reports
   `isStalled` when it can't — Firestore terminates a listener on error and never re-attaches,
@@ -186,8 +190,9 @@ something the client did; pulling a post back to staging must not erase it.
 - `src/hooks/` — `useAuth` `usePosts` `useClients` `useToast`. `src/lib/` — `clientsClient.js`
   (roster pull), `feedbackClient.js`. `src/config/` — `firebase.js`, `roles.js`.
 - `src/generation/prompts.js` — AI prompt builders. `src/stitch-apps.js` — shared app registry.
-- `worker/` — `index.js` (router + cron `scheduled()`), `auth.js`, `firestore.js`, `gemini.js`
-  (gateway + direct fallback), `media.js` (R2), `ratelimit.js`, `automation.js`, `suiteContext.js`.
+- `worker/` — `index.js` (router + cron `scheduled()`), `auth.js`, `firestore.js`, `aiGateway.js`
+  (the only model-inference client; no direct-provider fallback), `media.js` (R2), `ratelimit.js`,
+  `automation.js`, `suiteContext.js`.
   The curated media library is keyed by the canonical **slug** (`slugifyClient` in `index.js` maps a
   display name OR a slug to the same folder) so Spool's editor and POM's Assets card (via the
   feedback-worker broker `/spool/assets`) share ONE library. The internal key can only manage the

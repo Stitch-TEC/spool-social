@@ -41,9 +41,10 @@ export async function generateImage(prompt, opts = {}) {
 /**
  * Generate text/copy from a prompt. Resolves to the generated string.
  * `opts` may include { system, temperature, maxTokens, imageUrl, clientId, platform } — imageUrl
- * makes it a multimodal call (e.g. alt text from the actual image); clientId (suite slug)
- * attributes the usage to that client at the gateway meter AND triggers the server-side POM
- * client-context injection; platform sizes the profile fetch tier (long-form → full context).
+ * requests a multimodal call (e.g. alt text from the actual image) and currently receives the
+ * server's safe unavailable result until the gateway accepts image content; clientId (suite slug)
+ * attributes ordinary calls at the gateway meter AND triggers the server-side POM client-context
+ * injection; platform sizes the profile fetch tier (long-form → full context).
  */
 export async function generateText(prompt, opts = {}) {
   const { text } = await postJSON('/api/text', { prompt, ...opts });
@@ -234,14 +235,20 @@ export async function deleteMedia(key) {
   return res.json();
 }
 
-/** Generate concise alt text for an image (data URL or hosted /media URL). */
-export async function describeImage(imageUrl) {
+/**
+ * Generate concise alt text for an image (data URL or hosted /media URL).
+ * `opts.clientId` is carried now so attribution is ready when the shared
+ * gateway adds normalized image-input content. Until then the server returns a
+ * truthful, recoverable unavailable message and the editor remains untouched.
+ */
+export async function describeImage(imageUrl, opts = {}) {
   const { text } = await postJSON('/api/text', {
     prompt:
       'Write concise, descriptive alt text for this image in one sentence. ' +
       'Do not start with "image of" or "a picture of". Plain text only.',
     imageUrl,
-    maxTokens: 120
+    maxTokens: 120,
+    ...opts,
   });
   return text;
 }
