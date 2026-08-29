@@ -9,11 +9,11 @@
 //
 // Critical: the cron path runs IN-PROCESS and never passes through
 // fetch()/authenticate()/checkRateLimit, so it would otherwise bypass all rate
-// limiting and the owner's Gemini-quota protection. Every Gemini call is
+// limiting and the owner's shared-AI budget protection. Every model call is
 // therefore gated here by a DEDICATED 'automation' rate-limit principal, and the
 // loop is capped per tick (MAX_GEN_PER_TICK).
 
-import { generateText } from './gemini.js';
+import { generateText } from './aiGateway.js';
 import { MAX_IMAGE_BYTES, resolveDraftImage, storeImage } from './media.js';
 import { readBytesBounded } from './httpBody.js';
 import { checkRateLimit } from './ratelimit.js';
@@ -97,7 +97,7 @@ class BudgetExhaustedError extends Error {
   constructor(message) { super(message); this.budgetExhausted = true; }
 }
 
-// One Gemini call's worth of budget against a dedicated automation tier (so it
+// One gateway call's worth of budget against a dedicated automation tier (so it
 // never shares the internal key's generous quota). `principal` separates the
 // counter so interactive "Run now" previews can't drain the cron's daily budget.
 async function spendBudget(env, principal = 'automation') {
@@ -134,7 +134,7 @@ export async function generateForAutomation(env, origin, auto, principal = 'auto
     if (byName) clientId = byName;
   }
 
-  // Reserve the FULL budget this draft needs BEFORE any paid Gemini call, so a
+  // Reserve the FULL budget this draft needs BEFORE any paid model call, so a
   // budget hit throws cleanly up front (the cron retries next tick, nothing
   // wasted) instead of stranding completed text work mid-draft.
   const unitsNeeded = (wantText ? 1 : 0) + (wantImage ? 1 : 0);

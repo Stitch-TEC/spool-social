@@ -10,7 +10,7 @@
 //   *                                          -> static assets (the Vite SPA)
 
 import { authenticate } from './auth.js';
-import { generateText, generateImage } from './gemini.js';
+import { exposedGenerationError, generateText, generateImage } from './aiGateway.js';
 import { checkRateLimit } from './ratelimit.js';
 import {
   createPost,
@@ -34,7 +34,6 @@ import { mintCustomToken, createShareDoc, getShareDoc, listShareDocs, deleteShar
 import { createAutomation, getAutomation, listAutomations, updateAutomation, deleteAutomation, resolveClientId } from './firestore.js';
 import { listDocsWhere, batchUpdateDocs, batchDeleteDocs, mergeDocRaw } from './firestore.js';
 import {
-  bytesToB64,
   decodeImageBase64,
   inspectRasterImage,
   MAX_IMAGE_BYTES,
@@ -104,7 +103,7 @@ const AUTO_GROUNDINGS = ['none', 'site'];
 const AUTO_MODES = ['auto', 'suggest'];
 
 // Clamp a requested interval UP to the platform's minimum (and cap at 1 year) so
-// a schedule can't spam a channel or runaway the Gemini quota. Falls back to the
+// a schedule can't spam a channel or run away with the shared AI budget. Falls back to the
 // platform's sensible default when no/invalid value is given.
 function clampInterval(value, platform) {
   const cad = PLATFORM_CADENCE[platform] || PLATFORM_CADENCE.gmb;
@@ -177,6 +176,15 @@ function apiError(error, message, status, cors, extra) {
   return json(symbolicErrorPayload(error, message, extra), status, cors);
 }
 
+function generationErrorResponse(err, cors, operation = 'generation') {
+  const exposed = exposedGenerationError(err);
+  if (!exposed) return null;
+  if (!err?.quotaExceeded) {
+    console.error(`[ai] ${operation} ${err?.code || 'unavailable'}: ${err?.internalReason || 'optional action unavailable'}`);
+  }
+  return json(exposed.body, exposed.status, cors);
+}
+
 export function serializedJsonBytes(value) {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
@@ -226,40 +234,6 @@ function clampMaxTokens(v) {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n) || n <= 0) return undefined;
   return Math.min(n, 4096);
-}
-
-// Resolve an image reference to inline base64 for a multimodal prompt.
-// Only accepts data: URLs (client-supplied bytes) or our own /media/<key> R2
-// objects (read straight from the bucket — no outbound fetch, no SSRF surface).
-async function resolveImage(src, env) {
-  if (typeof src !== 'string' || !src) return null;
-  if (src.startsWith('data:')) {
-    const m = src.match(/^data:([^;]+);base64,(.+)$/);
-    if (!m || m[2].length > 11_000_000) return null;
-    try {
-      const bytes = decodeImageBase64(m[2], 8_000_000);
-      const raster = inspectRasterImage(bytes, m[1]);
-      return { mimeType: raster.mime, data: bytesToB64(bytes) };
-    } catch {
-      return null;
-    }
-  }
-  const key = mediaKeyFromUrl(src);
-  if (key && env.MEDIA) {
-    const obj = await env.MEDIA.get(key);
-    if (!obj) return null;
-    if (Number.isFinite(obj.size) && obj.size > 8_000_000) return null;
-    let bytes;
-    try { bytes = await readBytesBounded(obj.body, new Headers({ 'Content-Length': String(obj.size ?? '') }), 8_000_000); }
-    catch (err) { if (err instanceof BodyTooLargeError) return null; throw err; }
-    try {
-      const raster = inspectRasterImage(bytes);
-      return { mimeType: raster.mime, data: bytesToB64(bytes) };
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 // Canonicalize a client identifier to the SLUG used as the R2 library folder. Mirrors
@@ -1220,7 +1194,11 @@ export default {
 
       try {
         if (url.pathname === '/api/text') {
-          const image = body?.imageUrl ? await resolveImage(body.imageUrl, env) : undefined;
+          // Keep image input explicit without reading/decoding the bytes. aiGateway
+          // rejects the marker with the safe multimodal-unavailable contract until
+          // ai-worker accepts image content; resolving it here would waste R2/CPU
+          // immediately before the truthful refusal.
+          const image = body?.imageUrl ? { requested: true } : undefined;
           // Append the brand theme + client context + recent activity + asset manifest to the
           // caller-built system instruction — the shared renderers keep the framing (and the
           // directive-before-untrusted-data ordering) identical to buildTextContext's own output.
@@ -1261,13 +1239,15 @@ export default {
         const stored = await storeImage(env, publicOrigin, decodeImageBase64(b64), mime, owner, genClientId);
         return json({ url: stored.url, key: stored.key }, 200, cors);
       } catch (err) {
-        // A quota denial is a POLICY outcome the user must see (raise the quota in POM) — pass its
-        // message + 429 through instead of masking it as a generic failure.
-        if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+        // Quota denials and optional-AI availability failures have a bounded,
+        // user-safe contract. They never mutate or discard the draft the user
+        // was editing, and they never fall through to a direct provider.
+        const aiResponse = generationErrorResponse(err, cors);
+        if (aiResponse) return aiResponse;
         if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
-        // Log upstream detail server-side (visible via `wrangler tail`), but do
-        // not reflect raw Gemini error text back to API callers.
-        console.error('Generation failed:', err?.message || err);
+        // Log upstream detail server-side, but do not reflect provider or
+        // credential details back to API callers.
+        console.error('Generation failed:', err?.internalReason || err?.message || err);
         return json({ error: 'Generation failed' }, 502, cors);
       }
     }
@@ -1933,8 +1913,8 @@ export default {
               const u = await resolveDraftImage(env, publicOrigin, { ...body.image, clientId: existing.clientId || undefined }, legacyOrigins);
               if (u) fields.imageUrl = versionMediaReference(publicOrigin, u, legacyOrigins).slice(0, 2000);
             } catch (err) {
-              // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
-              if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+              const aiResponse = generationErrorResponse(err, cors, 'draft patch image');
+              if (aiResponse) return aiResponse;
               if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
               if (err?.code === 'unsupported_image') {
                 return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors);
@@ -2199,8 +2179,8 @@ export default {
           // overriding any caller-supplied image.clientId.
           imageUrl = (await resolveDraftImage(env, publicOrigin, body?.image ? { ...body.image, clientId: clientId || undefined } : null, legacyOrigins)) || '';
         } catch (err) {
-          // Quota denial = policy the caller must see (raise the quota in POM), not an infra 502.
-          if (err?.quotaExceeded) return json({ error: err.message }, 429, cors);
+          const aiResponse = generationErrorResponse(err, cors, 'draft create image');
+          if (aiResponse) return aiResponse;
           if (err?.code === 'image_too_large') return json({ error: err.message }, 413, cors);
           if (err?.code === 'unsupported_image') {
             return json({ error: 'Only valid JPEG, PNG, WebP, or GIF image bytes are accepted' }, 415, cors);
@@ -2409,7 +2389,9 @@ export default {
             if (err?.pageCursor !== undefined) {
               await updateAutomation(env, id, { pageCursor: err.pageCursor, updatedAt: new Date().toISOString() }).catch(() => {});
             }
-            if (err?.quotaExceeded || err?.budgetExhausted) return json({ error: err.message }, 429, cors);
+            if (err?.budgetExhausted) return json({ error: err.message }, 429, cors);
+            const aiResponse = generationErrorResponse(err, cors, 'automation preview');
+            if (aiResponse) return aiResponse;
             console.error('Automation run failed:', err?.message || err);
             return json({ error: 'Generation failed' }, 502, cors);
           }
@@ -2490,7 +2472,7 @@ export default {
           if (byName) clientId = byName;
         }
 
-        // Caps protect the owner's Gemini quota and keep the dashboard sane.
+        // Caps protect the owner's shared AI budget and keep the dashboard sane.
         let existing;
         try { existing = await listAutomations(env, env.OWNER_UID); }
         catch (err) { console.error('Automation list failed:', err?.message || err); return json({ error: 'Create failed' }, 502, cors); }

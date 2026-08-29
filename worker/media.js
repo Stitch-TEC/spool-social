@@ -2,7 +2,7 @@
 // content-automation runner (worker/automation.js). Generated images live under
 // the `generated/<owner>/<uuid>.<ext>` prefix and are served by the /media route.
 
-import { generateImage } from './gemini.js';
+import { generateImage } from './aiGateway.js';
 import { transformMediaDestinations } from '../src/utils/mediaMarkup.js';
 
 // Image-generation prompts are capped at the same length as the text API's.

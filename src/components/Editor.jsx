@@ -460,7 +460,10 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (altLoading || !formData.imageUrl) return;
     setAltLoading(true);
     try {
-      const alt = await describeImage(formData.imageUrl);
+      const alt = await describeImage(formData.imageUrl, {
+        clientId: genClientId(formData.client),
+        platform: formData.platform,
+      });
       setFormData(prev => ({ ...prev, altText: alt }));
       showToast?.('Alt text generated');
     } catch (err) {

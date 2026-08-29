@@ -14,7 +14,7 @@
 
 * **🎨 Multi-Channel Drafting:** Create and preview posts for LinkedIn, X (Twitter), Instagram, and Google Business Profile.
 * **📝 Long-form content:** **Blog** and **Job Posting** channels with a Markdown editor, formatting toolbar, and live preview.
-* **🤖 AI throughout:** tone/length-aware drafting (Generate / Improve / Hashtags), per-client brand voice, **repurpose blog → social**, SEO meta descriptions, and brand-aware image generation with **vision alt-text**.
+* **🤖 AI throughout:** tone/length-aware drafting (Generate / Improve / Hashtags), per-client brand voice, **repurpose blog → social**, SEO meta descriptions, and brand-aware image generation. Automatic vision alt-text is temporarily gated until the shared gateway accepts image input; manual alt text remains available.
 * **💡 Ideas panel:** content ideas pulled from the client's own website pages and GitHub releases/commits (brokered through the suite's feedback-worker) — one click seeds the AI prompt with "Write about: …".
 * **🖼️ Media library:** a per-client asset panel — upload (auto-optimized) images, add video URLs (YouTube / Vimeo / file), reuse or delete — backed by R2.
 * **🔌 Content API + Claude skill:** push and manage drafts from any tool (see [SPOOL_DRAFTS_API.md](SPOOL_DRAFTS_API.md) and the `/draft-to-spool` skill).
@@ -60,7 +60,7 @@ Access is checked in the database itself, so a client can only ever reach their 
 
 * **Frontend:** React (Vite), Tailwind CSS, react-markdown
 * **Backend:** Firebase (Firestore, Auth)
-* **AI:** Shared Stitch AI gateway (`ai-worker`) for text + image, with direct Google Gemini as the multimodal path and resident fallback (see [AI via the shared gateway](#-ai-via-the-shared-gateway))
+* **AI:** Shared Stitch AI gateway (`ai-worker`) for all text + image inference; Spool code requires no provider key and has no direct-provider fallback (see [AI via the shared gateway](#-ai-via-the-shared-gateway))
 * **Edge/API/Storage:** Cloudflare Workers + R2 (app, generation + drafts API, image pool)
 * **Icons:** Lucide React
 * **Deployment:** Cloudflare Workers — auto-deploys on push to `main`
@@ -69,31 +69,30 @@ Access is checked in the database itself, so a client can only ever reach their 
 
 ## 🤖 AI via the shared gateway
 
-Both text (`generateText`) and image (`generateImage`) in [`worker/gemini.js`](worker/gemini.js) now route through the **shared Stitch AI gateway** (`ai-worker`) instead of calling Google directly. The gateway holds the provider keys; Spool only holds its own per-app key.
+Both text (`generateText`) and image (`generateImage`) in [`worker/aiGateway.js`](worker/aiGateway.js) route exclusively through the **shared Stitch AI gateway** (`ai-worker`). The gateway holds provider keys and chooses providers/models; Spool code consumes only its per-app key.
 
 **How it's wired**
 
 * **Service Binding:** the worker reaches the gateway over a Cloudflare Service Binding named **`AI`** (worker-to-worker RPC — no public network hop). It authenticates with the **`STITCH_AI_KEY`** secret, registered under appId **`spool`**.
 * **Text** → gateway `POST /generate`. Tier comes from the **`SPOOL_AI_TIER`** env var (default **`cheap`**; bump to **`standard`** for richer copy).
-* **Image** → gateway `POST /image` (the gateway's separate image axis).
+* **Image generation** → gateway `POST /image` (the gateway's separate image axis).
 
-**Fallback (resident direct-Gemini path)**
+**Failure behavior and image input**
 
-Spool keeps its direct Google Gemini path as a fallback. It is used automatically when:
+There is no direct-provider fallback. If the binding, app key, gateway, or selected provider is unavailable, the optional AI action returns a safe message and the editor/draft remains intact. Quota denials remain distinct `429` policy outcomes and cannot be bypassed.
 
-* the prompt is **multimodal** (`opts.image` is set — e.g. vision alt-text from an actual image), which still goes direct to Gemini; **or**
-* **any gateway call fails** (binding/key missing, error, or timeout) — the call falls through to direct Gemini so AI generation keeps working during cutover.
+The current gateway `/generate` contract accepts string content, not image-input blocks. Spool therefore refuses automatic image description truthfully instead of silently dropping the image or sending it to a provider directly. The UI keeps the draft and existing alt text, and tells the user to enter alt text manually or retry after gateway multimodal support ships.
 
-The direct path uses `GEMINI_API_KEY` plus the existing `GEMINI_TEXT_MODEL` / `GEMINI_IMAGE_MODEL` settings.
-
-**Instant revert (no redeploy)**
+**Instant AI kill switch (no redeploy)**
 
 ```bash
-# Stop routing through the gateway — Spool falls straight back to direct Gemini
+# Stop Spool AI calls; drafting, editing, review, and publishing remain usable
 wrangler secret delete STITCH_AI_KEY
 ```
 
-With `STITCH_AI_KEY` absent, `generateText` / `generateImage` skip the gateway entirely and use direct Gemini. Re-add the secret to switch back.
+With `STITCH_AI_KEY` absent, generation fails safely; it does not reroute around the meter. Re-add a valid per-app key to restore AI actions.
+
+After this source is deployed and verified, any legacy `GEMINI_API_KEY` secret on the Spool Worker is unused and can be removed as separate operational cleanup. Its presence cannot re-enable a direct path; regression tests prohibit provider endpoints and provider-key reads in Worker runtime source.
 
 **Rotating or revoking Spool's gateway key**
 

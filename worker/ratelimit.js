@@ -16,8 +16,8 @@ function limitsFor(mode, env) {
   if (mode === 'automation') {
     // Cron-driven content automation. Its OWN tier (separate principal) so it
     // can't share the internal key's generous budget with ad-hoc tooling — this
-    // is the hard cap on how much of the owner's Gemini quota unattended
-    // generation can spend per day. Keep it well below the true Gemini quota.
+    // is the hard cap on how much of the owner's shared AI budget unattended
+    // generation can spend per day. Keep it below the expected app allowance.
     return {
       perMin: parseInt(env.RL_AUTOMATION_PER_MIN || '20', 10),
       perDay: parseInt(env.RL_AUTOMATION_PER_DAY || '100', 10),

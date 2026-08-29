@@ -8,8 +8,9 @@ name: Deploy to Cloudflare
 #     Storage:Edit, Account Settings:Read — the "Edit Cloudflare Workers" template)
 #   - Repo Actions variables VITE_FIREBASE_* (public web config, baked into the build)
 #
-# The Worker's runtime secrets (GEMINI_API_KEY, INTERNAL_API_KEY) are stored in
-# Cloudflare and persist across deploys — they are NOT set here.
+# The Worker's runtime secrets (STITCH_AI_KEY, INTERNAL_API_KEY,
+# FIREBASE_SERVICE_ACCOUNT, CONTEXT_KEY) are stored in Cloudflare and persist
+# across deploys — they are NOT set here.
 on:
   push:
     branches: [main]

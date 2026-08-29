@@ -3,7 +3,7 @@
 #
 # First-time setup (see CLOUDFLARE_MIGRATION.md for the full runbook):
 #   npx wrangler r2 bucket create spool-media
-#   npx wrangler secret put GEMINI_API_KEY
+#   npx wrangler secret put STITCH_AI_KEY
 #   npx wrangler secret put INTERNAL_API_KEY
 #   npm run build && npx wrangler deploy
 
@@ -52,8 +52,8 @@ bucket_name = "spool-media"
 binding = "RATE_LIMIT"
 id = "52b2367d9e75470d92840c8fbcfbee05"
 
-# Shared AI gateway (ai-worker) — worker-to-worker RPC for text generation.
-# Spool presents its own per-app key (STITCH_AI_KEY secret) on each /generate call.
+# Shared AI gateway (ai-worker) — the only text/image inference path.
+# Spool presents its own per-app key (STITCH_AI_KEY secret) on each call.
 [[services]]
 binding = "AI"
 service = "ai-worker"
@@ -61,16 +61,6 @@ service = "ai-worker"
 [vars]
 # Firebase project whose ID tokens authenticate Spool app users.
 FIREBASE_PROJECT_ID = "spool-social"
-# Default Gemini models — override here without code changes (redeploy to apply).
-# Upgraded 2026-06-18 from the 2.5 Flash models to the Gemini 3 GA line.
-#   text  : gemini-3.5-flash      (GA "most intelligent" Flash; was gemini-2.5-flash)
-#   image : gemini-3.1-flash-image ("Nano Banana 2", GA; was gemini-2.5-flash-image)
-# For top-tier hero quality, flip the image model to "gemini-3-pro-image"
-# ("Nano Banana Pro") — it REQUIRES billing on GEMINI_API_KEY; without billing it
-# errors and heroes fall back to the gradient, so confirm billing first.
-# Pin GA IDs only — the *-preview variants retire 2026-06-25.
-GEMINI_TEXT_MODEL = "gemini-3.5-flash"
-GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 # Comma-separated origins allowed to call /api cross-site (your other projects).
 # "*" is fine to start since auth is bearer-token, not cookies.
 ALLOWED_ORIGINS = "*"
@@ -96,11 +86,11 @@ GC_GRACE_DAYS = "365"
 # --- Content automation (super-admin-only scheduled generation) --------------
 # The cron runner generates drafts in-process, BYPASSING the per-request rate
 # gate, so its own dedicated 'automation' rate-limit tier is the hard ceiling on
-# how much of the owner's Gemini quota unattended generation can spend. Keep it
-# well below the true Gemini quota; "0" would DISABLE the tier — don't.
+# how much unattended gateway generation can spend. Keep it below the app's
+# expected daily budget; "0" would DISABLE the tier — don't.
 RL_AUTOMATION_PER_MIN = "20"
 RL_AUTOMATION_PER_DAY = "100"
-# Max Gemini generations per 15-min tick (text+image = 2). Bounds a single tick.
+# Max gateway generations per 15-min tick (text+image = 2). Bounds a single tick.
 MAX_GEN_PER_TICK = "10"
 # Guard rails on how many automations can exist (per client / total).
 AUTO_MAX_PER_CLIENT = "5"
@@ -115,6 +105,7 @@ PUBLIC_ORIGIN = "https://spool.stitchtec.dev"
 LEGACY_MEDIA_ORIGINS = "https://spool.kist.workers.dev"
 
 # Secrets are NOT stored here. Set them with `wrangler secret put`:
-#   GEMINI_API_KEY            — your Google AI Studio / Gemini API key
+#   STITCH_AI_KEY             — Spool's per-app key registered by ai-worker
 #   INTERNAL_API_KEY          — a long random string your own projects send as a Bearer token
 #   FIREBASE_SERVICE_ACCOUNT  — the downloaded Firebase service-account JSON (for POST /api/drafts)
+#   CONTEXT_KEY               — shared broker key for client context/ideas

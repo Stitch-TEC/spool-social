@@ -1,5 +1,5 @@
 // Pure, dependency-free generation logic — the single source of truth for how
-// Spool turns a (platform, tone, length, style, client) into Gemini inputs.
+// Spool turns a (platform, tone, length, style, client) into provider-neutral AI inputs.
 //
 // This module has NO React / lucide / browser imports on purpose: it is bundled
 // into BOTH the Vite app (via src/constants.js + src/utils/aiPrompt.js, which
@@ -22,7 +22,7 @@ export const PLATFORM_META = {
 
 // "Reasonable" posting cadence per platform, in hours. minHours is enforced
 // (the Worker clamps an automation's interval up to it) so an over-eager
-// schedule can't spam a channel or burn the Gemini quota; defaultHours just
+// schedule can't spam a channel or burn the shared AI budget; defaultHours just
 // pre-fills the create form. Both the Worker and the admin UI read this.
 export const PLATFORM_CADENCE = {
   gmb:       { minHours: 12, defaultHours: 48 },

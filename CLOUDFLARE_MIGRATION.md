@@ -6,11 +6,19 @@
 > (the owner's `.com` forwards to `.dev`). The notes below describe the original
 > migration work; treat the "branch" framing as historical. The Roadmap items at
 > the bottom are still the open backlog.
+>
+> **AI BOUNDARY UPDATE (2026-08-29):** Spool source no longer reads or calls a Google
+> provider key. Every text and image generation request goes through the shared
+> `ai-worker` Service Binding with Spool's per-app `STITCH_AI_KEY`. The historical
+> direct-Gemini setup is retired; gateway/provider failure disables only the
+> optional AI action and never reroutes around suite metering or quotas.
+> A legacy deployed provider secret may remain inert until separate post-release
+> cleanup; source tests prevent it from restoring a direct path.
 
 This branch (`feat/cloudflare-worker`) moves Spool off GitHub Pages and onto a
 single **Cloudflare Worker** that serves the app *and* exposes an image/text
-generation API powered by **Google Gemini**, with generated images stored in
-**Cloudflare R2**.
+generation API backed by the shared Stitch **AI gateway**, with generated images
+stored in **Cloudflare R2**.
 
 Firebase (Auth + Firestore) is unchanged — the app still uses it directly from
 the browser. Only hosting moved, plus the new API.
@@ -24,20 +32,21 @@ the browser. Only hosting moved, plus the new API.
    Browser (Spool SPA)  │           Cloudflare Worker           │
    ───────────────────► │  GET  /              → static assets  │
      Firebase ID token  │  GET  /media/<key>   → R2 image       │
-                        │  POST /api/generate  → Gemini → R2    │
-   Your other projects  │  POST /api/text      → Gemini         │
+                        │  POST /api/generate  → AI /image → R2 │
+   Your other projects  │  POST /api/text      → AI /generate   │
    ───────────────────► │  (auth: Firebase token OR API key)    │
      INTERNAL_API_KEY   └───────────────┬───────────────┬───────┘
                                         │               │
-                                  Google Gemini      R2 bucket
-                                  (text + image)    (spool-media)
+                                ai-worker binding    R2 bucket
+                               (provider-neutral)   (spool-media)
 
    Firestore + Firebase Auth  ◄──── still used directly by the SPA
 ```
 
-**Why this shape:** the in-app feature and the reusable API are the same Worker.
-Spool is just its first client; your other projects call the same endpoints with
-an API key.
+**Why this shape:** the in-app feature and reusable Spool API remain on the same
+Worker, while model inference is centralized. Spool authenticates callers and
+injects client context; `ai-worker` alone owns provider credentials, routing,
+metering, quotas, and provider failover.
 
 ---
 
@@ -48,7 +57,7 @@ an API key.
 | `wrangler.toml` | Worker config: static assets, R2 binding, vars |
 | `worker/index.js` | Router: `/api/generate`, `/api/text`, `/media/*`, SPA fallback |
 | `worker/auth.js` | Dual auth — Firebase ID-token verification + internal API key |
-| `worker/gemini.js` | Gemini text + image calls |
+| `worker/aiGateway.js` | Gateway-only text + image calls; safe availability errors |
 | `src/utils/generationApi.js` | Front-end client (sends the user's Firebase token) |
 | `src/components/AIGenerate.jsx` | Inline "Generate image" / "AI draft" control |
 | `src/components/Editor.jsx` | Wired the two controls into the editor |
@@ -59,8 +68,7 @@ an API key.
 
 ## One-time setup
 
-Prereqs: a Cloudflare account (your Stitch TEC account is fine) and a Google AI
-Studio / Gemini API key.
+Prereqs: a Cloudflare account and a Spool per-app key registered by `ai-worker`.
 
 ```bash
 # 1. Install deps (adds wrangler)
@@ -76,7 +84,7 @@ npx wrangler r2 bucket create spool-media
 #    (FIREBASE_PROJECT_ID = "..."  — the same projectId your app uses)
 
 # 5. Set secrets (never commit these)
-npx wrangler secret put GEMINI_API_KEY      # from Google AI Studio
+npx wrangler secret put STITCH_AI_KEY       # per-app key registered as appId "spool"
 npx wrangler secret put INTERNAL_API_KEY    # a long random string you invent
 ```
 
@@ -133,27 +141,19 @@ uses the user's Firebase token automatically (no key in the front end).
 
 ---
 
-## Cost recap (June 2026)
+## Cost boundary
 
 - **Cloudflare Workers free:** 100k requests/day. **R2 free:** 10 GB + no egress.
-- **Gemini free tier:** ~1,500 requests/day on Flash models — good for testing.
-- **Per image (paid):** Imagen 4 Fast ~$0.02, Gemini 3 Flash Image ~$0.067,
-  Gemini 3 Pro Image ~$0.134. Text Flash calls are a fraction of a cent.
-
-⚠️ **Free-tier data caveat:** Gemini's free tier may use your prompts/outputs to
-improve Google's models. Fine for testing — **enable billing before client work**
-(also removes the training use). Set a low daily quota on the key in Google Cloud
-to cap spend.
+- Provider pricing, data-use policy, model selection, and provider credentials are
+  gateway concerns. Spool supplies the canonical client slug so gateway usage and
+  quotas stay attributable; it must not add a provider key to work around them.
 
 ---
 
 ## Roadmap / next steps
 
-1. **Switch models** to current-gen once billing is on — just edit `wrangler.toml`,
-   no code change. Pin the current GA model name in the wrangler config, and when
-   changing it verify the exact model name and its sunset date against Google's
-   model changelog (model names and deprecation dates move; don't trust a
-   hardcoded date here).
+1. **Switch models/providers** in `ai-worker`, not Spool. Keep Spool on task/tier
+   requests so routing changes do not require an app deployment.
 2. **Rate limiting / budget guardrails** — per-key daily cap via Cloudflare KV.
    (Hook point is in `worker/index.js` after auth.)
 3. **Tighten CORS** — set `ALLOWED_ORIGINS` to your real domains instead of `*`.
