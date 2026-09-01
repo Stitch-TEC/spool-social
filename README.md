@@ -140,7 +140,7 @@ The Worker also pulls per-client knowledge from the suite broker (**feedback-wor
 ## 🚀 Getting Started
 
 ### Prerequisites
-* Node.js 22.19.0 (the exact production release runtime)
+* Node.js 22.19.0 (the exact production deployment-job runtime)
 * A Firebase Project
 
 ### Installation
