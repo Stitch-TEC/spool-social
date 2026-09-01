@@ -23,6 +23,8 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 ## Deploy model
 - **App auto-deploys** to Cloudflare Workers on push to `main` (`.github/workflows/deploy.yml`,
   auth via `CLOUDFLARE_API_TOKEN` repo secret; `VITE_FIREBASE_*` injected from Actions vars).
+  The release job uses exact Node `22.19.0`, runs `npm ci`, verifies the lockfile-installed
+  Wrangler is exactly `4.116.0`, and invokes that local binary directly.
 - `main` is **branch-protected**: PR + the `build` check (CI runs lint + test + build + audit).
   You cannot push straight to `main` — open a PR.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
