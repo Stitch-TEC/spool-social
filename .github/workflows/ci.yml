@@ -30,8 +30,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
+      - name: Verify exact Node runtime
+        run: node -e "if (process.version !== 'v22.19.0') throw new Error('Expected Node v22.19.0, got ' + process.version)"
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
@@ -56,8 +58,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
+      - name: Verify exact Node runtime
+        run: node -e "if (process.version !== 'v22.19.0') throw new Error('Expected Node v22.19.0, got ' + process.version)"
       - run: npm ci
       # This job is expected to be GREEN. It was permanently red from ~2026-07-29
       # to 2026-08-03 (6+ consecutive runs) on dev-toolchain advisories, which
