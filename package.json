@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:action-pins": "node scripts/check-action-pins.mjs",
     "test:rules": "npx --yes firebase-tools@15.22.3 emulators:exec --only firestore \"vitest run firestore.rules.test.js\"",
     "test:watch": "vitest",
     "preview": "vite preview",
@@ -47,7 +48,8 @@
     "tailwindcss": "^4.1.18",
     "vite": "^7.2.4",
     "vitest": "^4.1.7",
-    "wrangler": "~4.116.0"
+    "wrangler": "~4.116.0",
+    "yaml": "2.9.0"
   },
   "overrides": {
     "esbuild": "^0.28.1",
