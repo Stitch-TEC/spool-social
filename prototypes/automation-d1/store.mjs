@@ -15,6 +15,10 @@ const REQUIRED = ['id', 'ownerUid', 'clientId', 'client', 'platform', 'contentTy
 const OPTIONAL = ['grounding', 'mode', 'pageCursor'];
 const FIELDS = new Set([...REQUIRED, ...OPTIONAL]);
 const IMMUTABLE = new Set(['id', 'ownerUid', 'clientId', 'platform', 'createdAt']);
+// Used inside the same SQL statement as each read/CAS, never a racy preflight check.
+const ACTIVE_CLIENT = `NOT EXISTS (SELECT 1 FROM automation_retired_clients_pilot retired
+  WHERE retired.owner_uid = automation_configs_pilot.owner_uid
+    AND retired.client_id = automation_configs_pilot.client_id)`;
 
 export class PilotStoreError extends Error {
   constructor(code) { super(code); this.name = 'PilotStoreError'; this.code = code; }
@@ -82,7 +86,7 @@ function decode(row) {
   } catch { fail('corrupt_storage'); }
 }
 
-/** D1-style prepare/bind/first/all adapter; only exercised on local SQLite. */
+/** D1-style prepared-statement/batch adapter; only exercised on local synthetic databases. */
 export async function createAutomationStore(db, ownerUid) {
   owner(ownerUid);
   // Redacted errors only: SQL error messages can contain a prompt or other row data.
@@ -91,8 +95,17 @@ export async function createAutomationStore(db, ownerUid) {
     catch { fail('storage_failed'); }
   }
   const meta = await first('SELECT schema_version FROM automation_pilot_meta WHERE singleton = 1');
-  if (meta?.schema_version !== 1) fail('unsupported_schema');
-  const read = key => first('SELECT * FROM automation_configs_pilot WHERE owner_uid = ? AND id = ?', ownerUid, key);
+  if (meta?.schema_version !== 2) fail('unsupported_schema');
+  const read = key => first(`SELECT * FROM automation_configs_pilot
+    WHERE owner_uid = ? AND id = ? AND ${ACTIVE_CLIENT}`, ownerUid, key);
+  const readRetirement = clientId => first(`SELECT * FROM automation_retired_clients_pilot
+    WHERE owner_uid = ? AND client_id = ?`, ownerUid, clientId);
+  function retirementEvidence(row, clientId) {
+    if (!row) return null;
+    if (row.owner_uid !== ownerUid || row.client_id !== clientId || !iso(row.retired_at)
+        || !Number.isSafeInteger(row.scrubbed_count) || row.scrubbed_count < 0) fail('corrupt_storage');
+    return { ownerUid, clientId, retiredAt: row.retired_at, scrubbedCount: row.scrubbed_count };
+  }
 
   return Object.freeze({
     async get(key) { return decode(await read(id(key))); },
@@ -103,9 +116,13 @@ export async function createAutomationStore(db, ownerUid) {
       const serialized = canonical(record);
       const inserted = await first(`INSERT INTO automation_configs_pilot
         (id, owner_uid, client_id, enabled, next_run_at, created_at, revision, record_json)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?) ON CONFLICT(id) DO NOTHING RETURNING *`,
-      record.id, ownerUid, record.clientId, Number(record.enabled), record.nextRunAt, record.createdAt, serialized);
+        SELECT ?, ?, ?, ?, ?, ?, 1, ? WHERE NOT EXISTS
+          (SELECT 1 FROM automation_retired_clients_pilot WHERE owner_uid = ? AND client_id = ?)
+        ON CONFLICT(id) DO NOTHING RETURNING *`,
+      record.id, ownerUid, record.clientId, Number(record.enabled), record.nextRunAt, record.createdAt, serialized,
+      ownerUid, record.clientId);
       if (inserted) return decode(inserted);
+      if (await readRetirement(record.clientId)) fail('client_retired');
       const existing = await read(record.id);
       // Retry only the identical initial create. Never resurrect deleted IDs or reset a later edit.
       if (existing?.deleted === 0 && existing.revision === 1 && existing.record_json === serialized) return decode(existing);
@@ -119,7 +136,8 @@ export async function createAutomationStore(db, ownerUid) {
       let result;
       try {
         result = await db.prepare(`SELECT * FROM automation_configs_pilot
-          WHERE owner_uid = ? AND deleted = 0 AND id > ? ${clientId === null ? '' : 'AND client_id = ?'}
+          WHERE owner_uid = ? AND deleted = 0 AND id > ? AND ${ACTIVE_CLIENT}
+          ${clientId === null ? '' : 'AND client_id = ?'}
           ORDER BY id LIMIT ?`).bind(ownerUid, after, ...(clientId === null ? [] : [clientId]), limit + 1).all();
       } catch { fail('storage_failed'); }
       if (!result?.success || !Array.isArray(result.results)) fail('storage_failed');
@@ -133,7 +151,7 @@ export async function createAutomationStore(db, ownerUid) {
       let result;
       try {
         result = await db.prepare(`SELECT * FROM automation_configs_pilot
-          WHERE owner_uid = ? AND deleted = 0 AND enabled = 1 AND next_run_at <= ?
+          WHERE owner_uid = ? AND deleted = 0 AND enabled = 1 AND next_run_at <= ? AND ${ACTIVE_CLIENT}
           ORDER BY next_run_at, id LIMIT ?`).bind(ownerUid, now, limit).all();
       } catch { fail('storage_failed'); }
       if (!result?.success || !Array.isArray(result.results)) fail('storage_failed');
@@ -158,7 +176,7 @@ export async function createAutomationStore(db, ownerUid) {
       if (next.updatedAt < current.updatedAt) fail('invalid_time');
       const saved = await first(`UPDATE automation_configs_pilot SET
         enabled = ?, next_run_at = ?, record_json = ?, last_patch_json = ?, revision = revision + 1
-        WHERE owner_uid = ? AND id = ? AND revision = ? AND deleted = 0 RETURNING *`,
+        WHERE owner_uid = ? AND id = ? AND revision = ? AND deleted = 0 AND ${ACTIVE_CLIENT} RETURNING *`,
       Number(next.enabled), next.nextRunAt, canonical(next), patchJson, ownerUid, key, expectedRevision);
       if (saved) return decode(saved);
       // A lost race may be an identical concurrent retry; any different edit is a conflict.
@@ -171,13 +189,44 @@ export async function createAutomationStore(db, ownerUid) {
       id(key); revision(expectedRevision);
       const removed = await first(`UPDATE automation_configs_pilot SET deleted = 1, enabled = 0,
         next_run_at = '', record_json = NULL, last_patch_json = NULL, revision = revision + 1
-        WHERE owner_uid = ? AND id = ? AND revision = ? AND deleted = 0 RETURNING revision`,
+        WHERE owner_uid = ? AND id = ? AND revision = ? AND deleted = 0 AND ${ACTIVE_CLIENT} RETURNING revision`,
       ownerUid, key, expectedRevision);
       if (removed) return { deleted: true, revision: removed.revision };
       const existing = await read(key);
       if (!existing) fail('not_found');
       if (existing.deleted === 1 && existing.revision === expectedRevision + 1) return { deleted: true, revision: existing.revision };
       fail('conflict');
+    },
+
+    async retirement(clientId) {
+      slug(clientId);
+      return retirementEvidence(await readRetirement(clientId), clientId);
+    },
+
+    // Prototype policy only: a separately authorized lifecycle caller would invoke this.
+    // The fence and scrub commit atomically; no list-then-delete or window for new IDs.
+    // There is deliberately no unfence/expiry method or production cleanup command.
+    async retireClient(clientId, retiredAt) {
+      slug(clientId);
+      if (!iso(retiredAt)) fail('invalid_time');
+      let results;
+      try {
+        results = await db.batch([
+          db.prepare(`INSERT INTO automation_retired_clients_pilot
+            (owner_uid, client_id, retired_at, scrubbed_count)
+            SELECT ?, ?, ?, COUNT(*) FROM automation_configs_pilot
+            WHERE owner_uid = ? AND client_id = ? AND deleted = 0
+            ON CONFLICT(owner_uid, client_id) DO NOTHING`).bind(ownerUid, clientId, retiredAt, ownerUid, clientId),
+          db.prepare(`UPDATE automation_configs_pilot SET deleted = 1, enabled = 0,
+            next_run_at = '', record_json = NULL, last_patch_json = NULL, revision = revision + 1
+            WHERE owner_uid = ? AND client_id = ? AND deleted = 0`).bind(ownerUid, clientId),
+          db.prepare(`SELECT * FROM automation_retired_clients_pilot
+            WHERE owner_uid = ? AND client_id = ?`).bind(ownerUid, clientId),
+        ]);
+      } catch { fail('storage_failed'); }
+      if (!Array.isArray(results) || results.length !== 3 || results.some(result => !result?.success)
+          || !Array.isArray(results[2].results) || results[2].results.length !== 1) fail('storage_failed');
+      return retirementEvidence(results[2].results[0], clientId);
     },
   });
 }

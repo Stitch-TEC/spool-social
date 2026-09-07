@@ -12,15 +12,20 @@ change billing, or replace recovery/backup work.
 ## What exists here
 
 - `store.mjs`: normalized-record validation, owner-scoped prepared SQL, stable-ID
-  pagination, due selection, optimistic revisions, and exact retry handling.
+  pagination, due selection, optimistic revisions, exact retry handling, and an
+  owner/slug retirement fence committed atomically with configuration scrubbing.
 - `schema.sql`: a fresh-database prototype schema **outside production migration paths**.
   Indexed fields support owner/client/due queries; JSON preserves the flat Firestore
   record and absence of optional legacy fields. SQL checks enforce key consistency.
+  Prototype schema v2 adds the retirement-fence table; v1 is refused, not auto-upgraded.
+  This file creates fresh synthetic databases only, not a live schema migration.
 - `local-harness.mjs`: a small D1 API approximation over Node's in-memory SQLite.
   It accepts no database filename, URL or credentials; no durable database is created.
 - `fixtures.mjs`, `pilot.check.mjs`: invented records and independently runnable tests.
 - `emulator.check.mjs`: an additional local workerd D1 SQL/binding smoke test through
   lockfile-installed Miniflare, with ephemeral storage and outbound requests denied.
+- `retirement-contract.mjs`: the same ten adversarial retirement cases, shared by
+  the Node SQLite and local workerd/D1 checks.
 - `benchmark.mjs`: fixed synthetic local timing exercise, not an edge-performance test.
 
 There are no runtime imports, package-script changes, bindings, Firestore exports,
@@ -62,7 +67,8 @@ development runtime on an ephemeral port, disables Cloudflare metadata fetching 
 uses synthetic D1 with persistence off, denies outbound Worker requests, and disposes the
 runtime in `finally`. It does not load the production Wrangler configuration or credentials.
 
-The adapter follows the documented D1 `prepare().bind().first()/all()` shape. This
+The adapter follows the documented D1 `prepare().bind().first()/all()` and transactional
+[`batch()`](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch) shape. This
 small SQLite harness is **not workerd or a D1 emulator**. The separate local D1 smoke
 does exercise the schema and binding calls against workerd, with the adapter invoked
 from Node. Neither is a bundled-app/production compatibility proof, edge concurrency or
@@ -86,6 +92,33 @@ Current contract sources: `worker/firestore.js` automation helpers (~1195–1276
 | Schedule / cursor | Compound patches commit schedule, cursor and count together. Tests preserve success/error/preview field combinations; budget refusal has no write. No scheduler or generation code is executed here. |
 | Lists | Explicit bounded pages ordered by stable ID; not a drop-in replacement for Firestore's array/list order. Callers would need pagination and their existing presentation sort. Due rows are oldest first with stable ID tie-breaking. No multi-page snapshot guarantee. |
 | Rename / remove | Display-name edit preserves immutable slug and run state. Removal scrubs configuration and retains a minimal identity/revision tombstone, blocking delayed recreation. Tests keep other owners/clients unchanged. |
+| Client retirement | `retireClient(clientId, retiredAt)` adds an owner/slug fence and scrubs matching active configs in one SQL batch. Guarded create/CAS/read queries reject late requests even with new IDs. `retirement(clientId)` returns only original owner/slug/time/count evidence. |
+
+### Retirement follow-through — bounded prototype proof
+
+The first pilot's per-record tombstones only blocked reuse of a removed automation ID.
+A delayed create using a **different** ID could still recreate configuration for the same
+client. Schema v2 closes that storage-layer gap with an owner + immutable-slug fence.
+
+The fence, initial active-row count and configuration scrub commit together. A failed
+statement rolls back the whole batch; a lost acknowledgement can be retried. Repeated
+retirement retains the original `retiredAt` and `scrubbedCount`, rather than pretending
+a retry is a second retirement. Already-scrubbed records do not gain another revision.
+The count describes the initial committed operation, not a new live inventory on each read.
+Prompts, display names, last errors and configuration payloads are not retained in fence
+evidence. Original automation IDs and owner/slug namespaces are preserved in tombstones.
+
+The exact same ten cases run on both local engines: owner/slug isolation; empty-client
+fencing; create/update/remove races; corrupt unscrubbed rows hidden by the fence;
+concurrent/repeated retirement; lost acknowledgement; rollback after the fence or scrub;
+and invalid scope/time rejection. No real client was retired or removed.
+
+This is not a client-roster status or a second roster. A trusted, separately authorized
+lifecycle caller would supply the owner and slug. It does not undo reads already returned,
+cancel in-flight AI or posts, stop old non-adapter writers, or establish full lifecycle
+acceptance. There is **no expiry, unfence, reactivation or tombstone-purge API**; retention
+and re-onboarding behavior remain an explicit future policy decision, not an assumed
+permission to retain real records indefinitely.
 
 ### Unclosed correctness gates
 
@@ -95,8 +128,9 @@ Current contract sources: `worker/firestore.js` automation helpers (~1195–1276
    Storage retries alone cannot safely retry paid generation or external effects.
 2. **Lifecycle integration is incomplete.** The real broker-driven client purge currently
    hard-deletes automation documents. The prototype keeps ID/owner/slug/creation/revision
-   metadata to reject stale writes, but scrubs prompt/config/last-error data. Tombstone
-   retention and eventual hard-purge semantics need an explicit decision, plus reviewed
+   metadata to reject stale writes, but scrubs prompt/config/last-error data. The new
+   prototype owner/slug fence adds local delayed-write protection only. Tombstone/fence
+   retention, reactivation and eventual hard-purge semantics need an explicit decision, plus reviewed
    rename/purge receiver integration, counts/errors and bounded enumeration. No claim of
    production hard-delete parity is made.
 3. **No live schema or migration inventory.** Strict validation covers the current normalized
@@ -144,7 +178,8 @@ and live verification must not be merged into one “done” claim.
 
 ## Evidence from this local implementation
 
-Initial Node 22.19.0 benchmark (one local run, September 7; not statistically meaningful):
+Initial **schema v1** Node 22.19.0 benchmark (one local run, September 7; historical,
+not a timing measurement of the added v2 retirement predicates and not statistically meaningful):
 1,000 inserts **252.167 ms**, 1,000 ID reads **82.261 ms**, five pages/1,000 rows
 **28.572 ms**, due query/200 rows **8.906 ms**. Includes JavaScript validation/serialization
 and in-process SQLite; excludes network, edge scheduling, durability, authentication,
@@ -152,15 +187,21 @@ replication and provider billing. Repeat runs will differ.
 
 Final local checks, September 7:
 
-- Prototype: **46/46 checks passed** on Node 22.19.0 and Node 25.2.1.
-- Separate local workerd D1 smoke: **1/1 passed** on Node 22.19.0 (1.89 seconds total
-  in the recorded run). Exercised schema/prepared statements/`RETURNING`, duplicate
+- Prototype: **56/56 checks passed** on Node 22.19.0 and Node 25.2.1.
+- Separate local workerd D1 checks: **11/11 passed** on Node 22.19.0 (8.76 seconds total
+  in the first v2 run). Exercised schema/prepared statements/`RETURNING`, duplicate
   create retry, owner isolation, pagination/due queries, racing CAS, remove retry and
-  tombstone non-resurrection. No remote Cloudflare resources were used.
-- Existing repository suite on Node 22.19.0: **505 passed, 30 skipped** (Firestore
-  emulator/rules checks were not run in this task; source/rules were unchanged).
+  tombstone non-resurrection, plus the ten shared retirement cases. No remote Cloudflare
+  resources were used. These checks remain separate from ordinary hosted CI.
+- Existing repository suite on Node 22.19.0: **505 passed, 30 skipped** with
+  `npm test -- --maxWorkers=2` (Firestore emulator/rules checks were not run in this
+  task; source/rules were unchanged). An initial run during a parallel build hit the
+  existing five-second timeout in the unchanged encoded-pagination test in
+  `worker/firestore.test.js`; that file then passed **18/18** alone, followed by the
+  full bounded-concurrency pass. No assertions, timeouts or application source changed.
 - Full-repository lint passed; Vite build passed using dummy Firebase build values.
-- `npm ci` reported **zero vulnerabilities**. No dependency or lockfile changes.
+- The initial pilot's `npm ci` reported **zero vulnerabilities**. This follow-through
+  changes no dependency or lockfile and does not claim a new provider audit baseline.
 
 The existing suite does not automatically run `pilot.check.mjs`; its explicit command
 above is separate evidence. No Firestore rule deploy, production deploy or real-device

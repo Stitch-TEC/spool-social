@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createAutomationStore, validateAutomation } from './store.mjs';
 import { openSyntheticDatabase } from './local-harness.mjs';
 import { fixture, OWNER_A, OWNER_B, NOW, LATER } from './fixtures.mjs';
+import { registerRetirementContract } from './retirement-contract.mjs';
 
 // Unexpected network use is an immediate failure, not an accidental provider request.
 globalThis.fetch = () => { throw new Error('Network is forbidden in the synthetic pilot'); };
@@ -13,6 +14,7 @@ async function setup(t) {
   return { ...local, a: await createAutomationStore(local.db, OWNER_A), b: await createAutomationStore(local.db, OWNER_B) };
 }
 const rejects = (promise, code) => assert.rejects(promise, error => error.code === code);
+registerRetirementContract(test, setup);
 
 test('normalized Firestore fields and exact identifiers round-trip without rewriting', async t => {
   const { a } = await setup(t);
@@ -254,8 +256,10 @@ test('malformed stored fields stop reads/lists rather than returning a plausible
 
 test('unsupported schema is refused; storage errors are redacted', async t => {
   const { db } = await setup(t);
-  const unsupported = { prepare: () => ({ bind: () => ({ first: async () => ({ schema_version: 999 }) }) }) };
-  await rejects(createAutomationStore(unsupported, OWNER_A), 'unsupported_schema');
+  for (const schema_version of [1, 999]) {
+    const unsupported = { prepare: () => ({ bind: () => ({ first: async () => ({ schema_version }) }) }) };
+    await rejects(createAutomationStore(unsupported, OWNER_A), 'unsupported_schema');
+  }
   const broken = { prepare: () => { throw new Error('Synthetic confidential prompt in SQL error'); } };
   await assert.rejects(createAutomationStore(broken, OWNER_A), error =>
     error.code === 'storage_failed' && !error.message.includes('confidential'));
@@ -310,7 +314,7 @@ test('ordinary source and deploy configuration have no prototype imports or bind
       const file = new URL(entry.name + (entry.isDirectory() ? '/' : ''), directory);
       if (entry.isDirectory()) scan(file);
       else if (/\.(jsx?|mjs|toml|ya?ml)$/.test(entry.name)) {
-        assert.doesNotMatch(readFileSync(file, 'utf8'), /prototypes\/automation-d1|automation_configs_pilot/);
+        assert.doesNotMatch(readFileSync(file, 'utf8'), /prototypes\/automation-d1|automation_(configs|retired_clients)_pilot/);
       }
     }
   }

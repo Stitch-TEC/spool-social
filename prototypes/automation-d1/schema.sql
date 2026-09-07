@@ -2,9 +2,20 @@
 -- Apply once to an empty in-memory SQLite database through local-harness.mjs.
 CREATE TABLE automation_pilot_meta (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+  schema_version INTEGER NOT NULL CHECK (schema_version = 2)
 );
-INSERT INTO automation_pilot_meta VALUES (1, 1);
+INSERT INTO automation_pilot_meta VALUES (1, 2);
+
+-- A retirement fence is namespaced by the original owner and immutable slug.
+-- It stores no prompt, display name, configuration or authentication credential.
+-- No expiry/reactivation policy is implied by this disconnected experiment.
+CREATE TABLE automation_retired_clients_pilot (
+  owner_uid TEXT NOT NULL CHECK (length(owner_uid) BETWEEN 1 AND 128),
+  client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 64),
+  retired_at TEXT NOT NULL,
+  scrubbed_count INTEGER NOT NULL CHECK (scrubbed_count BETWEEN 0 AND 9007199254740991),
+  PRIMARY KEY (owner_uid, client_id)
+);
 
 CREATE TABLE automation_configs_pilot (
   id TEXT PRIMARY KEY NOT NULL
