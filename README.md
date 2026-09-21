@@ -180,7 +180,7 @@ The Worker also pulls per-client knowledge from the suite broker (**feedback-wor
 
 ## 📦 Deployment
 
-Every push to `main` is automatically built and deployed to **Cloudflare Workers** via GitHub Actions (`.github/workflows/deploy.yml`), authenticated with the `CLOUDFLARE_API_TOKEN` repo secret. The Firebase web config is injected from repository **Actions variables**. The release job runs exact Node 22.19.0 and directly invokes the repository-local Wrangler 4.116.0 installed by `npm ci`; it does not use a separate action-provided Wrangler version.
+Every push to `main` is automatically built and deployed to **Cloudflare Workers** via GitHub Actions (`.github/workflows/deploy.yml`), authenticated with the `CLOUDFLARE_API_TOKEN` repo secret. The Firebase web config is injected from repository **Actions variables**. The release job runs exact Node 22.19.0 and directly invokes the repository-local Wrangler 4.131.0 installed by `npm ci`; it does not use a separate action-provided Wrangler version. See [the September toolchain security review](docs/TOOLCHAIN-SECURITY-2026-09-21.md) for the matching Miniflare/Sharp upgrade and release verification boundaries.
 
 Media hardening has an additional operational checklist: R2 inventory/signature
 audit, legacy Cloudflare cache purge, browser-cache residual, and the manual
