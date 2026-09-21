@@ -51,7 +51,7 @@ jobs:
       - name: Verify deploy toolchain
         run: |
           test "$(node --version)" = "v22.19.0"
-          test "$(./node_modules/.bin/wrangler --version)" = "4.116.0"
+          test "$(./node_modules/.bin/wrangler --version)" = "4.131.0"
       - name: Deploy Worker
         run: ./node_modules/.bin/wrangler deploy
         env:

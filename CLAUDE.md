@@ -24,7 +24,9 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - **App auto-deploys** to Cloudflare Workers on push to `main` (`.github/workflows/deploy.yml`,
   auth via `CLOUDFLARE_API_TOKEN` repo secret; `VITE_FIREBASE_*` injected from Actions vars).
   The release job uses exact Node `22.19.0`, runs `npm ci`, verifies the lockfile-installed
-  Wrangler is exactly `4.116.0`, and invokes that local binary directly.
+  Wrangler is exactly `4.131.0`, and invokes that local binary directly. This reviewed
+  toolchain uses Miniflare `5.20260910.0-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
+  See `docs/TOOLCHAIN-SECURITY-2026-09-21.md`; source verification is not live acceptance.
 - `main` is **branch-protected**: PR + the `build` check (CI runs lint + test + build + audit).
   You cannot push straight to `main` — open a PR.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
