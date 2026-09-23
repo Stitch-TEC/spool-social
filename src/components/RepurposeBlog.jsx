@@ -13,12 +13,15 @@ const TARGETS = ['linkedin', 'twitter', 'instagram', 'facebook', 'gmb'];
  * which persists them as new draft posts for the same client.
  */
 // clientId (optional suite slug) attributes the per-channel generations to the client at the gateway meter.
-const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCreateDrafts, showToast }) => {
+const RepurposeBlog = ({ title, content, client, clientSettings, clientId, platform = 'blog', onCreateDrafts, showToast }) => {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(() => new Set(['linkedin', 'twitter']));
   const [loading, setLoading] = useState(false);
-  const requests = useAsyncRequest(clientId);
-  useEffect(() => { setLoading(false); }, [clientId]);
+  // Blog and Job share this mounted control; changing source kind must also
+  // retire a request started for the previous draft context.
+  const requestContext = JSON.stringify([clientId, platform]);
+  const requests = useAsyncRequest(requestContext);
+  useEffect(() => { setLoading(false); }, [requestContext]);
   const cancel = () => { requests.cancel(); setLoading(false); setOpen(false); };
 
   const toggle = (id) =>

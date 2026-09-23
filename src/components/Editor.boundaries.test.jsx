@@ -162,4 +162,24 @@ describe('Editor account/client recovery and asynchronous generation boundaries'
     await act(async () => pending[0].resolve('Old Alpha metadata'));
     expect(field).toHaveValue('Beta manual metadata');
   });
+
+  it('retires pending repurpose generation when Blog changes to Job without unmounting the control', async () => {
+    const props = { ...propsFor(), onCreateDrafts: vi.fn() };
+    render(<Editor {...props} post={{ id: 'alpha-post', client: 'Alpha', clientId: 'alpha', platform: 'blog', title: 'Title', content: 'Alpha blog' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Repurpose → social' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 drafts' }));
+    expect(api.text).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Job Posting', exact: true }));
+    expect(screen.getByRole('button', { name: 'Create 2 drafts' })).toBeEnabled();
+    await act(async () => api.text[0].resolve('Old blog social copy'));
+    expect(api.text).toHaveLength(1);
+    expect(props.onCreateDrafts).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 drafts' }));
+    await act(async () => api.text[1].resolve('Current job LinkedIn'));
+    await act(async () => api.text[2].resolve('Current job Twitter'));
+    expect(props.onCreateDrafts).toHaveBeenCalledWith([
+      { platform: 'linkedin', content: 'Current job LinkedIn', client: 'Alpha' },
+      { platform: 'twitter', content: 'Current job Twitter', client: 'Alpha' },
+    ]);
+  });
 });

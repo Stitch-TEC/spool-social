@@ -152,7 +152,6 @@ const AIGenerate = ({
   const [loading, setLoading] = useState(false);
   const requestContext = JSON.stringify([clientId, platform]);
   const requests = useAsyncRequest(requestContext);
-  useEffect(() => { setLoading(false); }, [requestContext]);
   const [tone, setTone] = useState(clientSettings?.aiTone || 'professional');
   const [length, setLength] = useState('medium');
   const [style, setStyle] = useState('photo');
@@ -169,6 +168,13 @@ const AIGenerate = ({
   // signals (recent-activity digest + site cards + releases). { loading, list, error }; restored
   // from brainstormCache on reopen so a session doesn't re-spend, with an explicit Regenerate.
   const [deck, setDeck] = useState({ loading: false, list: [], error: null });
+  // A channel switch invalidates pending generations too, but it should not
+  // refetch the same client's source signals or leave their controls disabled.
+  useEffect(() => {
+    setLoading(false);
+    setAngles(null);
+    setDeck(previous => ({ ...previous, loading: false, error: null }));
+  }, [requestContext]);
   // "Browse all pages" picker: the full page index (url/title, from the pack) + the pages the user
   // has pulled on demand. Preserves the auto-suggest MAGIC (the top cards stay) while letting the
   // operator reach ANY page. `picked` items share the auto-card shape so they render identically.

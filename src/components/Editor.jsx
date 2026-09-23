@@ -727,6 +727,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             {isLongForm && !isReadOnly && (
               <div className="mb-2">
                 <RepurposeBlog
+                  platform={formData.platform}
                   title={formData.title}
                   content={formData.content}
                   client={formData.client}

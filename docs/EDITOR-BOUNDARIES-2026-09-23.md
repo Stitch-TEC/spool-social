@@ -56,6 +56,9 @@ including an A → B → A round trip. An old result/error/finalizer cannot repl
 text/images or unlock a newer pending request. The guard covers Generate,
 Improve, Hashtags, image generation, page-angle ideas, brainstorm, editor
 meta/alt generation, and repurpose-to-social generation.
+Channel changes also reset pending angle/brainstorm controls without refetching
+unchanged client signals. Blog and Job share the repurpose panel; switching
+between them retires pending generation and leaves the controls usable.
 
 Repurpose cancellation stops subsequent generations and prevents its draft
 write if generation is still pending. Cancellation does **not** claim to cancel
@@ -75,7 +78,7 @@ on phone/tablet widths, with invented accounts and intercepted generation.
 No live content, provider call, email, billing change, rule deployment, database
 schema or credential setting is part of this change.
 
-Local Node 22.19 acceptance: **584 ordinary tests**, **30 unchanged rule-emulator
+Local Node 22.19 acceptance: **588 ordinary tests**, **30 unchanged rule-emulator
 cases**, six Chromium/WebKit viewport runs, lint/build/action-pin checks, and
 `npm audit --audit-level=high` (zero vulnerabilities) passed. The emulator tests
 run separately; their 30 skips in the ordinary run are expected. Tests do not
