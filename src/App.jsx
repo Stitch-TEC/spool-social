@@ -137,6 +137,8 @@ const App = () => {
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingPost, setEditingPost] = useState(null);
+  const editorIdentity = JSON.stringify([user?.uid || '', role, myClientId, isReadOnly]);
+  const [editingIdentity, setEditingIdentity] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
@@ -247,6 +249,15 @@ const App = () => {
     const fromPosts = posts.find(p => p.clientId === myClientId)?.client;
     return fromBranding || fromPosts || myClientId;
   }, [isClientMember, myClientId, clientMap, posts]);
+
+  // Recovery is stricter than optional generation: unknown names must not mint
+  // an identity. Authenticated client members use only their pinned tenant.
+  const recoveryClientIdFor = useCallback((name) => {
+    if (isClientMember) return name === myClientName ? myClientId : '';
+    if (!isOperator) return '';
+    return rosterSlugByName.get(normClientName(name))
+      || clientIdByName[name] || clientMap[name]?.clientId || '';
+  }, [isClientMember, myClientName, myClientId, isOperator, rosterSlugByName, clientIdByName, clientMap]);
 
   // Selection only makes sense in the grid — drop it when switching views.
   useEffect(() => {
@@ -1047,18 +1058,20 @@ const App = () => {
   // Stable identity matters: an inline arrow here handed memo(PostGrid) a new prop
   // on every single App render, so the memo never bailed and all N cards re-rendered.
   const handleCreateNew = useCallback(() => {
+    setEditingIdentity(editorIdentity);
     setEditingPost(null);
     setView('editor');
-  }, []);
+  }, [editorIdentity]);
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
       setReviewingPost(p);
     } else {
+      setEditingIdentity(editorIdentity);
       setEditingPost(p);
       setView('editor');
     }
-  }, [isReadOnly]);
+  }, [isReadOnly, editorIdentity]);
 
   const handleDuplicatePost = useCallback((p) => {
     // Reset review state — a copy of an approved post is a fresh draft,
@@ -1082,6 +1095,7 @@ const App = () => {
   // + schedule this iteration before it lands in the queue.
   const handleUseTemplate = useCallback((tmpl) => {
     if (isReadOnly) return;
+    setEditingIdentity(editorIdentity);
     setEditingPost({
       ...tmpl,
       id: undefined,
@@ -1094,7 +1108,7 @@ const App = () => {
     });
     setShowTemplates(false);
     setView('editor');
-  }, [isReadOnly]);
+  }, [isReadOnly, editorIdentity]);
 
   // Batch-create draft posts (used by "Repurpose blog → social"). Returns count.
   const handleCreateDrafts = useCallback(async (drafts) => {
@@ -1672,7 +1686,9 @@ const App = () => {
     return <LoginScreen onSignIn={signIn} />;
   }
 
-  if (view === 'editor') {
+  // Account/role/tenant changes (including sign-out in another tab) cannot
+  // mount the previous account's editingPost under the new identity.
+  if (view === 'editor' && editingIdentity === editorIdentity) {
     return (
       <ErrorBoundary>
         {/* ⚡ Lazy-loaded Editor keeps the initial dashboard bundle small. */}
@@ -1683,7 +1699,10 @@ const App = () => {
           </div>
         }>
           <Editor
+            key={editorIdentity}
             post={editingPost}
+            recoveryPrincipalId={!authLoading && user && !user.isAnonymous && !isReadOnly ? user.uid : ''}
+            recoveryClientIdFor={recoveryClientIdFor}
             isReadOnly={isReadOnly}
             clientMap={clientMap}
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
@@ -1898,7 +1917,7 @@ const App = () => {
                           const atLimit = !!filterClient && templatesList.length >= TEMPLATE_LIMIT_PER_CLIENT;
                           return (
                             <button
-                              onClick={() => { setEditingPost({ isTemplate: true }); setView('editor'); }}
+                              onClick={() => { setEditingIdentity(editorIdentity); setEditingPost({ isTemplate: true }); setView('editor'); }}
                               disabled={atLimit}
                               title={atLimit ? `Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${filterClient}` : 'New template'}
                               className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"

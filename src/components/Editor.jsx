@@ -20,6 +20,8 @@ import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialM
 import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
 import { EDITOR_WORK_FIELDS as WORK_FIELDS, editorWorkSignature as workSignature, reconcileEditorSave } from '../utils/editorSaveState';
+import { recoveryScope, readRecovery } from '../utils/editorRecovery';
+import useAsyncRequest from '../hooks/useAsyncRequest';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -43,7 +45,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -123,6 +125,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const setFormData = (update) => {
     const next = typeof update === 'function' ? update(formDataRef.current) : update;
     formDataRef.current = next;
+    scopeRef.current = scopeFor(next);
     contentRef.current = next.content;
     isDirtyRef.current = workSignature(next) !== workSignature(pristineRef.current);
     setFormDataState(next);
@@ -133,15 +136,35 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const editorAliveRef = useRef(true);
   useEffect(() => {
     editorAliveRef.current = true;
-    return () => { editorAliveRef.current = false; };
+    return () => {
+      // An auth transition can unmount us before the debounce or pagehide.
+      // Preserve latest work only under THIS editor's already-verified scope;
+      // never save remotely or leave it for the incoming account to restore.
+      writeAutosaveNow();
+      editorAliveRef.current = false;
+    };
+    // The flush reads latest work/scope refs; it must run for the old session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // One local autosave slot per post, with separate slots for the two distinct
-  // "new" flows (New Thread vs New Template) so recovery can't offer a draft
-  // from the other flow. Not per-client on purpose: the point is crash/mis-click
-  // recovery of the LAST thing being written, not a drafts system.
-  const initialAutosaveKey = `spool:autosave:${post?.id || (post?.isTemplate ? 'new-template' : 'new')}`;
-  const autosaveKeyRef = useRef(initialAutosaveKey);
+  const openingPrincipal = useRef(recoveryPrincipalId);
+  const scopeFor = (fd) => recoveryScope({
+    principalId: openingPrincipal.current === recoveryPrincipalId ? recoveryPrincipalId : '',
+    // Only authoritative IDs; unlike optional AI, recovery must not guess a
+    // tenant from a display name when the roster is missing.
+    clientId: (fd.client === lastSavedPost.current?.client && lastSavedPost.current?.clientId)
+      || (fd.client === post?.client && (post?.clientId || post?.forClientId))
+      || recoveryClientIdFor?.(fd.client) || '',
+    postId: fd.id || post?.id,
+    isTemplate: fd.isTemplate || post?.isTemplate,
+  });
+  const scopeRef = useRef(null);
+  const readScopeKeyRef = useRef(null);
+  scopeRef.current = scopeFor(formData);
+  const scopeKey = scopeRef.current?.key || '';
+  const requestContext = JSON.stringify([recoveryPrincipalId, genClientId(formData.client), formData.platform]);
+  const requests = useAsyncRequest(requestContext);
+  useEffect(() => { setAltLoading(false); setMetaLoading(false); }, [requestContext]);
   // Bumped by clearAutosave so an in-flight debounced write can't resurrect a
   // snapshot that a successful save just removed.
   const autosaveGenRef = useRef(0);
@@ -282,6 +305,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       // The loaded post IS the saved state — re-arm the unsaved-changes guard from it.
       pristineRef.current = loaded;
     }
+    // This is deliberately mount-only initialization, not form synchronization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post, initialClient]);
 
   const isDirty = workSignature(formData) !== workSignature(pristineRef.current);
@@ -295,6 +320,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // the post currently has untouched.
   const writeAutosaveNow = () => {
     if (!editorAliveRef.current || isReadOnly || !isDirtyRef.current) return null;
+    const scope = scopeRef.current;
+    if (!scope) return null;
     const fd = formDataRef.current;
     const snap = {};
     for (const k of WORK_FIELDS) snap[k] = fd[k];
@@ -302,14 +329,14 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (imageOmitted) delete snap.imageUrl;
     snap.savedAt = Date.now();
     try {
-      window.localStorage.setItem(autosaveKeyRef.current, JSON.stringify(snap));
+      window.localStorage.setItem(scope.key, JSON.stringify({ scope, work: snap }));
       return { imageOmitted };
     } catch { return null; /* quota/private mode */ }
   };
 
-  const clearAutosave = () => {
+  const clearAutosave = (scope = scopeRef.current) => {
     autosaveGenRef.current += 1; // invalidate any pending debounced write
-    try { window.localStorage?.removeItem(autosaveKeyRef.current); } catch { /* private mode */ }
+    try { if (scope) window.localStorage?.removeItem(scope.key); } catch { /* private mode */ }
   };
 
   // Mobile Safari may suspend an installed app without firing beforeunload.
@@ -347,9 +374,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // treated as "already saved" and deleted. Declared AFTER the post-load effect
   // so pristineRef holds the loaded post when this runs.
   useEffect(() => {
-    let saved = null;
-    try { saved = JSON.parse(window.localStorage?.getItem(autosaveKeyRef.current) || 'null'); } catch { saved = null; }
-    if (!saved || typeof saved !== 'object' || typeof saved.content !== 'string') return;
+    scopeRef.current = scopeFor(formDataRef.current);
+    if (readScopeKeyRef.current === scopeRef.current?.key) return;
+    readScopeKeyRef.current = scopeRef.current?.key;
+    let entry = null;
+    try { if (scopeRef.current) entry = readRecovery(window.localStorage, scopeRef.current); } catch { /* storage unavailable */ }
+    const saved = entry?.work;
+    if (!saved) { setRecovered(null); return; }
     const pristine = pristineRef.current || {};
     const matchesLoaded = WORK_FIELDS.every((k) => {
       if (!(k in saved)) return true;
@@ -361,10 +392,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       clearAutosave();
       return;
     }
-    setRecovered(saved);
+    setRecovered(entry);
     // Read recovery only on open. A newly acknowledged save changes the slot
     // directly; it must not reload an older recovery copy over current edits.
-  }, []);
+    // The client may be selected after opening a blank editor. Never read an
+    // unscoped slot while waiting, and never show another client's banner.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey]);
 
   // Debounced write while dirty; the generation check keeps a timer that was
   // already queued when clearAutosave ran from resurrecting a stale snapshot.
@@ -380,15 +414,16 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   }, [formData, isDirty, isReadOnly]);
 
   const restoreRecovered = () => {
-    if (!recovered) return;
+    if (!recovered || recovered.scope.key !== scopeRef.current?.key) return;
     setFormData(prev => {
       const next = { ...prev };
       for (const k of WORK_FIELDS) {
-        if (recovered[k] !== undefined) next[k] = recovered[k];
+        if (recovered.work[k] !== undefined) next[k] = recovered.work[k];
       }
       // A client member's posts stay pinned to their own client (save path
       // enforces it anyway — don't even show a recovered foreign name).
-      if (clientLocked) next.client = prev.client;
+      // The immutable scope matched; preserve the current label across a rename.
+      next.client = prev.client;
       return next;
     });
     setRecovered(null);
@@ -419,6 +454,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (isReadOnly || isOverLimit || !formData.content.trim() || savingRef.current) return;
     savingRef.current = true;
     setIsSaving(true);
+    const submittedScope = scopeRef.current;
     try {
       // Keep the exact submitted snapshot while newer typing/AI/image work may
       // continue. Only the committed response can supply a new post's real ID.
@@ -443,14 +479,17 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         pristineRef.current = next.baseline;
         // Retire the old "new" slot only after the create is acknowledged.
         // Later saves now update that same ID even before the listener catches up.
-        clearAutosave();
-        autosaveKeyRef.current = `spool:autosave:${result.post.id}`;
+        const previousScope = scopeRef.current;
+        clearAutosave(submittedScope);
+        scopeRef.current = scopeFor(next.form);
+        readScopeKeyRef.current = scopeRef.current?.key;
         formDataRef.current = next.form;
         isDirtyRef.current = next.dirty;
         setFormData(next.form);
         setRecovered(null);
         if (next.dirty) {
-          writeAutosaveNow();
+          const stored = writeAutosaveNow();
+          if (stored && previousScope?.key !== scopeRef.current?.key) clearAutosave(previousScope);
           showToast?.('Saved the earlier version. Your newer edits are still here — save again when ready.', 'success');
         } else {
           editorAliveRef.current = false;
@@ -498,7 +537,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       setDiscardRecovery(writeAutosaveNow());
       setShowDiscardConfirm(true);
     }
-    else { editorAliveRef.current = false; onCancel(); }
+    else { editorAliveRef.current = false; requests.cancel(); onCancel(); }
   };
 
   // Long-form drafts grow the textarea with the content (the surrounding pane
@@ -517,35 +556,43 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
 
   const handleAltText = async () => {
     if (altLoading || !formData.imageUrl) return;
+    const request = requests.begin('alt');
+    if (!request) return;
     setAltLoading(true);
     try {
       const alt = await describeImage(formData.imageUrl, {
         clientId: genClientId(formData.client),
         platform: formData.platform,
       });
+      if (!requests.current(request)) return;
       setFormData(prev => ({ ...prev, altText: alt }));
       showToast?.('Alt text generated');
     } catch (err) {
-      showToast?.(err.message || 'Alt text failed', 'error');
+      if (requests.current(request)) showToast?.(err.message || 'Alt text failed', 'error');
     } finally {
-      setAltLoading(false);
+      if (requests.current(request)) setAltLoading(false);
+      requests.finish(request);
     }
   };
 
   const handleMeta = async () => {
     if (metaLoading || !formData.content.trim()) return;
+    const request = requests.begin('meta');
+    if (!request) return;
     setMetaLoading(true);
     try {
       const meta = await generateText(
         `Write a compelling SEO meta description (max 155 characters, one sentence, no quotes) for the post below.\n\nTITLE: ${formData.title || ''}\n\nPOST:\n${formData.content}`,
         { maxTokens: 80, clientId: genClientId(formData.client), platform: formData.platform }
       );
+      if (!requests.current(request)) return;
       setFormData(prev => ({ ...prev, metaDescription: meta.trim().slice(0, 200) }));
       showToast?.('Meta description generated');
     } catch (err) {
-      showToast?.(err.message || 'Generation failed', 'error');
+      if (requests.current(request)) showToast?.(err.message || 'Generation failed', 'error');
     } finally {
-      setMetaLoading(false);
+      if (requests.current(request)) setMetaLoading(false);
+      requests.finish(request);
     }
   };
 
@@ -584,13 +631,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
 
         <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
           {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
-          {recovered && !isReadOnly && (
+          {recovered && recovered.scope.key === scopeKey && !isReadOnly && (
             <div className="flex flex-wrap items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
               <History size={18} className="text-amber-600 shrink-0 mt-0.5" />
               <div className="flex-1 min-w-[160px]">
                 <p className="text-sm font-bold text-amber-800">Unsaved work recovered</p>
                 <p className="text-xs text-amber-700 mt-0.5">
-                  A draft auto-saved {recovered.savedAt ? `on ${new Date(recovered.savedAt).toLocaleString()} ` : ''}on this device differs from what&apos;s shown. Restore it, or dismiss to keep what&apos;s here.
+                  A draft auto-saved {recovered.work.savedAt ? `on ${new Date(recovered.work.savedAt).toLocaleString()} ` : ''}for this account and client differs from what&apos;s shown. Restore it, or dismiss to keep what&apos;s here.
                 </p>
               </div>
               <div className="flex gap-2 shrink-0 ml-auto">
@@ -680,6 +727,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             {isLongForm && !isReadOnly && (
               <div className="mb-2">
                 <RepurposeBlog
+                  platform={formData.platform}
                   title={formData.title}
                   content={formData.content}
                   client={formData.client}

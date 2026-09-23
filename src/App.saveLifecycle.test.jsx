@@ -2,6 +2,8 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
+import { recoveryScope } from './utils/editorRecovery';
+const recoveryKey = slot => recoveryScope({ principalId: 'operator-test', clientId: 'acme', postId: slot === 'new' ? null : slot }).key;
 
 // Keep the App → Editor → postSave boundary real. Only the navigation shell,
 // subscriptions and Firebase transport are replaced; no save callback is faked.
@@ -123,6 +125,9 @@ describe('App and Editor save lifecycle', () => {
     window.localStorage.clear();
     window.history.replaceState({}, '', '/');
     state.posts = [post('a', 'Original A'), post('b', 'Original B')];
+    state.auth = { user: { uid: 'operator-test', email: 'operator@example.test' }, authLoading: false, isReadOnly: false, isOperator: true, isClientMember: false, role: 'super_admin' };
+    state.clientMap = {};
+    state.clients = [{ name: 'Acme', slug: 'acme' }];
     state.documents = new Map(state.posts.map(({ id, ...data }) => [id, data]));
     state.creates = [];
     state.updates = [];
@@ -139,19 +144,56 @@ describe('App and Editor save lifecycle', () => {
     window.localStorage.clear();
   });
 
+  it('closes the old editor on account change and never restores its recovery into a client member', async () => {
+    const app = render(<App />);
+    await openNew('Operator-only Acme work');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBeNull();
+    // Cross-tab auth update while the editor is mounted; no navigation/reload.
+    state.auth = { user: { uid: 'beta-member', email: 'beta@example.test' }, authLoading: false, isReadOnly: false, isOperator: false, isClientMember: true, role: 'client', clientId: 'beta' };
+    state.posts = [];
+    state.clientMap = { Beta: { name: 'Beta', clientId: 'beta' } };
+    state.clients = [];
+    app.rerender(<App />);
+    expect(screen.queryByText('New Thread')).not.toBeInTheDocument();
+    const saved = window.localStorage.getItem(recoveryKey('new'));
+    expect(saved).toContain('Operator-only Acme work');
+    fireEvent.click(screen.getByRole('button', { name: 'New test thread' }));
+    await screen.findByText('New Thread');
+    expect(editorContent()).toHaveValue('');
+    expect(screen.queryByRole('button', { name: 'Restore', exact: true })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBe(saved);
+    changeContent('Beta-owned draft');
+    const create = await createPending();
+    expect(create.data).toMatchObject({ client: 'Beta', clientId: 'beta', content: 'Beta-owned draft', reviewStage: 'in_review' });
+    await acknowledge(create, 'beta-created');
+  });
+
+  it('drops an existing editor when the same user changes tenant or role', async () => {
+    const app = render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit a' }));
+    await screen.findByText('Edit Thread');
+    changeContent('Private unsaved edit');
+    state.auth = { ...state.auth, isOperator: false, isClientMember: true, role: 'client', clientId: 'beta' };
+    state.posts = [];
+    app.rerender(<App />);
+    expect(screen.queryByText('Edit Thread')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Private unsaved edit')).not.toBeInTheDocument();
+    expect(state.creates).toHaveLength(0);
+  });
+
   it('keeps newer edits and updates the acknowledged create ID before any posts-listener refresh', async () => {
     render(<App />);
     await openNew();
     const create = await createPending();
     changeContent('Newer typing while the first save is pending');
     fireEvent.pageHide(window);
-    expect(window.localStorage.getItem('spool:autosave:new')).toContain('Newer typing');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toContain('Newer typing');
 
     await acknowledge(create);
     expect(editorContent()).toHaveValue('Newer typing while the first save is pending');
     expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
-    expect(window.localStorage.getItem('spool:autosave:new')).toBeNull();
-    expect(window.localStorage.getItem('spool:autosave:created-one')).toContain('Newer typing');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('created-one'))).toContain('Newer typing');
     expect(state.documents.get('created-one').content).toBe('First submitted snapshot');
     expect(state.posts.some((p) => p.id === 'created-one')).toBe(false);
 
@@ -164,7 +206,7 @@ describe('App and Editor save lifecycle', () => {
       content: 'Newer typing while the first save is pending',
       clientId: 'acme', client: 'Acme', reviewStage: 'private', approvalStatus: 'pending',
     });
-    expect(window.localStorage.getItem('spool:autosave:created-one')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('created-one'))).toBeNull();
   });
 
   it('retains typing queued in the same React batch as the create acknowledgement', async () => {
@@ -177,7 +219,7 @@ describe('App and Editor save lifecycle', () => {
     });
     expect(editorContent()).toHaveValue('Same-batch newer content');
     expect(state.documents.get('created-batched').content).toBe('First submitted snapshot');
-    expect(window.localStorage.getItem('spool:autosave:created-batched')).toContain('Same-batch newer content');
+    expect(window.localStorage.getItem(recoveryKey('created-batched'))).toContain('Same-batch newer content');
     save();
     await screen.findByRole('button', { name: 'New test thread' });
     expect(state.creates).toHaveLength(1);
@@ -196,8 +238,8 @@ describe('App and Editor save lifecycle', () => {
     changeContent('Unsaved B must survive');
     fireEvent.pageHide(window);
     const snapshotsBeforeASettles = recovery();
-    expect(snapshotsBeforeASettles['spool:autosave:b']).toContain('Unsaved B must survive');
-    expect(snapshotsBeforeASettles['spool:autosave:new']).toContain('Pending A');
+    expect(snapshotsBeforeASettles[recoveryKey('b')]).toContain('Unsaved B must survive');
+    expect(snapshotsBeforeASettles[recoveryKey('new')]).toContain('Pending A');
 
     await act(async () => {
       if (outcome === 'success') create.resolve({ id: 'late-a' });

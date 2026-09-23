@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Share2, Loader2, X } from 'lucide-react';
 import { generateText } from '../utils/generationApi';
 import { buildTextContext } from '../utils/aiPrompt';
 import { PLATFORMS } from '../constants';
+import useAsyncRequest from '../hooks/useAsyncRequest';
 
 const TARGETS = ['linkedin', 'twitter', 'instagram', 'facebook', 'gmb'];
 
@@ -12,10 +13,16 @@ const TARGETS = ['linkedin', 'twitter', 'instagram', 'facebook', 'gmb'];
  * which persists them as new draft posts for the same client.
  */
 // clientId (optional suite slug) attributes the per-channel generations to the client at the gateway meter.
-const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCreateDrafts, showToast }) => {
+const RepurposeBlog = ({ title, content, client, clientSettings, clientId, platform = 'blog', onCreateDrafts, showToast }) => {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(() => new Set(['linkedin', 'twitter']));
   const [loading, setLoading] = useState(false);
+  // Blog and Job share this mounted control; changing source kind must also
+  // retire a request started for the previous draft context.
+  const requestContext = JSON.stringify([clientId, platform]);
+  const requests = useAsyncRequest(requestContext);
+  useEffect(() => { setLoading(false); }, [requestContext]);
+  const cancel = () => { requests.cancel(); setLoading(false); setOpen(false); };
 
   const toggle = (id) =>
     setSel(prev => {
@@ -29,6 +36,8 @@ const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCre
     if (!content.trim()) { showToast?.('Write the post first', 'error'); return; }
     const platforms = [...sel];
     if (platforms.length === 0) { showToast?.('Pick at least one channel', 'error'); return; }
+    const request = requests.begin();
+    if (!request) return;
 
     setLoading(true);
     try {
@@ -39,15 +48,19 @@ const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCre
           `Adapt the following long-form post into ${PLATFORMS[platform].name} copy that drives readers to the full piece. Make it native to the platform; don't just truncate.\n\nTITLE: ${title || '(untitled)'}\n\nPOST:\n${content}`,
           { system, maxTokens, clientId, platform }
         );
+        if (!requests.current(request)) return;
         drafts.push({ platform, content: text, client });
       }
+      if (!requests.current(request)) return;
       const n = await onCreateDrafts(drafts);
+      if (!requests.current(request)) return;
       showToast?.(`Created ${n ?? drafts.length} social draft${(n ?? drafts.length) === 1 ? '' : 's'}`);
       setOpen(false);
     } catch (err) {
-      showToast?.(err.message || 'Repurpose failed', 'error');
+      if (requests.current(request)) showToast?.(err.message || 'Repurpose failed', 'error');
     } finally {
-      setLoading(false);
+      if (requests.current(request)) setLoading(false);
+      requests.finish(request);
     }
   };
 
@@ -67,7 +80,7 @@ const RepurposeBlog = ({ title, content, client, clientSettings, clientId, onCre
     <div className="w-full bg-indigo-50/60 border border-indigo-100 rounded-xl p-2.5">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-bold text-slate-600">Generate social drafts from this post</span>
-        <button type="button" onClick={() => setOpen(false)} className="p-1 text-slate-400 hover:text-rose-500" aria-label="Cancel">
+        <button type="button" onClick={cancel} className="p-1 text-slate-400 hover:text-rose-500" aria-label="Cancel">
           <X size={14} />
         </button>
       </div>
