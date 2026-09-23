@@ -22,6 +22,8 @@ import { slugifyClientId } from '../config/roles';
 import { EDITOR_WORK_FIELDS as WORK_FIELDS, editorWorkSignature as workSignature, reconcileEditorSave } from '../utils/editorSaveState';
 import { recoveryScope, readRecovery } from '../utils/editorRecovery';
 import useAsyncRequest from '../hooks/useAsyncRequest';
+import useCreateRecovery from '../hooks/useCreateRecovery';
+import { createScope } from '../utils/createJournal';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -45,7 +47,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor }) => {
+const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -95,9 +97,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const savingRef = useRef(false);
   const lastSavedPost = useRef(null);
   const initializedForm = useRef(false);
+  const newCreateSession = useRef(createRecoveryEnabled && !post?.id && post?.source !== 'suggestion').current;
   const [altLoading, setAltLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [showDiscardUnsent, setShowDiscardUnsent] = useState(false);
   const [discardRecovery, setDiscardRecovery] = useState(null);
   // Locally-recovered unsaved work (see the autosave effects below).
   const [recovered, setRecovered] = useState(null);
@@ -162,6 +166,25 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const readScopeKeyRef = useRef(null);
   scopeRef.current = scopeFor(formData);
   const scopeKey = scopeRef.current?.key || '';
+  const intentScopeRef = useRef(null);
+  const newScope = intentScopeRef.current || createScope({ principalId: recoveryPrincipalId, clientId: scopeRef.current?.clientId, projectId: recoveryProjectId, isTemplate: formData.isTemplate });
+  const createRecovery = useCreateRecovery({
+    enabled: newCreateSession && !isReadOnly,
+    scope: newScope,
+    getUser: getRecoveryUser,
+    getWork: () => formDataRef.current,
+    isAlive: () => editorAliveRef.current,
+  });
+  if (createRecovery.record && createRecovery.record.state !== 'draft') intentScopeRef.current = createRecovery.record.scope;
+  const createRecoveryRef = useRef(createRecovery);
+  createRecoveryRef.current = createRecovery;
+  const createLocked = newCreateSession && (isSaving || (createRecovery.record && createRecovery.record.state !== 'draft'));
+  useEffect(() => {
+    if (newCreateSession && isDirtyRef.current) createRecovery.persist(formDataRef.current).catch(() => {});
+    // Each edit is queued immediately, not only at pagehide (which Safari may
+    // never finish). A completed browser transaction is not eviction immunity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData, newCreateSession, createRecovery.loading, createRecovery.restored]);
   const requestContext = JSON.stringify([recoveryPrincipalId, genClientId(formData.client), formData.platform]);
   const requests = useAsyncRequest(requestContext);
   useEffect(() => { setAltLoading(false); setMetaLoading(false); }, [requestContext]);
@@ -320,6 +343,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // the post currently has untouched.
   const writeAutosaveNow = () => {
     if (!editorAliveRef.current || isReadOnly || !isDirtyRef.current) return null;
+    if (newCreateSession) {
+      createRecoveryRef.current.persist(formDataRef.current).catch(() => {});
+      // Do not promise a newly queued asynchronous write has already committed.
+      return createRecoveryRef.current.stored(formDataRef.current) ? { imageOmitted: false } : null;
+    }
     const scope = scopeRef.current;
     if (!scope) return null;
     const fd = formDataRef.current;
@@ -336,6 +364,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
 
   const clearAutosave = (scope = scopeRef.current) => {
     autosaveGenRef.current += 1; // invalidate any pending debounced write
+    if (newCreateSession) return; // v2 copies have no create identity: never adopt/delete them.
     try { if (scope) window.localStorage?.removeItem(scope.key); } catch { /* private mode */ }
   };
 
@@ -374,6 +403,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // treated as "already saved" and deleted. Declared AFTER the post-load effect
   // so pristineRef holds the loaded post when this runs.
   useEffect(() => {
+    if (newCreateSession) return;
     scopeRef.current = scopeFor(formDataRef.current);
     if (readScopeKeyRef.current === scopeRef.current?.key) return;
     readScopeKeyRef.current = scopeRef.current?.key;
@@ -455,6 +485,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     savingRef.current = true;
     setIsSaving(true);
     const submittedScope = scopeRef.current;
+    const initiatingUser = newCreateSession ? getRecoveryUser?.() : null;
+    let remoteConfirmed = false;
     try {
       // Keep the exact submitted snapshot while newer typing/AI/image work may
       // continue. Only the committed response can supply a new post's real ID.
@@ -463,6 +495,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       // intentional workflow-status edit from a client approval that advanced
       // status concurrently while this editor was open.
       const result = await onSave(formData, {
+        ...(newCreateSession && !formData.id ? {
+          createPost: payload => createRecovery.submit(payload, formData, initiatingUser),
+          isCurrentSession: () => editorAliveRef.current && getRecoveryUser?.() === initiatingUser,
+          createClientId: newScope?.clientId,
+        } : {}),
         ...(lastSavedPost.current ? { savedPost: lastSavedPost.current } : {}),
         baselineStatus: pristineRef.current?.status,
         // Tenant intent needs the editor-open baseline just like workflow
@@ -474,7 +511,22 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       });
       if (!editorAliveRef.current) return;
       if (result?.ok === true) {
-        const next = reconcileEditorSave(formData, formDataRef.current, result.post);
+        remoteConfirmed = true;
+        if (newCreateSession) {
+          await createRecovery.persist(formDataRef.current);
+          if (formData.id) await createRecovery.acknowledge(result.post);
+          if (!editorAliveRef.current) return;
+        }
+        let next = reconcileEditorSave(result.submitted || formData, formDataRef.current, result.post);
+        if (newCreateSession && !next.dirty) {
+          await createRecovery.complete();
+          // Retirement itself is asynchronous. An edit queued while it commits
+          // must remain linked to this acknowledged ID, not close with old data.
+          next = reconcileEditorSave(result.submitted || formData, formDataRef.current, result.post);
+          if (next.dirty) await createRecovery.persist(formDataRef.current);
+        }
+        if (!editorAliveRef.current) return;
+        next = reconcileEditorSave(result.submitted || formData, formDataRef.current, result.post);
         lastSavedPost.current = result.post;
         pristineRef.current = next.baseline;
         // Retire the old "new" slot only after the create is acknowledged.
@@ -498,14 +550,32 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       } else {
         writeAutosaveNow();
       }
-    } catch {
+    } catch (error) {
       if (!editorAliveRef.current) return;
       writeAutosaveNow();
-      showToast?.('Could not save this thread. Your edits are still here — please try again.', 'error');
+      showToast?.(remoteConfirmed
+        ? `Spool confirmed the save, but device recovery needs review. ${error.message || 'Keep this editor open and copy your text.'}`
+        : 'Could not save this thread. Your edits are still here — please try again.', 'error');
     } finally {
       savingRef.current = false;
       if (editorAliveRef.current) setIsSaving(false);
     }
+  };
+
+  const checkPreviousSave = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setIsSaving(true);
+    try {
+      const result = await createRecovery.check();
+      if (!editorAliveRef.current) return;
+      const next = reconcileEditorSave(result.submitted, formDataRef.current, result.post);
+      lastSavedPost.current = result.post;
+      pristineRef.current = next.baseline;
+      setFormData(next.form);
+      showToast?.('Previous save confirmed. Review your work here; Save will update that same thread.', 'success');
+    } catch (error) { if (editorAliveRef.current) showToast?.(error.message, 'error'); }
+    finally { savingRef.current = false; if (editorAliveRef.current) setIsSaving(false); }
   };
 
   // Wholesale content replacement (AI draft/improve, Spark Deck). One click
@@ -620,7 +690,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             </button>
             <button
               onClick={handleSaveWrapper}
-              disabled={isOverLimit || !formData.content.trim() || isReadOnly || isSaving}
+              disabled={isOverLimit || !formData.content.trim() || isReadOnly || isSaving || (newCreateSession && (createRecovery.loading || !createRecovery.restored || (!formData.id && ['submitted', 'confirmed'].includes(createRecovery.record?.state))))}
               className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
             >
                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
@@ -630,6 +700,25 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
+          {newCreateSession && !isReadOnly && (!newScope || createRecovery.error || createRecovery.record || createRecovery.loading) && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2" aria-live="polite">
+              <p className="text-sm font-bold text-amber-800">{createRecovery.loading ? 'Checking this device for previous work…' : !createRecovery.restored ? 'Previous work is available on this device' : createRecovery.record?.state === 'submitted' ? 'Spool has not confirmed this save' : createRecovery.record?.state === 'confirmed' ? 'Previous save confirmed' : 'New-draft recovery'}</p>
+              <p className="text-xs text-amber-800">{createRecovery.error || (!newScope ? 'Select a known client before saving. Spool needs a verified account, client and project to keep this new draft recoverable.' : !createRecovery.restored ? 'Restore this copy before continuing. It stays with its original account and client.' : createRecovery.record?.state === 'submitted' ? 'Check the recorded thread when your connection returns. This check only reads; it will not send or create another copy.' : createRecovery.stored(formData) ? 'Your current work has a recovery copy on this device. Browser storage can still be cleared or unavailable.' : 'Your latest changes are not yet confirmed in device recovery. Keep this editor open or copy your text.')}</p>
+              <div className="flex flex-wrap gap-2">
+                {!createRecovery.restored && <button type="button" className="px-3 py-2 rounded-full bg-amber-700 text-white text-xs font-bold" onClick={() => {
+                  if (formDataRef.current.content.trim()) { showToast?.('Copy or clear the text currently in this editor before restoring previous work.', 'error'); return; }
+                  const work = createRecovery.restore();
+                  if (work) setFormData(prev => ({ ...prev, ...work, client: prev.client }));
+                }}>Restore previous work</button>}
+                {createRecovery.restored && ['submitted', 'confirmed'].includes(createRecovery.record?.state) && <button type="button" disabled={isSaving} onClick={checkPreviousSave} className="px-3 py-2 rounded-full bg-amber-700 text-white text-xs font-bold disabled:opacity-50">Check previous save</button>}
+                {createRecovery.record?.state === 'draft' && <button type="button" disabled={isSaving} onClick={() => setShowDiscardUnsent(true)} className="px-3 py-2 rounded-full border border-amber-700 text-xs font-bold">Discard unsent recovery</button>}
+                <button type="button" className="px-3 py-2 rounded-full border border-amber-700 text-xs font-bold" onClick={async () => {
+                  try { await navigator.clipboard.writeText(formDataRef.current.content); showToast?.('Text copied. Images and settings are not included.', 'success'); }
+                  catch { showToast?.('Copy is unavailable here. Select the text in the editor and copy it manually.', 'error'); }
+                }}>Copy text</button>
+              </div>
+            </div>
+          )}
           {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
           {recovered && recovered.scope.key === scopeKey && !isReadOnly && (
             <div className="flex flex-wrap items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
@@ -805,6 +894,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
               <input
                 type="checkbox"
                 checked={!!formData.isTemplate}
+                disabled={createLocked}
                 onChange={(e) => setFormData({ ...formData, isTemplate: e.target.checked })}
                 className="accent-indigo-600 w-4 h-4 shrink-0"
               />
@@ -838,7 +928,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                 {/* 🔒 SECURITY: Input length limit. Client members are pinned to their own
                     client (the save path enforces it) — show the field locked instead of an
                     editable value that would silently be overridden. */}
-                <input type="text" list="client-list" maxLength={50} placeholder="Select or type a new client..." value={formData.client} disabled={clientLocked} title={clientLocked ? 'Posts are always saved to your own client' : undefined} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-70 disabled:cursor-not-allowed" />
+                <input type="text" list="client-list" maxLength={50} placeholder="Select or type a new client..." value={formData.client} disabled={clientLocked || createLocked} title={createLocked ? 'Resolve the original save before changing its client' : clientLocked ? 'Posts are always saved to your own client' : undefined} onChange={(e) => setFormData({ ...formData, client: e.target.value })} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-70 disabled:cursor-not-allowed" />
                 <datalist id="client-list">
                     {allClients.map(c => <option key={c} value={c} />)}
                 </datalist>
@@ -1080,6 +1170,19 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
           clientImages={postImagesByClient[formData.client] || []}
         />
       )}
+
+      {showDiscardUnsent && <ConfirmModal type="danger" title="Discard unsent recovery?" message="This draft has never been submitted to Spool. Discard its recovery copy and close this editor? Previously submitted or uncertain saves cannot be discarded this way." confirmLabel="Discard unsent copy" onCancel={() => setShowDiscardUnsent(false)} onConfirm={async () => {
+        const before = workSignature(formDataRef.current);
+        try {
+          await createRecovery.discard();
+          if (!editorAliveRef.current) return;
+          setShowDiscardUnsent(false);
+          if (workSignature(formDataRef.current) !== before) {
+            await createRecovery.persist(formDataRef.current);
+            showToast?.('The old unsent copy was discarded. Your newer edits are still here.', 'success');
+          } else { editorAliveRef.current = false; onCancel(); }
+        } catch (error) { if (editorAliveRef.current) showToast?.(error.message, 'error'); }
+      }} />}
 
       {/* Discard confirm — the only way an in-app close loses dirty edits is
           through this explicit choice (the autosave still keeps a local copy). */}

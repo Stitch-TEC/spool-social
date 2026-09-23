@@ -36,6 +36,9 @@ export default function useAuth(showToast) {
   }, []);
 
   const [user, setUser] = useState(null);
+  const authRevisionRef = useRef(0);
+  const [authRevision, setAuthRevision] = useState(0);
+  const getAuthRevision = useCallback(() => authRevisionRef.current, []);
   const [authLoading, setAuthLoading] = useState(true);
   const [shareError, setShareError] = useState(null);
   const [authzError, setAuthzError] = useState(null);
@@ -83,6 +86,10 @@ export default function useAuth(showToast) {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (cancelled) return;
       const mine = ++revision;
+      // A same-UID sign-out/sign-in is still a different editing session. The
+      // synchronous counter also invalidates work before React renders loading.
+      authRevisionRef.current += 1;
+      setAuthRevision(authRevisionRef.current);
       const stale = () => cancelled || mine !== revision;
       // Fail closed immediately while a different principal is resolving. A
       // slow users-document response from the previous account must not win.
@@ -163,7 +170,7 @@ export default function useAuth(showToast) {
         setAuthLoading(false);
       }
     });
-    return () => { cancelled = true; unsubscribe(); };
+    return () => { cancelled = true; authRevisionRef.current += 1; unsubscribe(); };
   }, [shareToken, legacyUid, legacyClient]);
 
   // A guest is anyone viewing a share scope who isn't that scope's owner.
@@ -191,6 +198,8 @@ export default function useAuth(showToast) {
 
   return {
     user,
+    authRevision,
+    getAuthRevision,
     authLoading,
     isReadOnly,
     shareError,

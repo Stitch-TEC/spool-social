@@ -59,6 +59,13 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   every post in the workspace. Bounding it needs pagination that the whole-workspace facet
   counts currently assume away. The grid window + density cap the RENDER cost, not the read.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
+- **Ordinary new-editor recovery (2026-09-23 source):** native IndexedDB v3 records an
+  account/project/client-scoped reserved ID, frozen create payload and revisioned work.
+  Dispatch uses Firebase-ID-token REST create-only after durable admission; uncertain
+  saves can only be checked by exact-ID GET, never silently retried under a fresh ID.
+  Existing editor/duplicate/import/suggestion lanes retain their separate contracts.
+  Never auto-adopt/delete old v2 new-draft copies or clear v3 records during rollback.
+  Read `docs/INTERRUPTED-CREATE-RECOVERY-2026-09-23.md` before changing this lifecycle.
 - **Tailwind 4 emits arbitrary media variants BEFORE the named breakpoint scale**, so
   `min-[1600px]:grid-cols-4` silently loses to `xl:grid-cols-3` at every width where both
   match. Wide layout steps must use REGISTERED breakpoints — `@theme { --breakpoint-3xl }`
