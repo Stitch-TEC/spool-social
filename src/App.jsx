@@ -22,6 +22,7 @@ import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
 import usePosts from './hooks/usePosts';
+import useReviewSelection from './hooks/useReviewSelection';
 import useToast from './hooks/useToast';
 import ErrorBoundary from './components/ErrorBoundary';
 import LoginScreen from './components/LoginScreen';
@@ -143,7 +144,11 @@ const App = () => {
   const [editingPost, setEditingPost] = useState(null);
   const editorIdentity = JSON.stringify([user?.uid || '', authRevision, role, myClientId, isReadOnly]);
   const [editingIdentity, setEditingIdentity] = useState(null);
-  const [reviewingPost, setReviewingPost] = useState(null);
+  const { selection: reviewSelection, open: openReview, close: closeReview, isCurrent: isCurrentReview } = useReviewSelection({
+    user, authRevision, getAuthRevision, authLoading, role, clientId: myClientId,
+    sharedUid, shareClientId, isReadOnly, isOperator, isClientMember, posts, error: postsError,
+  });
+  const reviewingPost = reviewSelection?.post;
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
@@ -629,7 +634,8 @@ const App = () => {
     }
   }, [isReadOnly, showToast]);
 
-  const handleStatusChange = useCallback(async (postId, newStatus, reviewBaseline) => {
+  const handleStatusChange = useCallback(async (postId, newStatus, reviewBaseline, selectedReview) => {
+    if (selectedReview && !isCurrentReview(selectedReview)) return;
     // 🔒 SECURITY: Validate status enum
     if (!Object.values(STATUS).includes(newStatus)) return;
     if (isClientMember && !MEMBER_STATUS_OPTIONS.includes(newStatus)) return;
@@ -668,7 +674,10 @@ const App = () => {
           action: REVIEW_ACTION.APPROVE,
           actor: 'client',
         });
-        setReviewingPost(null);
+        if (selectedReview) {
+          if (!isCurrentReview(selectedReview)) return;
+          closeReview(selectedReview);
+        }
       } else {
         await updateDoc(doc(db, 'posts', postId), {
           status: newStatus,
@@ -677,6 +686,7 @@ const App = () => {
       }
       showToast(markApproved ? "Approved ✓" : `Status updated to ${newStatus}`);
     } catch (error) {
+      if (selectedReview && !isCurrentReview(selectedReview)) return;
       showToast(
         error?.code === 'review_conflict'
           ? 'This thread changed while you were reviewing it — refresh and try again'
@@ -684,7 +694,7 @@ const App = () => {
         "error",
       );
     }
-  }, [isReadOnly, isClientMember, showToast]);
+  }, [isReadOnly, isClientMember, showToast, isCurrentReview, closeReview]);
 
   // Commit previewed import rows. Rows are already sanitized by parseImportFile
   // (in ImportExportModal); here we attach ownership/timestamps and chunk to the
@@ -962,7 +972,8 @@ const App = () => {
     }
   }, [isReadOnly, isOperator, showToast]);
 
-  const handleRequestChanges = useCallback(async (postOrId, feedback) => {
+  const handleRequestChanges = useCallback(async (postOrId, feedback, selectedReview) => {
+    if (selectedReview && !isCurrentReview(selectedReview)) return;
     const baseline = typeof postOrId === 'object' && postOrId ? postOrId : null;
     const postId = baseline?.id || postOrId;
     // Validate without rewriting the reviewer's words. The Worker and broker
@@ -991,9 +1002,11 @@ const App = () => {
         feedback: exactFeedback,
         actor: (isReadOnly || isClientMember) ? 'client' : 'you',
       });
+      if (selectedReview && !isCurrentReview(selectedReview)) return;
       showToast("Feedback sent!");
-      setReviewingPost(null);
+      if (selectedReview) closeReview(selectedReview);
     } catch (error) {
+      if (selectedReview && !isCurrentReview(selectedReview)) return;
       console.error("Feedback Error:", error);
       showToast(error?.code === 'review_conflict'
         ? 'This thread changed while you were reviewing it — refresh and try again'
@@ -1001,7 +1014,7 @@ const App = () => {
           ? 'This feedback history is full — ask the operator to archive it'
           : "Failed to send feedback", "error");
     }
-  }, [isReadOnly, isClientMember, showToast]);
+  }, [isReadOnly, isClientMember, showToast, isCurrentReview, closeReview]);
 
   // --- Derived data ---
   // ⚡ Stabilize uniqueClients reference: derive from a hash string that only
@@ -1078,13 +1091,13 @@ const App = () => {
 
   const handleSelectPost = useCallback((p) => {
     if (isReadOnly) {
-      setReviewingPost(p);
+      openReview(p);
     } else {
       setEditingIdentity(editorIdentity);
       setEditingPost(p);
       setView('editor');
     }
-  }, [isReadOnly, editorIdentity]);
+  }, [isReadOnly, editorIdentity, openReview]);
 
   const handleDuplicatePost = useCallback((p) => {
     // Reset review state — a copy of an approved post is a fresh draft,
@@ -2057,11 +2070,12 @@ const App = () => {
       )}
       {reviewingPost && (
         <ReviewModal
+          key={reviewSelection.sequence}
           post={reviewingPost}
           clientSettings={clientMap[reviewingPost.client] || DEFAULT_CLIENT_SETTINGS}
-          onClose={() => setReviewingPost(null)}
-          onApprove={() => handleStatusChange(reviewingPost.id, STATUS.SCHEDULED, reviewingPost)}
-          onRequestChanges={(fb) => handleRequestChanges(reviewingPost, fb)}
+          onClose={() => closeReview(reviewSelection)}
+          onApprove={() => handleStatusChange(reviewingPost.id, STATUS.SCHEDULED, reviewingPost, reviewSelection)}
+          onRequestChanges={(fb) => handleRequestChanges(reviewingPost, fb, reviewSelection)}
           /* The modal is the CLIENT's review surface today; the flag keeps the
              feedback attribution resolved against the viewer, not the author. */
           viewerIsClient={isReadOnly}
