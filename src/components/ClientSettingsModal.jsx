@@ -1,15 +1,19 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { X, Upload, Trash2, Palette, Save, Sparkles, Users, ArrowRight } from 'lucide-react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { processImageFile } from '../utils/helpers';
 import { TONE_PRESETS } from '../constants';
 import useEscapeKey from '../hooks/useEscapeKey';
+import useAsyncRequest from '../hooks/useAsyncRequest';
 
 const AI_FIELD_MAX = 600;
 
-const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnly, onMergeClient, clientIdFor }) => {
-  useEscapeKey(onClose);
+// Prop-level workspace/permission changes start a fresh form and invalidate all
+// old requests. This is UI ownership, not a replacement for Firebase auth/rules.
+const ClientSettingsModal = (props) => <ClientSettingsForm key={JSON.stringify([props.uid, !!props.isReadOnly])} {...props} />;
+
+const ClientSettingsForm = ({ onClose, uniqueClients, clientMap, uid, isReadOnly, onMergeClient, clientIdFor }) => {
   const [selectedClient, setSelectedClient] = useState(uniqueClients[0] || '');
   const [newClientName, setNewClientName] = useState('');
   const [mergeTarget, setMergeTarget] = useState('');
@@ -33,8 +37,31 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
 
   const [isSaving, setIsSaving] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isProcessingLogo, setIsProcessingLogo] = useState(false);
+  const [error, setError] = useState('');
+  const saveBusy = useRef(false);
+  const logoBusy = useRef(false);
+  const logoRequests = useAsyncRequest(JSON.stringify([uid, selectedClient]));
+  const saveRequests = useAsyncRequest(uid);
+
+  const cancelLogo = () => {
+    logoRequests.cancel();
+    logoBusy.current = false;
+    setIsProcessingLogo(false);
+    setIsDragging(false);
+  };
+  const handleClose = () => {
+    logoRequests.cancel();
+    saveRequests.cancel();
+    // This only ignores late UI callbacks; it cannot cancel a submitted write.
+    onClose();
+  };
+  useEscapeKey(handleClose);
 
   const handleClientChange = (val) => {
+    if (saveBusy.current || isReadOnly) return;
+    cancelLogo();
+    setError('');
     setSelectedClient(val);
     setMergeTarget('');
     setConfirmMerge(false);
@@ -48,36 +75,43 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
     setAiAvoid(s.aiAvoid || '');
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      try {
-        const processedImage = await processImageFile(file);
-        setLogoUrl(processedImage);
-      } catch (err) {
-        console.error(err);
-        alert('Error processing image');
+  const processLogo = async (file) => {
+    if (saveBusy.current || isReadOnly || !file?.type.startsWith('image/')) return;
+    // A second image, a client switch or a removal supersedes the first result.
+    logoRequests.cancel();
+    const request = logoRequests.begin('logo');
+    if (!request) return;
+    logoBusy.current = true;
+    setIsProcessingLogo(true);
+    setError('');
+    try {
+      const processedImage = await processImageFile(file);
+      if (logoRequests.current(request)) setLogoUrl(processedImage);
+    } catch {
+      if (logoRequests.current(request)) setError('The logo could not be processed. Try another PNG or JPG image.');
+    } finally {
+      if (logoRequests.current(request)) {
+        logoBusy.current = false;
+        setIsProcessingLogo(false);
+        logoRequests.finish(request);
       }
     }
   };
 
-  const handleDrop = async (e) => {
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // Choosing the same file again should retry processing.
+    void processLogo(file);
+  };
+
+  const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      try {
-        const processedImage = await processImageFile(file);
-        setLogoUrl(processedImage);
-      } catch (err) {
-        console.error(err);
-        alert('Error processing image');
-      }
-    }
+    void processLogo(e.dataTransfer.files?.[0]);
   };
 
   const handleSave = async () => {
-    if (isReadOnly) return;
+    if (isReadOnly || saveBusy.current || logoBusy.current) return;
     const activeClient = (selectedClient === 'NEW' ? newClientName.trim() : selectedClient).replace(/\//g, '').slice(0, 50);
     if (!activeClient) return alert('Enter a valid client name');
     if (!uid) return alert('You must be signed in to save brand settings');
@@ -92,7 +126,11 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
     const safeTone = TONE_PRESETS.some(t => t.id === aiTone) ? aiTone : 'professional';
     const cap = (v) => (v || '').trim().slice(0, AI_FIELD_MAX);
 
+    const request = saveRequests.begin('save');
+    if (!request) return;
+    saveBusy.current = true;
     setIsSaving(true);
+    setError('');
     try {
       // 🔒 Per-user doc id keeps each workspace's branding isolated.
       const clientDocId = `${uid}__${encodeURIComponent(activeClient)}`;
@@ -110,12 +148,15 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
         aiKeywords: cap(aiKeywords),
         aiAvoid: cap(aiAvoid)
       }, { merge: true });
-      setIsSaving(false);
-      onClose();
-    } catch (err) {
-      console.error(err);
-      alert('Error saving client settings');
-      setIsSaving(false);
+      if (saveRequests.current(request)) handleClose();
+    } catch {
+      if (saveRequests.current(request)) setError('Spool could not confirm these settings were saved. Your changes are still here. Try saving again, or close and check the settings before retrying.');
+    } finally {
+      if (saveRequests.current(request)) {
+        saveBusy.current = false;
+        setIsSaving(false);
+        saveRequests.finish(request);
+      }
     }
   };
 
@@ -130,7 +171,8 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
             Client Brand Settings
           </h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
+            aria-label="Close brand settings"
             className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors"
           >
             <X size={20} />
@@ -138,10 +180,12 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
         </div>
 
         <div className="p-6 overflow-y-auto w-full">
+          <fieldset disabled={isSaving || isReadOnly} className="min-w-0">
           {/* Client Select */}
           <div className="mb-6">
-            <label className="block text-sm font-bold text-slate-700 mb-2">Select Client</label>
+            <label htmlFor="brand-client" className="block text-sm font-bold text-slate-700 mb-2">Select Client</label>
             <select
+              id="brand-client"
               value={selectedClient}
               onChange={(e) => handleClientChange(e.target.value)}
               className="w-full px-4 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all font-medium"
@@ -159,13 +203,14 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
 
           {selectedClient === 'NEW' && (
             <div className="mb-6">
-              <label className="block text-sm font-bold text-slate-700 mb-2">Client Name</label>
+              <label htmlFor="brand-client-name" className="block text-sm font-bold text-slate-700 mb-2">Client Name</label>
               <input
+                id="brand-client-name"
                 type="text"
                 placeholder="e.g. My Awesome Startup"
                 maxLength={50}
                 value={newClientName}
-                onChange={(e) => setNewClientName(e.target.value)}
+                onChange={(e) => { cancelLogo(); setError(''); setNewClientName(e.target.value); }}
                 className="w-full px-4 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all"
               />
             </div>
@@ -178,7 +223,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
               className={`w-full h-32 rounded-xl border-2 border-dashed flex items-center justify-center relative overflow-hidden transition-all ${
                 isDragging ? 'border-indigo-500 bg-indigo-50 scale-[1.02]' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'
               }`}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragOver={(e) => { e.preventDefault(); if (!saveBusy.current && !isReadOnly) setIsDragging(true); }}
               onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
               onDrop={handleDrop}
             >
@@ -190,13 +235,13 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
                   <p className={`text-xs font-medium ${isDragging ? 'text-indigo-600' : 'text-slate-500'}`}>
                     {isDragging ? 'Drop logo here' : 'Drop transparent PNG/JPG logo'}
                   </p>
-                  <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
+                  <input type="file" aria-label="Choose brand logo" className="hidden" accept="image/*" onChange={handleFileUpload} />
                 </label>
               ) : (
                 <div className="relative w-full h-full p-2 bg-slate-100 flex items-center justify-center">
                   <img src={logoUrl} className="max-w-full max-h-full object-contain" alt="Client Logo" />
                   <button
-                    onClick={() => setLogoUrl('')}
+                    onClick={() => { cancelLogo(); setLogoUrl(''); setError(''); }}
                     title="Remove Logo"
                     className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-full hover:bg-rose-600 transition-colors backdrop-blur-sm"
                   >
@@ -205,6 +250,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
                 </div>
               )}
             </div>
+            {isProcessingLogo && <p role="status" className="text-xs text-slate-500 mt-2">Processing logo… Wait before saving, or choose a different image.</p>}
           </div>
 
           {/* Color Picker */}
@@ -331,7 +377,7 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
                     </p>
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => { onMergeClient(selectedClient, target); onClose(); }}
+                        onClick={() => { onMergeClient(selectedClient, target); handleClose(); }}
                         className="px-3 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700"
                       >
                         Confirm
@@ -344,22 +390,27 @@ const ClientSettingsModal = ({ onClose, uniqueClients, clientMap, uid, isReadOnl
             </div>
           )}
 
+          </fieldset>
         </div>
 
-        <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3 rounded-b-2xl">
+        <div className="p-4 border-t border-slate-100 bg-slate-50 rounded-b-2xl">
+          {error && <p role="alert" className="text-sm text-rose-700 mb-3">{error}</p>}
+          {isSaving && <p role="status" className="text-xs text-slate-600 mb-3">Saving settings… Editing is paused. You can close this window; closing does not cancel the save.</p>}
+          <div className="flex flex-wrap items-center justify-end gap-3">
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="px-4 py-2 font-bold text-slate-500 hover:text-slate-700 text-sm transition-colors"
           >
-            Cancel
+            {isSaving ? 'Close' : 'Cancel'}
           </button>
           <button
             onClick={handleSave}
-            disabled={isSaving || (selectedClient === 'NEW' && !newClientName.trim()) || isReadOnly}
+            disabled={isSaving || isProcessingLogo || (selectedClient === 'NEW' && !newClientName.trim()) || isReadOnly}
             className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {isSaving ? <span className="animate-pulse">Saving...</span> : <><Save size={16}/> Save Brand Info</>}
           </button>
+          </div>
         </div>
       </div>
     </div>
