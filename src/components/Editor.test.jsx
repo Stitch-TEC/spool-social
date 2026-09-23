@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import Editor from './Editor';
 
@@ -19,6 +19,16 @@ const toLocalISOString = (date) => {
 };
 
 describe('Editor', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+  });
+
   it('defaults the schedule input to local time, not UTC', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-12T09:30:00'));
@@ -130,5 +140,130 @@ describe('Editor', () => {
     expect(screen.getByDisplayValue("Share a 'behind the scenes' photo of your workspace.")).toBeInTheDocument();
     // …and the unsaved client name survived (regression: SparkDeck used to reset the form).
     expect(clientInput.value).toBe('Acme Corp');
+  });
+
+  it('does not offer to save whitespace-only content', () => {
+    const onSave = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} post={{ id: 'empty', content: '   \n ', client: 'Acme' }} />);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('keeps edits and enables retry when saving rejects', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(new Error('Network unavailable')).mockResolvedValueOnce(true);
+    const showToast = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} showToast={showToast} post={{ id: 'retry', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Keep my changes' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Your edits are still here'), 'error'));
+    expect(screen.getByDisplayValue('Keep my changes')).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:retry')).content).toBe('Keep my changes');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(window.localStorage.getItem('spool:autosave:retry')).toBeNull());
+    fireEvent(window, new Event('pagehide'));
+    expect(window.localStorage.getItem('spool:autosave:retry')).toBeNull();
+  });
+
+  it('keeps a recovery copy when the save boundary reports failure', async () => {
+    const onSave = vi.fn().mockResolvedValue(false);
+    render(<Editor {...baseProps} onSave={onSave} post={{ id: 'failed', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Still unsaved' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('spool:autosave:failed')).content).toBe('Still unsaved'));
+    expect(screen.getByText('Unsaved')).toBeInTheDocument();
+  });
+
+  it('flushes the latest edits when a mobile app is hidden before the debounce', () => {
+    render(<Editor {...baseProps} post={{ id: 'hidden', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Before backgrounding' } });
+    expect(window.localStorage.getItem('spool:autosave:hidden')).toBeNull();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    fireEvent(document, new Event('visibilitychange'));
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:hidden')).content).toBe('Before backgrounding');
+  });
+
+  it('flushes on pagehide and removes lifecycle listeners when closed', () => {
+    const { unmount } = render(<Editor {...baseProps} post={{ id: 'leaving', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Recover me' } });
+    fireEvent(window, new Event('pagehide'));
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:leaving')).content).toBe('Recover me');
+    unmount();
+    window.localStorage.removeItem('spool:autosave:leaving');
+    fireEvent(window, new Event('pagehide'));
+    expect(window.localStorage.getItem('spool:autosave:leaving')).toBeNull();
+  });
+
+  it('confirms local recovery only after storing the latest edits', () => {
+    render(<Editor {...baseProps} post={{ id: 'close', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Latest edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByText(/A recovery copy was stored on this device/)).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:close')).content).toBe('Latest edit');
+  });
+
+  it('does not promise recovery when device storage is unavailable', () => {
+    render(<Editor {...baseProps} post={{ id: 'quota', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Do not lose this' } });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Quota exceeded', 'QuotaExceededError'); });
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByText(/could not store your latest edits for recovery/)).toBeInTheDocument();
+    expect(screen.queryByText(/A recovery copy was stored/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByDisplayValue('Do not lose this')).toBeInTheDocument();
+  });
+
+  it('updates the warning if storage stops working while discard is open', () => {
+    const onCancel = vi.fn();
+    render(<Editor {...baseProps} onCancel={onCancel} post={{ id: 'changing-storage', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Latest edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByText(/A recovery copy was stored on this device/)).toBeInTheDocument();
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage unavailable'); });
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByText(/could not store your latest edits for recovery/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not write recovery content for read-only viewers on background events', () => {
+    render(<Editor {...baseProps} isReadOnly post={{ id: 'readonly', content: 'Original', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Synthetic change' } });
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    fireEvent(document, new Event('visibilitychange'));
+    fireEvent(window, new Event('pagehide'));
+    expect(window.localStorage.getItem('spool:autosave:readonly')).toBeNull();
+  });
+
+  it('explains that a new image is excluded from local recovery', () => {
+    render(<Editor {...baseProps} post={{ id: 'image', content: 'Original', client: 'Acme', imageUrl: 'data:image/png;base64,c2FtcGxl' }} />);
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Image draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByText(/the new image is not included/)).toBeInTheDocument();
+    const saved = JSON.parse(window.localStorage.getItem('spool:autosave:image'));
+    expect(saved.content).toBe('Image draft');
+    expect(saved).not.toHaveProperty('imageUrl');
+  });
+
+  it('blocks duplicate saves but keeps the existing discard exit during a pending save', async () => {
+    let completeSave;
+    const onSave = vi.fn(() => new Promise(resolve => { completeSave = resolve; }));
+    const onCancel = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} onCancel={onCancel} post={{ id: 'pending', content: 'Ready', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Ready'), { target: { value: 'Ready to save' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('button', { name: 'Close Editor' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Saving...' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    completeSave(false);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
   });
 });
