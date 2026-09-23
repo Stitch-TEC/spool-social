@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import Editor from './Editor';
 
 const baseProps = {
@@ -89,7 +89,7 @@ describe('Editor', () => {
   });
 
   it('passes the editor-open client label and immutable ID to the atomic save boundary', async () => {
-    const onSave = vi.fn().mockResolvedValue(true);
+    const onSave = vi.fn(async form => ({ ok: true, post: { ...form } }));
     render(<Editor
       {...baseProps}
       onSave={onSave}
@@ -151,7 +151,8 @@ describe('Editor', () => {
   });
 
   it('keeps edits and enables retry when saving rejects', async () => {
-    const onSave = vi.fn().mockRejectedValueOnce(new Error('Network unavailable')).mockResolvedValueOnce(true);
+    const onSave = vi.fn().mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockImplementationOnce(async form => ({ ok: true, post: { ...form } }));
     const showToast = vi.fn();
     render(<Editor {...baseProps} onSave={onSave} showToast={showToast} post={{ id: 'retry', content: 'Original', client: 'Acme' }} />);
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Keep my changes' } });
@@ -263,7 +264,83 @@ describe('Editor', () => {
     expect(onCancel).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     expect(onCancel).toHaveBeenCalledTimes(1);
-    completeSave(false);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    await act(async () => completeSave(false));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains newer edits, migrates new-draft recovery and reuses the acknowledged ID', async () => {
+    let completeSave;
+    const onSave = vi.fn(() => new Promise(resolve => { completeSave = resolve; }));
+    const onCancel = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} onCancel={onCancel} initialClient="Acme" />);
+    const textarea = document.querySelector('textarea');
+    fireEvent.change(textarea, { target: { value: 'First version' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const submitted = onSave.mock.calls[0][0];
+    fireEvent.change(textarea, { target: { value: 'Newer version' } });
+    const savedPost = { ...submitted, id: 'created-1', clientId: 'acme', status: 'draft' };
+    await act(async () => completeSave({ ok: true, post: savedPost }));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('Newer version')).toBeInTheDocument();
+    expect(screen.getByText('Edit Thread')).toBeInTheDocument();
+    expect(window.localStorage.getItem('spool:autosave:new')).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:created-1')).content).toBe('Newer version');
+    fireEvent.change(textarea, { target: { value: 'Latest background edit' } });
+    fireEvent(window, new Event('pagehide'));
+    expect(window.localStorage.getItem('spool:autosave:new')).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:created-1')).content).toBe('Latest background edit');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSave.mock.calls[1]).toEqual([
+      expect.objectContaining({ id: 'created-1', content: 'Latest background edit' }),
+      expect.objectContaining({ savedPost, baselineClientId: 'acme', baselineStatus: 'draft' }),
+    ]);
+    await act(async () => completeSave({ ok: true, post: onSave.mock.calls[1][0] }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('spool:autosave:created-1')).toBeNull();
+  });
+
+  it('preserves an edit queued in the same React batch as the save acknowledgement', async () => {
+    let completeSave;
+    const onSave = vi.fn(() => new Promise(resolve => { completeSave = resolve; }));
+    const onCancel = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} onCancel={onCancel} post={{ id: 'batched', content: 'Original', client: 'Acme' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await act(async () => {
+      fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Queued update' } });
+      completeSave({ ok: true, post: onSave.mock.calls[0][0] });
+    });
+    expect(screen.getByDisplayValue('Queued update')).toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:batched')).content).toBe('Queued update');
+  });
+
+  it('keeps the latest edits when a pending save fails', async () => {
+    let failSave;
+    const onSave = vi.fn(() => new Promise((_resolve, reject) => { failSave = reject; }));
+    render(<Editor {...baseProps} onSave={onSave} post={{ id: 'latest-failure', content: 'Original', client: 'Acme' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Typed after saving' } });
+    await act(async () => failSave(new Error('Offline')));
+    expect(screen.getByDisplayValue('Typed after saving')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(JSON.parse(window.localStorage.getItem('spool:autosave:latest-failure')).content).toBe('Typed after saving');
+  });
+
+  it('does not reload the original post when a client-name refresh follows an acknowledged save', async () => {
+    let completeSave;
+    const onSave = vi.fn(() => new Promise(resolve => { completeSave = resolve; }));
+    const original = { id: 'renamed', client: 'Acme', clientId: 'acme', status: 'draft', content: 'Original' };
+    const props = { ...baseProps, onSave, post: original, initialClient: 'Acme', clientLocked: true };
+    const { rerender } = render(<Editor {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Still editing' } });
+    const committed = { ...onSave.mock.calls[0][0], client: 'Acme renamed', status: 'scheduled' };
+    await act(async () => completeSave({ ok: true, post: committed }));
+    rerender(<Editor {...props} initialClient="Acme renamed" />);
+    expect(screen.getByDisplayValue('Still editing')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Acme renamed')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSave.mock.calls[1][1]).toMatchObject({ baselineClient: 'Acme renamed', baselineStatus: 'scheduled', savedPost: committed });
+    await act(async () => completeSave(false));
   });
 });

@@ -73,6 +73,9 @@ describe('saveExistingPostAtomically', () => {
     expect(written).not.toHaveProperty('feedbackThread');
     expect(written).not.toHaveProperty('reviewStage');
     expect(written).not.toHaveProperty('status');
+    expect(result.savedPost).toMatchObject({ id: 'p1', content: 'Approved copy',
+      imageUrl: '/media/v2/generated/o/hash.png', status: 'scheduled',
+      approvalStatus: 'approved', feedback: 'Live client note', reviewStage: 'in_review' });
   });
 
   it('omits read-time v1→v2 media and derived-slug representations from the actual member save patch', async () => {
@@ -153,6 +156,10 @@ describe('saveExistingPostAtomically', () => {
     expect(Date.parse(retriedPatch.updatedAt)).toBeGreaterThan(Date.parse('2099-01-01T00:00:00.000Z'));
     expect(retriedPatch).not.toHaveProperty('feedback');
     expect(retriedPatch).not.toHaveProperty('feedbackThread');
+    expect(result.savedPost).toMatchObject({ id: 'p1', content: 'Changed copy',
+      approvalStatus: 'pending', feedback: 'Arrived during save',
+      feedbackThread: [{ text: 'Arrived during save', by: 'client' }] });
+    expect(result.savedPost.updatedAt).toBe(retriedPatch.updatedAt);
   });
 
   it('clears a live approval when the actual save wrapper changes platform', async () => {
