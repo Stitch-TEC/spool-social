@@ -147,9 +147,7 @@ describe('App and Editor save lifecycle', () => {
   it('closes the old editor on account change and never restores its recovery into a client member', async () => {
     const app = render(<App />);
     await openNew('Operator-only Acme work');
-    fireEvent.pageHide(window);
-    const saved = window.localStorage.getItem(recoveryKey('new'));
-    expect(saved).toContain('Operator-only Acme work');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBeNull();
     // Cross-tab auth update while the editor is mounted; no navigation/reload.
     state.auth = { user: { uid: 'beta-member', email: 'beta@example.test' }, authLoading: false, isReadOnly: false, isOperator: false, isClientMember: true, role: 'client', clientId: 'beta' };
     state.posts = [];
@@ -157,6 +155,8 @@ describe('App and Editor save lifecycle', () => {
     state.clients = [];
     app.rerender(<App />);
     expect(screen.queryByText('New Thread')).not.toBeInTheDocument();
+    const saved = window.localStorage.getItem(recoveryKey('new'));
+    expect(saved).toContain('Operator-only Acme work');
     fireEvent.click(screen.getByRole('button', { name: 'New test thread' }));
     await screen.findByText('New Thread');
     expect(editorContent()).toHaveValue('');

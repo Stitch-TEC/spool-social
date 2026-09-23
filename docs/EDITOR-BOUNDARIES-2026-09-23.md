@@ -24,6 +24,8 @@ results replacing work after a client/platform change or cancellation.
   migrate to their own scoped slot only after successful storage.
 - App editor sessions are bound to the opening UID/role/tenant. A principal or
   authorization change unmounts the old editor, including cross-tab sign-out.
+  Unmount flushes its latest dirty work to that old session's scoped local copy
+  where storage is available, even inside the debounce window; no remote save.
   Authentication clears old authorization while resolving a new account and
   ignores out-of-order role lookups.
 

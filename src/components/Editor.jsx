@@ -136,7 +136,15 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const editorAliveRef = useRef(true);
   useEffect(() => {
     editorAliveRef.current = true;
-    return () => { editorAliveRef.current = false; };
+    return () => {
+      // An auth transition can unmount us before the debounce or pagehide.
+      // Preserve latest work only under THIS editor's already-verified scope;
+      // never save remotely or leave it for the incoming account to restore.
+      writeAutosaveNow();
+      editorAliveRef.current = false;
+    };
+    // The flush reads latest work/scope refs; it must run for the old session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openingPrincipal = useRef(recoveryPrincipalId);

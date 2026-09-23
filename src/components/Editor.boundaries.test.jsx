@@ -39,9 +39,9 @@ describe('Editor account/client recovery and asynchronous generation boundaries'
     const alpha = render(<Editor {...propsFor()} />);
     changeText('Alpha private work');
     fireEvent.pageHide(window);
+    alpha.unmount();
     const saved = localStorage.getItem(scope().key);
     expect(saved).toContain('Alpha private work');
-    alpha.unmount();
     const beta = render(<Editor {...propsFor('beta-member')} initialClient="Beta" clientLocked />);
     expect(screen.queryByRole('button', { name: 'Restore', exact: true })).not.toBeInTheDocument();
     expect(text()).toHaveValue('');
