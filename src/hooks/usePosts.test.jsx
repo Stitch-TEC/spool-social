@@ -38,8 +38,11 @@ describe('usePosts scheduled-date read compatibility', () => {
   });
 
   it('loads legacy local-minute and malformed rows without taking down the signed-in snapshot', async () => {
+    // Firebase supplies one stable User object for this session. A replacement
+    // object is deliberately treated as a new subscription owner by the hook.
+    const user = { uid: 'owner' };
     const { result } = renderHook(() => usePosts(
-      { uid: 'owner' }, null, null, null, true,
+      user, null, null, null, true,
     ));
 
     await waitFor(() => expect(firestore.subscriptions).toHaveLength(2));

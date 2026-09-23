@@ -14,6 +14,7 @@ import SenderEmailPreview from './SenderEmailPreview';
 import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import ConfirmModal from './ConfirmModal';
+import SaveRecoveryHelp from './SaveRecoveryHelp';
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
 import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
@@ -94,6 +95,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const inlineRangeRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCheckingPreviousSave, setIsCheckingPreviousSave] = useState(false);
   const savingRef = useRef(false);
   const lastSavedPost = useRef(null);
   const initializedForm = useRef(false);
@@ -555,7 +557,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       writeAutosaveNow();
       showToast?.(remoteConfirmed
         ? `Spool confirmed the save, but device recovery needs review. ${error.message || 'Keep this editor open and copy your text.'}`
-        : 'Could not save this thread. Your edits are still here — please try again.', 'error');
+        : newCreateSession
+          ? 'Spool could not confirm this save. Keep your text and follow the recovery message below; use Check previous save if offered.'
+          : 'Could not save this thread. Your edits are still here — please try again.', 'error');
     } finally {
       savingRef.current = false;
       if (editorAliveRef.current) setIsSaving(false);
@@ -566,6 +570,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (savingRef.current) return;
     savingRef.current = true;
     setIsSaving(true);
+    setIsCheckingPreviousSave(true);
     try {
       const result = await createRecovery.check();
       if (!editorAliveRef.current) return;
@@ -575,7 +580,25 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       setFormData(next.form);
       showToast?.('Previous save confirmed. Review your work here; Save will update that same thread.', 'success');
     } catch (error) { if (editorAliveRef.current) showToast?.(error.message, 'error'); }
-    finally { savingRef.current = false; if (editorAliveRef.current) setIsSaving(false); }
+    finally {
+      savingRef.current = false;
+      if (editorAliveRef.current) { setIsSaving(false); setIsCheckingPreviousSave(false); }
+    }
+  };
+
+  const copyRecoveryText = async () => {
+    const user = getRecoveryUser?.();
+    const key = scopeRef.current?.key;
+    const current = () => editorAliveRef.current && user && !user.isAnonymous
+      && getRecoveryUser?.() === user && scopeRef.current?.key === key;
+    const text = formDataRef.current.content;
+    if (!current() || !text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (current()) showToast?.('Text copied. Images and settings are not included.', 'success');
+    } catch {
+      if (current()) showToast?.('Copy is unavailable here. Select the text in the editor and copy it manually.', 'error');
+    }
   };
 
   // Wholesale content replacement (AI draft/improve, Spark Deck). One click
@@ -694,7 +717,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
               className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
             >
                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
-               <span>{isSaving ? 'Saving...' : 'Save'}</span>
+               <span>{isCheckingPreviousSave ? 'Checking…' : isSaving ? 'Saving...' : 'Save'}</span>
             </button>
           </div>
         </div>
@@ -710,13 +733,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                   const work = createRecovery.restore();
                   if (work) setFormData(prev => ({ ...prev, ...work, client: prev.client }));
                 }}>Restore previous work</button>}
-                {createRecovery.restored && ['submitted', 'confirmed'].includes(createRecovery.record?.state) && <button type="button" disabled={isSaving} onClick={checkPreviousSave} className="px-3 py-2 rounded-full bg-amber-700 text-white text-xs font-bold disabled:opacity-50">Check previous save</button>}
+                {createRecovery.restored && ['submitted', 'confirmed'].includes(createRecovery.record?.state) && <button type="button" disabled={isSaving} onClick={checkPreviousSave} className="px-3 py-2 rounded-full bg-amber-700 text-white text-xs font-bold disabled:opacity-50">{isCheckingPreviousSave ? 'Checking previous save…' : 'Check previous save'}</button>}
                 {createRecovery.record?.state === 'draft' && <button type="button" disabled={isSaving} onClick={() => setShowDiscardUnsent(true)} className="px-3 py-2 rounded-full border border-amber-700 text-xs font-bold">Discard unsent recovery</button>}
-                <button type="button" className="px-3 py-2 rounded-full border border-amber-700 text-xs font-bold" onClick={async () => {
-                  try { await navigator.clipboard.writeText(formDataRef.current.content); showToast?.('Text copied. Images and settings are not included.', 'success'); }
-                  catch { showToast?.('Copy is unavailable here. Select the text in the editor and copy it manually.', 'error'); }
-                }}>Copy text</button>
+                <button type="button" disabled={!formData.content.trim()} className="px-3 py-2 rounded-full border border-amber-700 text-xs font-bold disabled:opacity-50" onClick={copyRecoveryText}>Copy text</button>
               </div>
+              <SaveRecoveryHelp record={createRecovery.record} scope={newScope} principalId={recoveryPrincipalId} projectId={recoveryProjectId} getUser={getRecoveryUser} />
             </div>
           )}
           {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
