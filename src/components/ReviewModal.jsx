@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
 import CharCountCircle from './CharCountCircle';
@@ -24,7 +24,48 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
   const [feedback, setFeedback] = useState('');
   const [mode, setMode] = useState('view');
   const [activeTags, setActiveTags] = useState([]);
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  const feedbackHeadingRef = useRef(null);
   useEscapeKey(onClose);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    const focusClose = () => closeRef.current?.focus();
+    const containFocus = (event) => {
+      if (!dialog.contains(event.target)) focusClose();
+    };
+    const wrapTab = (event) => {
+      if (event.key !== 'Tab') return;
+      const controls = [...dialog.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+        .filter((element) => element.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first) { event.preventDefault(); focusClose(); return; }
+      const current = document.activeElement;
+      if (event.shiftKey && (current === first || !controls.includes(current))) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (current === last || !dialog.contains(current))) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    focusClose();
+    document.addEventListener('focusin', containFocus);
+    document.addEventListener('keydown', wrapTab);
+    return () => {
+      document.removeEventListener('focusin', containFocus);
+      document.removeEventListener('keydown', wrapTab);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, []);
+
+  useEffect(() => {
+    // Announce the new panel without opening the phone's keyboard automatically.
+    // Mode switches remove the triggering button, so keep focus in the dialog.
+    if (mode === 'reject') feedbackHeadingRef.current?.focus();
+    else closeRef.current?.focus();
+  }, [mode]);
 
   // Prior review rounds (newest last). Falls back to the legacy single `feedback`
   // field for posts created before threaded history existed.
@@ -47,26 +88,22 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
   };
   
   return (
-    <div role="dialog" aria-modal="true" aria-label="Review Thread" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-2 sm:p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] sm:h-[90vh] flex flex-col md:flex-row overflow-hidden animate-in fade-in zoom-in">
-        <div className="flex-1 bg-slate-100 p-4 sm:p-8 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto">
-             <div className="scale-75 sm:scale-90 md:scale-100 origin-center">
-                <MobilePreview post={post} clientSettings={clientSettings} />
-             </div>
-        </div>
-        <div className="flex-1 flex flex-col bg-white">
-          <div className="p-6 border-b border-slate-100 flex justify-between items-start">
-            <div>
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Review Thread" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-2 sm:p-4">
+      {/* Mobile has ONE natural scroller. A transformed 600px phone preview must
+          not determine the review pane's minimum height and clip its controls. */}
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[95vh] supports-[height:100dvh]:h-[95dvh] sm:h-[90vh] sm:supports-[height:100dvh]:h-[90dvh] md:[@media(min-height:30rem)]:grid md:grid-cols-2 md:grid-rows-[auto_minmax(0,1fr)_auto] overflow-y-auto md:[@media(min-height:30rem)]:overflow-hidden overscroll-contain [overflow-wrap:anywhere] animate-in fade-in zoom-in">
+          <div className="md:col-start-2 md:row-start-1 min-w-0 p-4 sm:p-6 border-b border-slate-100 flex justify-between items-start gap-2">
+            <div className="min-w-0">
               <h3 className="text-xl font-bold text-slate-800">Review Thread</h3>
               {/* ⚡ OPTIMIZATION: Use pre-compiled Intl.DateTimeFormat for faster formatting. */}
               <p className="text-sm text-slate-500">
                 Schedule (workflow only): {post.scheduledDate ? DATE_FORMATTERS.full.format(post.scheduledDate instanceof Date ? post.scheduledDate : new Date(post.scheduledDate)) : 'No date set'}
               </p>
             </div>
-            <button onClick={onClose} title="Close Review" aria-label="Close Review" className="p-2 hover:bg-slate-100 rounded-full"><X size={20} className="text-slate-400" /></button>
+            <button ref={closeRef} onClick={onClose} title="Close Review" aria-label="Close Review" className="w-11 h-11 shrink-0 flex items-center justify-center hover:bg-slate-100 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"><X size={20} className="text-slate-500" /></button>
           </div>
 
-          <div className="p-6 flex-1 overflow-y-auto">
+          <div className="md:col-start-2 md:row-start-2 p-4 sm:p-6 min-h-0 min-w-0 md:overflow-y-auto">
              {mode === 'view' ? (
                <div className="space-y-6">
                  <div>
@@ -128,7 +165,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                <div className="space-y-4 animate-in slide-in-from-right-4 duration-200">
                  <div className="flex items-center gap-2 text-rose-600 font-bold">
                     <AlertCircle size={20} />
-                    <h3>Request Changes</h3>
+                    <h3 ref={feedbackHeadingRef} tabIndex={-1}>Request Changes</h3>
                  </div>
                  <div className="flex flex-wrap gap-2">
                     {feedbackTags.map(tag => (
@@ -136,7 +173,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                         key={tag}
                         onClick={() => toggleTag(tag)}
                         aria-pressed={activeTags.includes(tag)}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                        className={`min-h-11 px-3 py-2 text-xs font-medium rounded-full border transition-all ${activeTags.includes(tag) ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
                       >
                         {tag}
                       </button>
@@ -172,23 +209,31 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                </div>
              )}
           </div>
-          <div className="p-6 border-t border-slate-100 bg-slate-50/50">
+          {/* The one full preview precedes approval in mobile reading order; on
+              desktop it spans the left column beside the review controls. */}
+          <div className="md:col-start-1 md:row-start-1 md:row-span-3 min-h-0 min-w-0 bg-slate-100 p-4 sm:p-8 flex items-start justify-center border-t md:border-t-0 md:border-r border-slate-200 md:overflow-y-auto">
+            <div className="relative shrink-0 w-[225px] h-[450px] sm:w-[270px] sm:h-[540px] md:w-[300px] md:h-[600px]">
+              <div className="absolute left-0 top-0 scale-75 sm:scale-90 md:scale-100 origin-top-left">
+                <MobilePreview post={post} clientSettings={clientSettings} />
+              </div>
+            </div>
+          </div>
+          <div className="md:col-start-2 md:row-start-3 min-w-0 p-4 sm:p-6 border-t border-slate-100 bg-slate-50/50">
             {isArchived && (
               <p className="mb-3 text-sm text-slate-600 text-center">This thread is archived and can’t be approved or sent back for changes.</p>
             )}
             {mode === 'view' ? (
-              <div className="flex gap-4">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button disabled={isArchived} onClick={() => setMode('reject')} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"><ThumbsDown size={18}/> Request Changes</button>
                 <button disabled={isArchived} onClick={onApprove} className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle size={18}/> Approve Thread</button>
               </div>
             ) : (
-              <div className="flex gap-4">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button onClick={() => setMode('view')} className="px-6 py-3 text-slate-500 font-medium hover:text-slate-700 transition-colors">Cancel</button>
                 <button disabled={!composedFeedback.valid} onClick={handleSubmit} className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-600/20 disabled:opacity-50 disabled:cursor-not-allowed">Submit Feedback</button>
               </div>
             )}
           </div>
-        </div>
       </div>
     </div>
   );

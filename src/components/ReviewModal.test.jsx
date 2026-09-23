@@ -131,3 +131,67 @@ describe('ReviewModal — review actions', () => {
     expect(onRequestChanges).toHaveBeenCalledWith('  Keep this!  ');
   });
 });
+
+describe('ReviewModal — mobile dialog keyboard lifecycle', () => {
+  it('starts on Close, contains outside focus, and restores the opener on unmount', () => {
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    const { unmount } = render(<ReviewModal post={post} onApprove={noop} onRequestChanges={noop} onClose={noop} />);
+    expect(screen.getByRole('button', { name: 'Close Review' })).toHaveFocus();
+    opener.focus();
+    expect(screen.getByRole('button', { name: 'Close Review' })).toHaveFocus();
+    unmount();
+    expect(opener).toHaveFocus();
+    opener.remove();
+  });
+
+  it('wraps Tab and Shift+Tab without visiting the background', () => {
+    // jsdom has no layout; actual visibility/scrolling is covered in WebKit and Chromium.
+    const visible = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([{}]);
+    try {
+      render(<ReviewModal post={post} onApprove={noop} onRequestChanges={noop} onClose={noop} />);
+      const close = screen.getByRole('button', { name: 'Close Review' });
+      const approve = screen.getByRole('button', { name: 'Approve Thread' });
+      close.focus();
+      fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+      expect(approve).toHaveFocus();
+      fireEvent.keyDown(document, { key: 'Tab' });
+      expect(close).toHaveFocus();
+    } finally { visible.mockRestore(); }
+  });
+
+  it('moves focus to the feedback heading, not the keyboard-opening textarea, and back on Cancel', () => {
+    render(<ReviewModal post={post} onApprove={noop} onRequestChanges={noop} onClose={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Request Changes' }));
+    expect(screen.getByRole('heading', { name: 'Request Changes' })).toHaveFocus();
+    expect(screen.getByRole('textbox', { name: 'Specific feedback' })).not.toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Close Review' })).toHaveFocus();
+  });
+
+  it('preserves feedback through Cancel and does not submit merely by changing focus or pressing Escape', () => {
+    const onApprove = vi.fn(), onRequestChanges = vi.fn(), onClose = vi.fn();
+    render(<ReviewModal post={post} onApprove={onApprove} onRequestChanges={onRequestChanges} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Request Changes' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Request Changes' }));
+    expect(screen.getByRole('textbox')).toHaveValue('Keep my note');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onRequestChanges).not.toHaveBeenCalled();
+  });
+
+  it('keeps the full preview and image before approval in document order', () => {
+    render(<ReviewModal post={{ ...post, imageUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>' }} onApprove={noop} onRequestChanges={noop} onClose={noop} />);
+    const approve = screen.getByRole('button', { name: 'Approve Thread' });
+    const preview = screen.getByRole('button', { name: 'Learn More' });
+    const image = screen.getByRole('img', { name: post.altText });
+    expect(preview.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(image.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText('Posted on Google')).toBeInTheDocument();
+    expect(screen.getAllByText(post.content)).toHaveLength(2);
+  });
+});
