@@ -19,6 +19,7 @@ import { processImageFile } from '../utils/helpers';
 import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
 import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
+import { EDITOR_WORK_FIELDS as WORK_FIELDS, editorWorkSignature as workSignature, reconcileEditorSave } from '../utils/editorSaveState';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -30,12 +31,6 @@ const toLocalISOString = (date) => {
 // Platform-aware modifier: on macOS the shortcuts bind to ⌘ ONLY — Ctrl+B/K in
 // a Mac textarea are native Cocoa caret/kill bindings that must keep working.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iP(hone|od|ad)/i.test(navigator.platform || '');
-
-// Fields that count as "the operator's work" for the unsaved-changes guard and
-// the local autosave. (Derived/readonly fields like source/approvalStatus are
-// deliberately excluded — they change underneath the operator without them typing.)
-const WORK_FIELDS = ['platform', 'content', 'title', 'altText', 'metaDescription', 'client', 'imageUrl', 'scheduledDate', 'status', 'tags', 'isTemplate'];
-const workSignature = (fd) => JSON.stringify(WORK_FIELDS.map((k) => fd[k]));
 
 // Static class strings so Tailwind's JIT can detect them (dynamic `border-${x}` is purged).
 const PLATFORM_ACTIVE_CLASSES = {
@@ -67,7 +62,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       || (name ? (clientIdFor ? clientIdFor(name) : slugifyClientId(name)) : '')
   );
 
-  const [formData, setFormData] = useState({
+  const [formData, setFormDataState] = useState({
     platform: 'gmb',
     content: '',
     title: '',
@@ -95,6 +90,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const inlineRangeRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const lastSavedPost = useRef(null);
+  const initializedForm = useRef(false);
   const [altLoading, setAltLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
@@ -119,6 +117,16 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // handlers are mounted once and must still snapshot CURRENT values.
   const formDataRef = useRef(formData);
   formDataRef.current = formData;
+  // Async image/AI replies and a save acknowledgement can arrive in the same
+  // React batch. Mirror updates synchronously so reconciliation includes work
+  // already queued for rendering, not only the last painted form.
+  const setFormData = (update) => {
+    const next = typeof update === 'function' ? update(formDataRef.current) : update;
+    formDataRef.current = next;
+    contentRef.current = next.content;
+    isDirtyRef.current = workSignature(next) !== workSignature(pristineRef.current);
+    setFormDataState(next);
+  };
 
   // The Restore toast outlives this editor (the Toast is App-owned) — its
   // action must know whether there is still an editor to restore into.
@@ -132,7 +140,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // "new" flows (New Thread vs New Template) so recovery can't offer a draft
   // from the other flow. Not per-client on purpose: the point is crash/mis-click
   // recovery of the LAST thing being written, not a drafts system.
-  const autosaveKey = `spool:autosave:${post?.id || (post?.isTemplate ? 'new-template' : 'new')}`;
+  const initialAutosaveKey = `spool:autosave:${post?.id || (post?.isTemplate ? 'new-template' : 'new')}`;
+  const autosaveKeyRef = useRef(initialAutosaveKey);
   // Bumped by clearAutosave so an in-flight debounced write can't resurrect a
   // snapshot that a successful save just removed.
   const autosaveGenRef = useRef(0);
@@ -227,6 +236,11 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   };
 
   useEffect(() => {
+    // App opens a fresh Editor for each editing session. A roster/listener
+    // refresh may change initialClient during that session; it must not reload
+    // the original post over newer work or an acknowledged save baseline.
+    if (initializedForm.current) return;
+    initializedForm.current = true;
     if (post) {
       let safeDateString = toLocalISOString(new Date()); // Default to now (local time)
       
@@ -280,7 +294,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // the localStorage budget, and omitting means a restore leaves whatever image
   // the post currently has untouched.
   const writeAutosaveNow = () => {
-    if (isReadOnly || !isDirtyRef.current) return null;
+    if (!editorAliveRef.current || isReadOnly || !isDirtyRef.current) return null;
     const fd = formDataRef.current;
     const snap = {};
     for (const k of WORK_FIELDS) snap[k] = fd[k];
@@ -288,14 +302,14 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     if (imageOmitted) delete snap.imageUrl;
     snap.savedAt = Date.now();
     try {
-      window.localStorage.setItem(autosaveKey, JSON.stringify(snap));
+      window.localStorage.setItem(autosaveKeyRef.current, JSON.stringify(snap));
       return { imageOmitted };
     } catch { return null; /* quota/private mode */ }
   };
 
   const clearAutosave = () => {
     autosaveGenRef.current += 1; // invalidate any pending debounced write
-    try { window.localStorage?.removeItem(autosaveKey); } catch { /* private mode */ }
+    try { window.localStorage?.removeItem(autosaveKeyRef.current); } catch { /* private mode */ }
   };
 
   // Mobile Safari may suspend an installed app without firing beforeunload.
@@ -321,7 +335,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-    // writeAutosaveNow reads only refs + the stable autosaveKey — safe to mount once.
+    // writeAutosaveNow reads the latest form and recovery-key refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -334,7 +348,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // so pristineRef holds the loaded post when this runs.
   useEffect(() => {
     let saved = null;
-    try { saved = JSON.parse(window.localStorage?.getItem(autosaveKey) || 'null'); } catch { saved = null; }
+    try { saved = JSON.parse(window.localStorage?.getItem(autosaveKeyRef.current) || 'null'); } catch { saved = null; }
     if (!saved || typeof saved !== 'object' || typeof saved.content !== 'string') return;
     const pristine = pristineRef.current || {};
     const matchesLoaded = WORK_FIELDS.every((k) => {
@@ -348,9 +362,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       return;
     }
     setRecovered(saved);
-    // Keyed by the autosave slot: post identity is fixed for the life of this editor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autosaveKey]);
+    // Read recovery only on open. A newly acknowledged save changes the slot
+    // directly; it must not reload an older recovery copy over current edits.
+  }, []);
 
   // Debounced write while dirty; the generation check keeps a timer that was
   // already queued when clearAutosave ran from resurrecting a stale snapshot.
@@ -363,7 +377,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formData, isDirty, isReadOnly, autosaveKey]);
+  }, [formData, isDirty, isReadOnly]);
 
   const restoreRecovered = () => {
     if (!recovered) return;
@@ -402,17 +416,18 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   );
 
   const handleSaveWrapper = async () => {
-    if (isReadOnly || isOverLimit || !formData.content.trim() || isSaving) return;
+    if (isReadOnly || isOverLimit || !formData.content.trim() || savingRef.current) return;
+    savingRef.current = true;
     setIsSaving(true);
     try {
-      // onSave returns true only when the write actually happened (validation
-      // failures toast and return false) — only then is the local autosave
-      // safety net obsolete.
+      // Keep the exact submitted snapshot while newer typing/AI/image work may
+      // continue. Only the committed response can supply a new post's real ID.
       // Carry the value that was loaded into the editor separately from the
       // submitted value. The transactional save can then distinguish an
       // intentional workflow-status edit from a client approval that advanced
       // status concurrently while this editor was open.
-      const ok = await onSave(formData, {
+      const result = await onSave(formData, {
+        ...(lastSavedPost.current ? { savedPost: lastSavedPost.current } : {}),
         baselineStatus: pristineRef.current?.status,
         // Tenant intent needs the editor-open baseline just like workflow
         // status. postsRef may advance while the editor is open, so deriving
@@ -421,18 +436,36 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         baselineClientId: pristineRef.current?.clientId,
         baselineClient: pristineRef.current?.client,
       });
-      if (ok === true) {
-        pristineRef.current = formData;
+      if (!editorAliveRef.current) return;
+      if (result?.ok === true) {
+        const next = reconcileEditorSave(formData, formDataRef.current, result.post);
+        lastSavedPost.current = result.post;
+        pristineRef.current = next.baseline;
+        // Retire the old "new" slot only after the create is acknowledged.
+        // Later saves now update that same ID even before the listener catches up.
         clearAutosave();
-        isDirtyRef.current = workSignature(formDataRef.current) !== workSignature(formData);
+        autosaveKeyRef.current = `spool:autosave:${result.post.id}`;
+        formDataRef.current = next.form;
+        isDirtyRef.current = next.dirty;
+        setFormData(next.form);
+        setRecovered(null);
+        if (next.dirty) {
+          writeAutosaveNow();
+          showToast?.('Saved the earlier version. Your newer edits are still here — save again when ready.', 'success');
+        } else {
+          editorAliveRef.current = false;
+          onCancel();
+        }
       } else {
         writeAutosaveNow();
       }
     } catch {
+      if (!editorAliveRef.current) return;
       writeAutosaveNow();
       showToast?.('Could not save this thread. Your edits are still here — please try again.', 'error');
     } finally {
-      setIsSaving(false);
+      savingRef.current = false;
+      if (editorAliveRef.current) setIsSaving(false);
     }
   };
 
@@ -465,7 +498,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       setDiscardRecovery(writeAutosaveNow());
       setShowDiscardConfirm(true);
     }
-    else onCancel();
+    else { editorAliveRef.current = false; onCancel(); }
   };
 
   // Long-form drafts grow the textarea with the content (the surrounding pane
@@ -523,7 +556,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex flex-wrap items-center gap-2 min-w-0">
              <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
-             <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
+             <h2 className="font-bold text-slate-800 text-lg">{formData.id ? 'Edit Thread' : 'New Thread'}</h2>
              {isDirty && !isReadOnly && (
                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 uppercase tracking-wider" title="You have unsaved changes">
                  Unsaved
@@ -1025,6 +1058,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
               return;
             }
             setShowDiscardConfirm(false);
+            editorAliveRef.current = false;
             onCancel();
           }}
         />

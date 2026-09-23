@@ -278,7 +278,11 @@ const App = () => {
     // member EDIT, reuse the post's stored `client` so it can't drift from
     // resource.data.client (the posts update rule requires that field unchanged,
     // and the branding display name may differ from the stored value).
-    const existingPost = formData.id ? postsRef.current.find(p => p.id === formData.id) : null;
+    const existingPost = formData.id
+      ? (saveContext.savedPost?.id === formData.id
+        ? saveContext.savedPost
+        : postsRef.current.find(p => p.id === formData.id))
+      : null;
     const client = isClientMember
       ? (existingPost ? existingPost.client : (myClientName || myClientId))
       : (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
@@ -292,8 +296,8 @@ const App = () => {
       .map(tag => String(tag).trim().slice(0, 20))
       .filter(Boolean);
 
-    // Returns true only on a real write — the Editor keeps its local autosave
-    // safety net alive until then (validation failures toast and return false).
+    // Return the committed identity/baseline only after a real write. The Editor
+    // owns navigation; a slow save must not close a different/newer editor.
     if (!client) { showToast("Client name is required", "error"); return false; }
     if (!content) { showToast("Content cannot be empty", "error"); return false; }
     // X/Twitter enforces its WEIGHTED count (URLs = 23, emoji/CJK = 2) — the
@@ -426,6 +430,7 @@ const App = () => {
         updatedAt: new Date().toISOString()
       };
 
+      let savedPost;
       if (formData.id) {
         // Read approval from Firestore inside the transaction, not postsRef or
         // formData. A concurrent approve/feedback write makes the transaction
@@ -433,7 +438,7 @@ const App = () => {
         // editor patch. Approval is reset only against the live approved payload;
         // an intentional tenant move derives a full private/pending review reset
         // from that same live transaction.
-        const { approvalReset, tenantReset } = await saveExistingPostWithImageAtomically({
+        const result = await saveExistingPostWithImageAtomically({
           db,
           postRef: doc(db, 'posts', formData.id),
           postData,
@@ -447,9 +452,10 @@ const App = () => {
         });
         // Never silent: losing an approval is exactly the kind of thing an operator
         // must be told about the moment it happens, not discover at the publish gate.
-        showToast(tenantReset
+        savedPost = result.savedPost;
+        showToast(result.tenantReset
           ? `Thread moved to ${client} staging — prior client review cleared`
-          : approvalReset
+          : result.approvalReset
             ? "Thread updated — approval cleared, the content changed since the client signed off"
             : "Thread updated");
       } else {
@@ -465,7 +471,7 @@ const App = () => {
           ? formData.approvalStatus
           : APPROVAL_STATUS.PENDING;
         const createdAt = new Date().toISOString();
-        await addDoc(collection(db, 'posts'), {
+        const createdPost = {
           ...postData,
           imageUrl: imageUrl.slice(0, 500000),
           approvalStatus,
@@ -474,13 +480,13 @@ const App = () => {
           createdAt,
           // Re-stamp after image hosting; postData was prepared before that await.
           updatedAt: createdAt
-        });
+        };
+        const createdRef = await addDoc(collection(db, 'posts'), createdPost);
+        savedPost = { ...createdPost, id: createdRef.id };
         showToast("New thread created!");
       }
 
-      setView('grid');
-      setEditingPost(null);
-      return true;
+      return { ok: true, post: savedPost };
     } catch (error) {
       console.error("Save Error:", error);
       showToast(`Save failed: ${error.message}`, "error");

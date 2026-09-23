@@ -333,7 +333,9 @@ export async function saveExistingPostAtomically({
     patch.updatedAt = nextSaveUpdatedAt(live);
 
     transaction.update(postRef, patch);
-    outcome = { approvalReset, rewritten, tenantReset };
+    // Returned only after the transaction commits. A retained editor must use
+    // the actual stored tenant/status/media baseline, not a stale listener row.
+    outcome = { approvalReset, rewritten, tenantReset, savedPost: { ...live, ...patch, id: postRef.id } };
   });
 
   return outcome;
