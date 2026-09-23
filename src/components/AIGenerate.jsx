@@ -3,6 +3,7 @@ import { Sparkles, Loader2, X, Wand2, Hash, Lightbulb, ChevronDown, RefreshCw } 
 import { generateImage, generateText, fetchIdeas, fetchPage, fetchContentIndex, fetchIndexPage } from '../utils/generationApi';
 import { buildTextContext, buildImagePrompt, buildIdeaBrainstormPrompt, parseIdeaLines } from '../utils/aiPrompt';
 import { TONE_PRESETS, LENGTH_PRESETS, IMAGE_STYLE_PRESETS, PLATFORMS } from '../constants';
+import useAsyncRequest from '../hooks/useAsyncRequest';
 
 // --- Ideas panel helpers (pure — the /api/ideas payload → a short prompt-seed list) -----------
 // Site pages first (the client's own freshest published content), then repo releases/commits.
@@ -149,6 +150,9 @@ const AIGenerate = ({
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
+  const requestContext = JSON.stringify([clientId, platform]);
+  const requests = useAsyncRequest(requestContext);
+  useEffect(() => { setLoading(false); }, [requestContext]);
   const [tone, setTone] = useState(clientSettings?.aiTone || 'professional');
   const [length, setLength] = useState('medium');
   const [style, setStyle] = useState('photo');
@@ -177,10 +181,6 @@ const AIGenerate = ({
   // The client this panel is currently bound to — a pull that resolves AFTER a client switch must
   // not paint the previous client's page here (mirrors POM's slugRef / the ideas `cancelled` flag).
   const clientIdRef = useRef(clientId);
-  // In-flight guard for the batch brainstorm that the client/open effect can NOT reset (unlike
-  // deck.loading, which it does): without this, closing+reopening the panel mid-flight re-enables
-  // the button and a second click double-spends a metered generation for the same action.
-  const brainstormingRef = useRef(false);
 
   // Pre-fill the tone from the selected client's saved default when it changes.
   useEffect(() => {
@@ -269,6 +269,8 @@ const AIGenerate = ({
   // renderPom* rule, applied client-side too).
   const suggestAngles = async (item) => {
     if (angles?.loading) return; // one angle generation at a time — each is a metered debit
+    const request = requests.begin('angles');
+    if (!request) return;
     const forId = item.id;
     setAngles({ forId, loading: true, list: [] });
     try {
@@ -286,10 +288,14 @@ const AIGenerate = ({
         ].join('\n'),
         { clientId, maxTokens: 220 }
       );
+      if (!requests.current(request)) return;
       const list = parseIdeaLines(out, 3);
       setAngles((a) => (a && a.forId === forId ? { forId, loading: false, list } : a));
     } catch (e) {
+      if (!requests.current(request)) return;
       setAngles((a) => (a && a.forId === forId ? { forId, loading: false, list: [], error: e.message || 'Could not fetch ideas.' } : a));
+    } finally {
+      requests.finish(request);
     }
   };
 
@@ -365,11 +371,12 @@ const AIGenerate = ({
   // untrusted, so buildIdeaBrainstormPrompt frames them as data and flat() already collapsed their
   // whitespace at ingest.
   const brainstorm = async () => {
-    // brainstormingRef (not deck.loading) is the authoritative re-entry guard — it survives the
-    // effect's deck reset on a benign close/reopen, so one conceptual action = one metered debit.
-    if (brainstormingRef.current || deck.loading || loading || !cards.length) return;
+    // The request token, not asynchronous React state, guards repeated clicks.
+    // Cancellation permits a deliberate fresh request, but invalidates the old result.
+    if (deck.loading || loading || !cards.length) return;
+    const request = requests.begin('brainstorm');
+    if (!request) return;
     const forClient = clientId;
-    brainstormingRef.current = true;
     // Keep any existing results visible while regenerating (Regenerate spins) — resetting the list
     // to [] would make the results box vanish and the header button flash back mid-request.
     setDeck((d) => ({ ...d, loading: true, error: null }));
@@ -378,22 +385,27 @@ const AIGenerate = ({
         buildIdeaBrainstormPrompt({ clientName, clientSettings, cards, count: 6 }),
         { clientId, maxTokens: 320 }
       );
-      if (clientIdRef.current !== forClient) return;
+      if (!requests.current(request) || clientIdRef.current !== forClient) return;
       const list = parseIdeaLines(out, 6);
       if (forClient) brainstormCache.set(forClient, list);
       setDeck({ loading: false, list, error: list.length ? null : 'No usable ideas came back — try again.' });
     } catch (e) {
-      if (clientIdRef.current !== forClient) return;
+      if (!requests.current(request) || clientIdRef.current !== forClient) return;
       setDeck((d) => ({ ...d, loading: false, error: e.message || 'Could not generate ideas.' }));
     } finally {
-      brainstormingRef.current = false;
+      requests.finish(request);
     }
   };
 
   const selectClass =
     'bg-white border border-indigo-200 rounded-lg text-xs font-medium px-2 py-1.5 focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 disabled:opacity-60';
 
-  const close = () => { setOpen(false); setPrompt(''); };
+  const close = () => {
+    requests.cancel();
+    setLoading(false);
+    setOpen(false);
+    setPrompt('');
+  };
 
   const runText = async (mode) => {
     if (loading) return;
@@ -403,6 +415,8 @@ const AIGenerate = ({
       showToast?.('Write or generate a draft first', 'error');
       return;
     }
+    const request = requests.begin();
+    if (!request) return;
 
     setLoading(true);
     try {
@@ -413,6 +427,7 @@ const AIGenerate = ({
           `Suggest 3–6 relevant, high-quality hashtags for the post below. Return ONLY the hashtags separated by spaces — nothing else.\n\nPOST:\n${currentText}`,
           { system, maxTokens: 60, clientId, platform }
         )).trim();
+        if (!requests.current(request)) return;
         // Append to the LATEST content (avoids clobbering edits made mid-request).
         if (onAppend) onAppend(tags);
         else onResult(`${currentText.trim()}\n\n${tags}`);
@@ -431,30 +446,36 @@ const AIGenerate = ({
           { system, maxTokens, clientId, platform }
         );
       }
+      if (!requests.current(request)) return;
       onResult(result);
       close();
       showToast?.(mode === 'improve' ? 'Draft improved' : 'Draft generated');
     } catch (err) {
-      showToast?.(err.message || 'Generation failed', 'error');
+      if (requests.current(request)) showToast?.(err.message || 'Generation failed', 'error');
     } finally {
-      setLoading(false);
+      if (requests.current(request)) setLoading(false);
+      requests.finish(request);
     }
   };
 
   const runImage = async () => {
     const p = prompt.trim();
     if (!p || loading) return;
+    const request = requests.begin();
+    if (!request) return;
     setLoading(true);
     try {
       const fullPrompt = buildImagePrompt({ prompt: p, style, platform, clientName, clientSettings });
       const url = await generateImage(fullPrompt, { clientId, platform });
+      if (!requests.current(request)) return;
       onResult(url);
       close();
       showToast?.('Image generated');
     } catch (err) {
-      showToast?.(err.message || 'Generation failed', 'error');
+      if (requests.current(request)) showToast?.(err.message || 'Generation failed', 'error');
     } finally {
-      setLoading(false);
+      if (requests.current(request)) setLoading(false);
+      requests.finish(request);
     }
   };
 

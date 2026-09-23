@@ -51,6 +51,7 @@ export default function useAuth(showToast) {
 
   useEffect(() => {
     let cancelled = false;
+    let revision = 0;
 
     // Resolve role + clientId from users/{email} for a real (non-guest) sign-in.
     // Returns { role, clientId } or null (= not authorized).
@@ -81,6 +82,12 @@ export default function useAuth(showToast) {
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (cancelled) return;
+      const mine = ++revision;
+      const stale = () => cancelled || mine !== revision;
+      // Fail closed immediately while a different principal is resolving. A
+      // slow users-document response from the previous account must not win.
+      setAuthLoading(true);
+      setUser(null); setRole(null); setClientId(null); setAuthzError(null);
 
       if (currentUser) {
         // Review guests sign in via a custom/anonymous token with NO email claim.
@@ -97,7 +104,7 @@ export default function useAuth(showToast) {
           if (shareToken && !exchangedRef.current) {
             signOut(auth).catch((err) => {
               console.error('Guest session reset failed:', err);
-              if (!cancelled) setAuthLoading(false);
+              if (!stale()) setAuthLoading(false);
             });
             return;
           }
@@ -111,7 +118,7 @@ export default function useAuth(showToast) {
         // A real signed-in user (Google) — resolve authorization.
         try {
           const resolved = await resolveRole(currentUser);
-          if (cancelled) return;
+          if (stale()) return;
           if (!resolved) {
             setAuthzError(`${currentUser.email || 'This account'} isn't set up for Spool yet. Ask your administrator to grant access.`);
             setUser(null); setRole(null); setClientId(null);
@@ -124,7 +131,7 @@ export default function useAuth(showToast) {
           setUser(currentUser);
           setAuthLoading(false);
         } catch {
-          if (cancelled) return;
+          if (stale()) return;
           setAuthzError('Could not verify your access — please try signing in again.');
           setUser(null); setRole(null); setClientId(null);
           setAuthLoading(false);
@@ -137,19 +144,19 @@ export default function useAuth(showToast) {
         // Exchange the URL token for a scoped guest session.
         try {
           const { customToken, ownerUid, client, clientId: scopeId } = await exchangeShareToken(shareToken);
-          if (cancelled) return;
+          if (stale()) return;
           setShareScope({ ownerUid, client, clientId: scopeId || null });
           exchangedRef.current = true; // the very next guest sign-in is OURS — accept it (no re-exchange loop)
           await signInWithCustomToken(auth, customToken); // re-fires onAuthStateChanged with the guest
         } catch (err) {
           console.error('Share session failed:', err);
-          if (!cancelled) { setShareError(err.message || 'This review link is no longer valid.'); setAuthLoading(false); }
+          if (!stale()) { setShareError(err.message || 'This review link is no longer valid.'); setAuthLoading(false); }
         }
       } else if (legacyUid) {
         // Transitional: old links sign in anonymously (until claim rules deploy).
         signInAnonymously(auth).catch(err => {
           console.error('Guest auth failed', err);
-          if (!cancelled) setAuthLoading(false);
+          if (!stale()) setAuthLoading(false);
         });
       } else {
         setUser(null);

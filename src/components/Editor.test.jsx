@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import Editor from './Editor';
+import { recoveryScope } from '../utils/editorRecovery';
+const recoveryKey = slot => recoveryScope({ principalId: 'editor-test', clientId: 'acme', postId: slot === 'new' ? null : slot }).key;
 
 const baseProps = {
+  recoveryPrincipalId: 'editor-test',
+  recoveryClientIdFor: name => name === 'Acme' ? 'acme' : '',
   post: null,
   onSave: vi.fn(),
   onCancel: vi.fn(),
@@ -159,12 +163,12 @@ describe('Editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Your edits are still here'), 'error'));
     expect(screen.getByDisplayValue('Keep my changes')).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:retry')).content).toBe('Keep my changes');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('retry'))).work.content).toBe('Keep my changes');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(window.localStorage.getItem('spool:autosave:retry')).toBeNull());
+    await waitFor(() => expect(window.localStorage.getItem(recoveryKey('retry'))).toBeNull());
     fireEvent(window, new Event('pagehide'));
-    expect(window.localStorage.getItem('spool:autosave:retry')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('retry'))).toBeNull();
   });
 
   it('keeps a recovery copy when the save boundary reports failure', async () => {
@@ -172,28 +176,28 @@ describe('Editor', () => {
     render(<Editor {...baseProps} onSave={onSave} post={{ id: 'failed', content: 'Original', client: 'Acme' }} />);
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Still unsaved' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('spool:autosave:failed')).content).toBe('Still unsaved'));
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(recoveryKey('failed'))).work.content).toBe('Still unsaved'));
     expect(screen.getByText('Unsaved')).toBeInTheDocument();
   });
 
   it('flushes the latest edits when a mobile app is hidden before the debounce', () => {
     render(<Editor {...baseProps} post={{ id: 'hidden', content: 'Original', client: 'Acme' }} />);
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Before backgrounding' } });
-    expect(window.localStorage.getItem('spool:autosave:hidden')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('hidden'))).toBeNull();
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
     fireEvent(document, new Event('visibilitychange'));
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:hidden')).content).toBe('Before backgrounding');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('hidden'))).work.content).toBe('Before backgrounding');
   });
 
   it('flushes on pagehide and removes lifecycle listeners when closed', () => {
     const { unmount } = render(<Editor {...baseProps} post={{ id: 'leaving', content: 'Original', client: 'Acme' }} />);
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Recover me' } });
     fireEvent(window, new Event('pagehide'));
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:leaving')).content).toBe('Recover me');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('leaving'))).work.content).toBe('Recover me');
     unmount();
-    window.localStorage.removeItem('spool:autosave:leaving');
+    window.localStorage.removeItem(recoveryKey('leaving'));
     fireEvent(window, new Event('pagehide'));
-    expect(window.localStorage.getItem('spool:autosave:leaving')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('leaving'))).toBeNull();
   });
 
   it('confirms local recovery only after storing the latest edits', () => {
@@ -201,7 +205,7 @@ describe('Editor', () => {
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Latest edit' } });
     fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
     expect(screen.getByText(/A recovery copy was stored on this device/)).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:close')).content).toBe('Latest edit');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('close'))).work.content).toBe('Latest edit');
   });
 
   it('does not promise recovery when device storage is unavailable', () => {
@@ -235,7 +239,7 @@ describe('Editor', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
     fireEvent(document, new Event('visibilitychange'));
     fireEvent(window, new Event('pagehide'));
-    expect(window.localStorage.getItem('spool:autosave:readonly')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('readonly'))).toBeNull();
   });
 
   it('explains that a new image is excluded from local recovery', () => {
@@ -243,7 +247,7 @@ describe('Editor', () => {
     fireEvent.change(screen.getByDisplayValue('Original'), { target: { value: 'Image draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
     expect(screen.getByText(/the new image is not included/)).toBeInTheDocument();
-    const saved = JSON.parse(window.localStorage.getItem('spool:autosave:image'));
+    const saved = JSON.parse(window.localStorage.getItem(recoveryKey('image'))).work;
     expect(saved.content).toBe('Image draft');
     expect(saved).not.toHaveProperty('imageUrl');
   });
@@ -283,12 +287,12 @@ describe('Editor', () => {
     expect(onCancel).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue('Newer version')).toBeInTheDocument();
     expect(screen.getByText('Edit Thread')).toBeInTheDocument();
-    expect(window.localStorage.getItem('spool:autosave:new')).toBeNull();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:created-1')).content).toBe('Newer version');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('created-1'))).work.content).toBe('Newer version');
     fireEvent.change(textarea, { target: { value: 'Latest background edit' } });
     fireEvent(window, new Event('pagehide'));
-    expect(window.localStorage.getItem('spool:autosave:new')).toBeNull();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:created-1')).content).toBe('Latest background edit');
+    expect(window.localStorage.getItem(recoveryKey('new'))).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('created-1'))).work.content).toBe('Latest background edit');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSave.mock.calls[1]).toEqual([
       expect.objectContaining({ id: 'created-1', content: 'Latest background edit' }),
@@ -296,7 +300,7 @@ describe('Editor', () => {
     ]);
     await act(async () => completeSave({ ok: true, post: onSave.mock.calls[1][0] }));
     expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(window.localStorage.getItem('spool:autosave:created-1')).toBeNull();
+    expect(window.localStorage.getItem(recoveryKey('created-1'))).toBeNull();
   });
 
   it('preserves an edit queued in the same React batch as the save acknowledgement', async () => {
@@ -311,7 +315,7 @@ describe('Editor', () => {
     });
     expect(screen.getByDisplayValue('Queued update')).toBeInTheDocument();
     expect(onCancel).not.toHaveBeenCalled();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:batched')).content).toBe('Queued update');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('batched'))).work.content).toBe('Queued update');
   });
 
   it('keeps the latest edits when a pending save fails', async () => {
@@ -323,7 +327,7 @@ describe('Editor', () => {
     await act(async () => failSave(new Error('Offline')));
     expect(screen.getByDisplayValue('Typed after saving')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
-    expect(JSON.parse(window.localStorage.getItem('spool:autosave:latest-failure')).content).toBe('Typed after saving');
+    expect(JSON.parse(window.localStorage.getItem(recoveryKey('latest-failure'))).work.content).toBe('Typed after saving');
   });
 
   it('does not reload the original post when a client-name refresh follows an acknowledged save', async () => {
