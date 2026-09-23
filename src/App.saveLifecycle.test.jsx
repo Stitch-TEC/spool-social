@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import { recoveryScope } from './utils/editorRecovery';
+import * as postSave from './utils/postSave';
 import { intentIndexedDB } from './test/intentIndexedDB';
 const recoveryKey = slot => recoveryScope({ principalId: 'operator-test', clientId: 'acme', postId: slot === 'new' ? null : slot }).key;
 
@@ -273,9 +274,12 @@ describe('App and Editor save lifecycle', () => {
   });
 
   it('keeps newer edits and updates the acknowledged create ID before any posts-listener refresh', async () => {
+    const prepareImage = vi.spyOn(postSave, 'preparePostImageForSave');
     render(<App />);
     await openNew();
     const create = await createPending();
+    // Positive control for the invalid-auth regression's preparation spy.
+    expect(prepareImage).toHaveBeenCalledTimes(1);
     changeContent('Newer typing while the first save is pending');
     fireEvent.pageHide(window);
     await waitForWork('Newer typing while the first save is pending');
@@ -514,6 +518,30 @@ describe('App and Editor save lifecycle', () => {
     expect(journalRecord()).toMatchObject({ id: create.id, state: 'submitted', work: { content: 'Keep this uncertain copy' } });
     expect(state.creates).toHaveLength(1);
     expect(state.updates).toHaveLength(0);
+  });
+
+  it('stops before image preparation when auth changes before Save but React has not rerendered', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const prepareImage = vi.spyOn(postSave, 'preparePostImageForSave');
+    render(<App />);
+    await openNew('Never dispatch under an invalidated session');
+    await waitForWork('Never dispatch under an invalidated session');
+    const originalUser = state.auth.user;
+    // Keep the same Firebase User and captured render revision. The auth
+    // observer's synchronous revision has advanced, so getRecoveryUser() must
+    // return null at the click, before any React session-boundary rerender.
+    state.liveAuthRevision += 1;
+    expect(state.auth.authRevision).toBe(1);
+    save();
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith('Save Error:', expect.any(Error)));
+    expect(state.auth.user).toBe(originalUser);
+    expect(prepareImage).not.toHaveBeenCalled();
+    expect(originalUser.getIdToken).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(state.creates).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+    expect(journalRecord()).toMatchObject({ state: 'draft', payload: null, submittedWork: null });
+    expect(editorContent()).toHaveValue('Never dispatch under an invalidated session');
   });
 
   it.each(['different user', 'same UID and same user object'])('does not dispatch after a token wait spans %s session change', async (change) => {

@@ -497,7 +497,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       const result = await onSave(formData, {
         ...(newCreateSession && !formData.id ? {
           createPost: payload => createRecovery.submit(payload, formData, initiatingUser),
-          isCurrentSession: () => editorAliveRef.current && getRecoveryUser?.() === initiatingUser,
+          isCurrentSession: () => !!initiatingUser && editorAliveRef.current && getRecoveryUser?.() === initiatingUser,
           createClientId: newScope?.clientId,
         } : {}),
         ...(lastSavedPost.current ? { savedPost: lastSavedPost.current } : {}),

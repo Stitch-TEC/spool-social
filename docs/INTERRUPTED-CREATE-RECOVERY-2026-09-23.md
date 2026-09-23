@@ -41,7 +41,7 @@ Client and template-flow selection are fixed once preparation begins and through
 - Journal tests cover scope, frozen payload, work revisions, concurrent admission/CAS, rollback after put, quota/blocked/open errors, corruption and safe terminal transitions. Their small deterministic transaction fixture is **not** native storage-engine proof.
 - Real Chromium/WebKit QA uses native IndexedDB and the actual Editor/transport with invented data and intercepted requests; root retains evidence under `_archive-2026-09/spool-create-recovery-20260923/`.
 - Local emulator tests run the actual transport against unchanged Firestore rules: owner-private/member-in-review create/read, duplicate-create conflict, foreign/private/unknown-member denial and changed/deleted read-only checks. They never connect to production.
-- Local acceptance: **624 application tests and 34 unchanged-rule emulator cases**, lint, build, action pins and zero production dependency findings pass. Hosted checks and independent review are separate release gates. No physical iPhone/Home Screen resume, production content write or live authenticated create is claimed.
+- Local acceptance: **625 application tests and 34 unchanged-rule emulator cases**, lint, build, action pins and zero production dependency findings pass. Hosted checks and independent review are separate release gates. No physical iPhone/Home Screen resume, production content write or live authenticated create is claimed.
 
 This does not make image upload side effects idempotent or expand recovery to other create lanes. A failing final image/journal operation keeps the editor available. Work cannot be guaranteed recoverable when browser storage does not work; there is no silent fallback to non-idempotent `addDoc` for this lane.
 

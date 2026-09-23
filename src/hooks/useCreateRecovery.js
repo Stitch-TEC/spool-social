@@ -68,7 +68,7 @@ export default function useCreateRecovery({ enabled, scope, getUser, getWork, is
   };
   const submit = async (payload, submittedWork, initiatingUser) => {
     const s = ready();
-    const maySend = () => isAlive() && session.current === s && getUser() === initiatingUser;
+    const maySend = () => !!initiatingUser && isAlive() && session.current === s && getUser() === initiatingUser;
     if (!maySend()) throw new Error('The editor or sign-in changed. No new thread was sent.');
     if (payload.clientId !== scope.clientId || !!payload.isTemplate !== (scope.flow === 'template')) throw new Error('The original client or draft type changed. Reopen the original recovery copy before saving.');
     await enqueue(s, async () => {
