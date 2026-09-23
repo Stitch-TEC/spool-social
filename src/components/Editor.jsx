@@ -98,6 +98,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   const [altLoading, setAltLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [discardRecovery, setDiscardRecovery] = useState(null);
   // Locally-recovered unsaved work (see the autosave effects below).
   const [recovered, setRecovered] = useState(null);
   const textareaRef = useRef(null);
@@ -279,13 +280,17 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   // the localStorage budget, and omitting means a restore leaves whatever image
   // the post currently has untouched.
   const writeAutosaveNow = () => {
-    if (isReadOnly || !isDirtyRef.current) return;
+    if (isReadOnly || !isDirtyRef.current) return null;
     const fd = formDataRef.current;
     const snap = {};
     for (const k of WORK_FIELDS) snap[k] = fd[k];
-    if (typeof snap.imageUrl === 'string' && snap.imageUrl.startsWith('data:')) delete snap.imageUrl;
+    const imageOmitted = typeof snap.imageUrl === 'string' && snap.imageUrl.startsWith('data:');
+    if (imageOmitted) delete snap.imageUrl;
     snap.savedAt = Date.now();
-    try { window.localStorage?.setItem(autosaveKey, JSON.stringify(snap)); } catch { /* quota/private mode */ }
+    try {
+      window.localStorage.setItem(autosaveKey, JSON.stringify(snap));
+      return { imageOmitted };
+    } catch { return null; /* quota/private mode */ }
   };
 
   const clearAutosave = () => {
@@ -293,9 +298,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     try { window.localStorage?.removeItem(autosaveKey); } catch { /* private mode */ }
   };
 
-  // Warn before the tab closes with unsaved edits — and flush the snapshot
-  // FIRST, so "a copy was auto-saved" is true even if the user closes anyway
-  // within the debounce window. (In-app close goes through the discard confirm.)
+  // Mobile Safari may suspend an installed app without firing beforeunload.
+  // Flush when the page is hidden as well, including inside the debounce window.
+  // This is device recovery only; it never saves or publishes the post remotely.
   useEffect(() => {
     const onBeforeUnload = (ev) => {
       if (isDirtyRef.current) {
@@ -304,8 +309,18 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         ev.returnValue = '';
       }
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') writeAutosaveNow();
+    };
+    const onPageHide = () => writeAutosaveNow();
     window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
     // writeAutosaveNow reads only refs + the stable autosaveKey — safe to mount once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -387,7 +402,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   );
 
   const handleSaveWrapper = async () => {
-    if (isReadOnly || isOverLimit || !formData.content || isSaving) return;
+    if (isReadOnly || isOverLimit || !formData.content.trim() || isSaving) return;
     setIsSaving(true);
     try {
       // onSave returns true only when the write actually happened (validation
@@ -409,7 +424,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       if (ok === true) {
         pristineRef.current = formData;
         clearAutosave();
+        isDirtyRef.current = workSignature(formDataRef.current) !== workSignature(formData);
+      } else {
+        writeAutosaveNow();
       }
+    } catch {
+      writeAutosaveNow();
+      showToast?.('Could not save this thread. Your edits are still here — please try again.', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -438,7 +459,13 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   };
 
   const requestCancel = () => {
-    if (isDirty && !isReadOnly) setShowDiscardConfirm(true);
+    if (isSaving) return;
+    if (isDirty && !isReadOnly) {
+      // Check storage before describing recovery. Safari can deny it, and a
+      // data-URL image is deliberately too large to put in the local snapshot.
+      setDiscardRecovery(writeAutosaveNow());
+      setShowDiscardConfirm(true);
+    }
     else onCancel();
   };
 
@@ -494,9 +521,9 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
     <div className="h-full flex flex-col md:flex-row bg-white overflow-hidden animate-in slide-in-from-right duration-300">
       {/* Left Panel: Edit */}
       <div className={`flex-1 min-w-0 flex flex-col h-full border-r border-slate-200 ${previewMode ? 'hidden md:flex' : 'flex'}`}>
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
-          <div className="flex items-center gap-3">
-             <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
+        <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 justify-between items-center bg-white sticky top-0 z-10">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+             <button onClick={requestCancel} disabled={isSaving} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500 disabled:opacity-50"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
              {isDirty && !isReadOnly && (
                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 uppercase tracking-wider" title="You have unsaved changes">
@@ -504,7 +531,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                </span>
              )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 ml-auto">
             <button
               type="button"
               onClick={() => setPreviewMode(p => !p)}
@@ -514,7 +541,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
             </button>
             <button
               onClick={handleSaveWrapper}
-              disabled={isOverLimit || !formData.content || isReadOnly || isSaving}
+              disabled={isOverLimit || !formData.content.trim() || isReadOnly || isSaving}
               className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
             >
                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
@@ -526,15 +553,15 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
           {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
           {recovered && !isReadOnly && (
-            <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+            <div className="flex flex-wrap items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
               <History size={18} className="text-amber-600 shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-[160px]">
                 <p className="text-sm font-bold text-amber-800">Unsaved work recovered</p>
                 <p className="text-xs text-amber-700 mt-0.5">
                   A draft auto-saved {recovered.savedAt ? `on ${new Date(recovered.savedAt).toLocaleString()} ` : ''}on this device differs from what&apos;s shown. Restore it, or dismiss to keep what&apos;s here.
                 </p>
               </div>
-              <div className="flex gap-2 shrink-0">
+              <div className="flex gap-2 shrink-0 ml-auto">
                 <button onClick={restoreRecovered} className="px-3 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-full">Restore</button>
                 <button onClick={() => { setRecovered(null); clearAutosave(); }} className="px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 rounded-full">Dismiss</button>
               </div>
@@ -980,13 +1007,24 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
         <ConfirmModal
           type="danger"
           title="Discard unsaved changes?"
-          message="This thread has edits that haven't been saved. A copy was auto-saved on this device, so you can recover it if you reopen the editor."
+          message={discardRecovery
+            ? discardRecovery.imageOmitted
+              ? "Your text and settings have a recovery copy on this device, but the new image is not included. Cancel and save the thread to keep every change."
+              : "These changes are not saved to Spool. A recovery copy was stored on this device and can be restored when you reopen the editor."
+            : "This device could not store your latest edits for recovery. Cancel and save the thread to keep your changes."}
           confirmLabel="Discard"
           onCancel={() => setShowDiscardConfirm(false)}
           onConfirm={() => {
-            // Flush the snapshot NOW — the debounced write is cancelled at
-            // unmount, and the modal just promised a local copy exists.
-            writeAutosaveNow();
+            // Flush again before unmounting in case an image upload finished
+            // while the confirmation was open.
+            const latestRecovery = writeAutosaveNow();
+            if (Boolean(latestRecovery) !== Boolean(discardRecovery)
+              || latestRecovery?.imageOmitted !== discardRecovery?.imageOmitted) {
+              // Storage availability can change while the dialog is open.
+              // Let the user read the updated recovery outcome before leaving.
+              setDiscardRecovery(latestRecovery);
+              return;
+            }
             setShowDiscardConfirm(false);
             onCancel();
           }}
