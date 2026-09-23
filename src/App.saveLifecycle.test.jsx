@@ -104,7 +104,7 @@ const post = (id, content) => ({
   scheduledDate: '2026-09-23T12:00:00.000Z',
 });
 
-const editorContent = () => document.querySelector('textarea');
+const editorContent = () => document.querySelector('textarea[placeholder]');
 const changeContent = (value) => fireEvent.change(editorContent(), { target: { value } });
 const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
 const recovery = () => Object.fromEntries(
@@ -229,6 +229,61 @@ describe('App and Editor save lifecycle', () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.localStorage.clear();
+  });
+
+  it('copies current editor text deliberately, not the save reference or stored payload', async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue() };
+    vi.stubGlobal('navigator', { clipboard });
+    render(<App />);
+    await openNew('Latest text to keep privately');
+    await waitForWork('Latest text to keep privately');
+    expect(clipboard.writeText).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy text' }));
+    await screen.findByText('Text copied. Images and settings are not included.');
+    expect(clipboard.writeText).toHaveBeenCalledExactlyOnceWith('Latest text to keep privately');
+    expect(state.creates).toHaveLength(0);
+  });
+
+  it('does not copy an empty editor before restoring the saved work', async () => {
+    const clipboard = { writeText: vi.fn() };
+    vi.stubGlobal('navigator', { clipboard });
+    const app = render(<App />);
+    await openNew('Keep existing device work');
+    await waitForWork('Keep existing device work');
+    app.unmount(); render(<App />);
+    await openNew(null);
+    expect(screen.getByRole('button', { name: 'Copy text' })).toBeDisabled();
+    expect(clipboard.writeText).not.toHaveBeenCalled();
+    expect(journalRecord().work.content).toBe('Keep existing device work');
+  });
+
+  it.each(['missing', 'denied'])('keeps editable text with %s clipboard and offers manual copying', async mode => {
+    vi.stubGlobal('navigator', { clipboard: mode === 'missing' ? undefined : { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+    render(<App />);
+    await openNew('Preserve text when copying is unavailable');
+    await waitForWork('Preserve text when copying is unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy text' }));
+    await screen.findByText('Copy is unavailable here. Select the text in the editor and copy it manually.');
+    expect(editorContent()).toHaveValue('Preserve text when copying is unavailable');
+    expect(state.creates).toHaveLength(0);
+  });
+
+  it.each(['auth-success', 'auth-failure', 'close-success', 'close-failure'])('ignores late copy feedback after %s', async scenario => {
+    const pending = deferred();
+    vi.stubGlobal('navigator', { clipboard: { writeText: () => pending.promise } });
+    render(<App />);
+    await openNew('Explicitly copied before session change');
+    await waitForWork('Explicitly copied before session change');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy text' }));
+    if (scenario.startsWith('auth')) state.liveAuthRevision += 1;
+    else await closeEditor();
+    await act(async () => {
+      if (scenario.endsWith('success')) pending.resolve();
+      else pending.reject(new Error('delayed clipboard denial'));
+    });
+    expect(screen.queryByText('Text copied. Images and settings are not included.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Copy is unavailable here. Select the text in the editor and copy it manually.')).not.toBeInTheDocument();
+    expect(state.creates).toHaveLength(0);
   });
 
   it('closes the old editor on account change and never restores its recovery into a client member', async () => {
@@ -423,6 +478,8 @@ describe('App and Editor save lifecycle', () => {
     expect(state.creates).toHaveLength(1);
     expect(state.restReads).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Check previous save' }));
+    expect(screen.getByRole('button', { name: 'Checking previous save…' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Saving...' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled());
     expect(state.restReads).toEqual([create.id]);
     expect(editorContent()).toHaveValue('Newer local version after dispatch');
@@ -513,6 +570,9 @@ describe('App and Editor save lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check previous save' }));
     await waitFor(() => expect(state.restReads).toEqual([create.id]));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check previous save' })).toBeEnabled());
+    fireEvent.click(screen.getByText('Help with this save'));
+    expect(screen.getByLabelText('Save reference').value).toContain(create.id);
+    expect(screen.getByLabelText('Save reference').value).not.toContain('Keep this uncertain copy');
     expect(editorContent()).toHaveValue('Keep this uncertain copy');
     expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
     expect(journalRecord()).toMatchObject({ id: create.id, state: 'submitted', work: { content: 'Keep this uncertain copy' } });

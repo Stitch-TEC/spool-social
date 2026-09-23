@@ -103,7 +103,7 @@ const App = () => {
     if (authLoading || isReadOnly || (getAuthRevision && getAuthRevision() !== authRevision)) return null;
     return auth.currentUser === user ? user : null;
   }, [user, authRevision, getAuthRevision, authLoading, isReadOnly]);
-  const { posts, clientMap, isLoading: postsLoading, error: postsError, isStalled: postsStalled } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
+  const { posts, clientMap, isLoading: postsLoading, error: postsError, isStalled: postsStalled } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator, { authRevision, getAuthRevision, authLoading });
   const isLoading = authLoading || postsLoading;
 
   // Canonical POM roster — the ONE fetch (see useClients). Operator-gated: the Worker's
