@@ -10,7 +10,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 
-import { db } from './config/firebase';
+import { auth, db } from './config/firebase';
 import {
   STATUS, PLATFORMS, APPROVAL_STATUS, DEFAULT_CLIENT_SETTINGS, TEMPLATE_LIMIT_PER_CLIENT,
   REVIEW_STAGE, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER, DENSITY, DENSITY_VALUES
@@ -98,7 +98,11 @@ const readStoredDensity = () => {
 const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
-  const { user, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
+  const { user, authRevision, getAuthRevision, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
+  const getRecoveryUser = useCallback(() => {
+    if (authLoading || isReadOnly || (getAuthRevision && getAuthRevision() !== authRevision)) return null;
+    return auth.currentUser === user ? user : null;
+  }, [user, authRevision, getAuthRevision, authLoading, isReadOnly]);
   const { posts, clientMap, isLoading: postsLoading, error: postsError, isStalled: postsStalled } = usePosts(user, sharedUid, myClientId, shareClientId, isOperator);
   const isLoading = authLoading || postsLoading;
 
@@ -137,7 +141,7 @@ const App = () => {
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingPost, setEditingPost] = useState(null);
-  const editorIdentity = JSON.stringify([user?.uid || '', role, myClientId, isReadOnly]);
+  const editorIdentity = JSON.stringify([user?.uid || '', authRevision, role, myClientId, isReadOnly]);
   const [editingIdentity, setEditingIdentity] = useState(null);
   const [reviewingPost, setReviewingPost] = useState(null);
   const [isClientSettingsOpen, setIsClientSettingsOpen] = useState(false);
@@ -442,6 +446,7 @@ const App = () => {
       };
 
       let savedPost;
+      let submitted;
       if (formData.id) {
         // Read approval from Firestore inside the transaction, not postsRef or
         // formData. A concurrent approve/feedback write makes the transaction
@@ -470,12 +475,14 @@ const App = () => {
             ? "Thread updated — approval cleared, the content changed since the client signed off"
             : "Thread updated");
       } else {
+        if (saveContext.createPost && (!saveContext.isCurrentSession?.() || !saveContext.createClientId || saveContext.createClientId !== resolvedClientId)) throw new Error('Sign-in or client identity is not ready. No thread was created; keep your text and reopen the client.');
         const { imageUrl } = await preparePostImageForSave({
           submittedImageUrl,
           forClient: imageClientId,
           hostImage: ensureHostedImage,
           onImageDropped: notifyImageDropped,
         });
+        if (saveContext.createPost && !saveContext.isCurrentSession?.()) throw new Error('The editor or sign-in changed while preparing the image. No thread was created.');
         const approvalStatus = isClientMember
           ? APPROVAL_STATUS.PENDING
           : Object.values(APPROVAL_STATUS).includes(formData.approvalStatus)
@@ -492,15 +499,21 @@ const App = () => {
           // Re-stamp after image hosting; postData was prepared before that await.
           updatedAt: createdAt
         };
-        const createdRef = await addDoc(collection(db, 'posts'), createdPost);
-        savedPost = { ...createdPost, id: createdRef.id };
+        if (saveContext.createPost && !isSuggestion) {
+          const result = await saveContext.createPost(createdPost);
+          savedPost = result.post;
+          submitted = result.submitted;
+        } else {
+          const createdRef = await addDoc(collection(db, 'posts'), createdPost);
+          savedPost = { ...createdPost, id: createdRef.id };
+        }
         showToast("New thread created!");
       }
 
-      return { ok: true, post: savedPost };
+      return { ok: true, post: savedPost, ...(submitted ? { submitted } : {}) };
     } catch (error) {
       console.error("Save Error:", error);
-      showToast(`Save failed: ${error.message}`, "error");
+      showToast(`${saveContext.createPost ? 'Save needs checking' : 'Save failed'}: ${error.message}`, "error");
       return false;
     }
   }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName, clientMap, rosterSlugByName, rosterSlugs]);
@@ -1703,6 +1716,9 @@ const App = () => {
             post={editingPost}
             recoveryPrincipalId={!authLoading && user && !user.isAnonymous && !isReadOnly ? user.uid : ''}
             recoveryClientIdFor={recoveryClientIdFor}
+            createRecoveryEnabled={true}
+            recoveryProjectId={db.app?.options?.projectId || ''}
+            getRecoveryUser={getRecoveryUser}
             isReadOnly={isReadOnly}
             clientMap={clientMap}
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}

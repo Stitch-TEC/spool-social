@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { Buffer } from 'node:buffer';
 import {
   assertFails,
   assertSucceeds,
@@ -18,6 +19,8 @@ import {
   where,
 } from 'firebase/firestore';
 import { approvalSafeStoragePatch } from './src/utils/review';
+import { createScope, workCopy } from './src/utils/createJournal';
+import { intentRequest } from './src/utils/createTransport';
 
 const emulatorIsRunning = !!globalThis.process?.env?.FIRESTORE_EMULATOR_HOST;
 const OWNER_UID = 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
@@ -83,6 +86,52 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
 
   afterAll(async () => {
     await testEnv?.cleanup();
+  });
+
+  const restFixture = (principalId = 'member-user', clientId = 'acme', stage = 'in_review') => {
+    const scope = createScope({ principalId, clientId, projectId: PROJECT_ID });
+    const work = workCopy({ client: 'Acme', content: 'Invented interrupted draft', platform: 'gmb', status: 'draft' });
+    const payload = { ...work, slug: '', uid: OWNER_UID, clientId, approvalStatus: 'pending', feedback: '', reviewStage: stage, createdAt: NOW, updatedAt: NOW };
+    const record = { scope, id: '0123456789abcdef0123456789abcdef', revision: 1, state: 'prepared', work, submittedWork: work, payload };
+    const now = Math.floor(Date.now() / 1000);
+    const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const claims = { iss: `https://securetoken.google.com/${PROJECT_ID}`, aud: PROJECT_ID, sub: principalId, user_id: principalId, email: principalId === 'member-user' ? 'member@example.com' : 'owner@example.test', iat: now, exp: now + 3600, auth_time: now, firebase: { sign_in_provider: 'password', identities: {} } };
+    const user = { uid: principalId, getIdToken: async () => `${encode({ alg: 'none', typ: 'JWT' })}.${encode(claims)}.` };
+    const methods = [];
+    const fetcher = (url, init) => {
+      const host = globalThis.process.env.FIRESTORE_EMULATOR_HOST;
+      expect(host).toMatch(/^(localhost|127\.0\.0\.1):\d+$/);
+      expect(url).toMatch(new RegExp(`^https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/`));
+      methods.push(init.method);
+      return fetch(url.replace('https://firestore.googleapis.com', `http://${host}`), init);
+    };
+    return { record, user, methods, fetcher, getUser: () => user, beforeCreate: async () => {} };
+  };
+
+  it.each([['member-user', 'in_review'], [OWNER_UID, 'private']])('creates and reconciles one explicit ID under unchanged rules for %s', async (uid, stage) => {
+    const f = restFixture(uid, 'acme', stage);
+    const saved = await intentRequest({ ...f, create: true });
+    expect(saved).toMatchObject({ id: f.record.id, reviewStage: stage, clientId: 'acme' });
+    expect(await intentRequest({ ...f, record: { ...f.record, state: 'submitted' } })).toEqual(saved);
+    await expect(intentRequest({ ...f, create: true })).rejects.toThrow('not confirmed');
+    expect(f.methods).toEqual(['POST', 'GET', 'POST']);
+  });
+
+  it('denies foreign-client and private member creates with the real REST adapter', async () => {
+    for (const fixture of [restFixture('member-user', 'foreign'), restFixture('member-user', 'acme', 'private'), restFixture('unknown-user')]) await expect(intentRequest({ ...fixture, create: true })).rejects.toThrow('not confirmed');
+  });
+
+  it('keeps changed, deleted and unreadable outcomes unresolved; checks never recreate a document', async () => {
+    const f = restFixture();
+    await intentRequest({ ...f, create: true });
+    const record = { ...f.record, state: 'submitted' };
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'posts', record.id), { content: 'Newer approved work', approvalStatus: 'approved' }));
+    await expect(intentRequest({ ...f, record })).rejects.toThrow('differs');
+    expect((await getDoc(doc(memberDb, 'posts', record.id))).data().content).toBe('Newer approved work');
+    await testEnv.withSecurityRulesDisabled(context => deleteDoc(doc(context.firestore(), 'posts', record.id)));
+    await expect(intentRequest({ ...f, record })).rejects.toThrow('not confirmed');
+    expect(f.methods).toEqual(['POST', 'GET', 'GET']);
+    await assertFails(getDoc(doc(memberDb, 'posts', record.id)));
   });
 
   it('allows the app approval transition and draft-to-scheduled advance', async () => {

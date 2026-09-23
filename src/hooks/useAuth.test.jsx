@@ -50,4 +50,23 @@ describe('authentication principal transitions', () => {
     expect(transport.signOut).toHaveBeenCalled();
     expect(localStorage.getItem('spool:autosave:new')).toBe('legacy owner unknown');
   });
+  it('invalidates captured create sessions synchronously across same-object sign-out/sign-in and unmount', async () => {
+    const principal = user('alpha');
+    const { result, unmount } = renderHook(() => useAuth(vi.fn()));
+    act(() => { void transport.callback(principal); });
+    await act(async () => grant(transport.reads[0], 'alpha'));
+    const revision = result.current.authRevision;
+    const getRevision = result.current.getAuthRevision;
+    await act(async () => transport.callback(null));
+    expect(getRevision()).toBeGreaterThan(revision);
+    act(() => { void transport.callback(principal); });
+    const pendingRevision = getRevision();
+    expect(pendingRevision).toBeGreaterThan(revision);
+    expect(result.current.authLoading).toBe(true);
+    await act(async () => grant(transport.reads[1], 'alpha'));
+    expect(result.current.user).toBe(principal);
+    expect(result.current.authRevision).toBe(pendingRevision);
+    unmount();
+    expect(getRevision()).toBeGreaterThan(pendingRevision);
+  });
 });
