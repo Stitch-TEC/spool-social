@@ -66,6 +66,11 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   Existing editor/duplicate/import/suggestion lanes retain their separate contracts.
   Never auto-adopt/delete old v2 new-draft copies or clear v3 records during rollback.
   Read `docs/INTERRUPTED-CREATE-RECOVERY-2026-09-23.md` before changing this lifecycle.
+- **Brand settings async ownership (2026-09-23 source):** logo results are latest-only
+  and client/form-bound. Save pauses field editing but never locks Close/Escape;
+  closing ignores late UI callbacks, not an already submitted Firestore write.
+  Keep this UI guard separate from auth/rules and ordinary-editor recovery.
+  See `docs/BRAND-SETTINGS-ASYNC-SAFETY-2026-09-23.md` for tests and limitations.
 - **Tailwind 4 emits arbitrary media variants BEFORE the named breakpoint scale**, so
   `min-[1600px]:grid-cols-4` silently loses to `xl:grid-cols-3` at every width where both
   match. Wide layout steps must use REGISTERED breakpoints — `@theme { --breakpoint-3xl }`
