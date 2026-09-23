@@ -9,8 +9,9 @@ The discard dialog now checks whether device storage actually accepted a copy.
 It explains when storage is unavailable or when a new image was omitted from the
 snapshot. If that outcome changes while the dialog is open, it shows the revised
 message before closing. A failed save keeps the current text and permits retry;
-whitespace-only content cannot be submitted. Closing and duplicate submission
-are disabled while a save is pending.
+whitespace-only content cannot be submitted. Duplicate submission is disabled
+while a save is pending; Close retains its existing discard flow so an offline
+write does not trap the operator in the editor.
 
 The editor header and recovery-banner buttons wrap at phone widths. Synthetic
 Chromium and WebKit checks at 320px, 390px and 768px verified visible controls,

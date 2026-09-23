@@ -247,19 +247,23 @@ describe('Editor', () => {
     expect(saved).not.toHaveProperty('imageUrl');
   });
 
-  it('prevents closing or duplicate submission while a save is pending', async () => {
+  it('blocks duplicate saves but keeps the existing discard exit during a pending save', async () => {
     let completeSave;
     const onSave = vi.fn(() => new Promise(resolve => { completeSave = resolve; }));
     const onCancel = vi.fn();
     render(<Editor {...baseProps} onSave={onSave} onCancel={onCancel} post={{ id: 'pending', content: 'Ready', client: 'Acme' }} />);
+    fireEvent.change(screen.getByDisplayValue('Ready'), { target: { value: 'Ready to save' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(screen.getByRole('button', { name: 'Close Editor' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Close Editor' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Saving...' }));
     expect(onSave).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument();
     expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
     completeSave(false);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Close Editor' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
   });
 });

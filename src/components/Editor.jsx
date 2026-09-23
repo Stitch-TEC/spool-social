@@ -459,7 +459,6 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
   };
 
   const requestCancel = () => {
-    if (isSaving) return;
     if (isDirty && !isReadOnly) {
       // Check storage before describing recovery. Safari can deny it, and a
       // data-URL image is deliberately too large to put in the local snapshot.
@@ -523,7 +522,7 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
       <div className={`flex-1 min-w-0 flex flex-col h-full border-r border-slate-200 ${previewMode ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-             <button onClick={requestCancel} disabled={isSaving} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500 disabled:opacity-50"><X size={20}/></button>
+             <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
              <h2 className="font-bold text-slate-800 text-lg">{post?.id ? 'Edit Thread' : 'New Thread'}</h2>
              {isDirty && !isReadOnly && (
                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 uppercase tracking-wider" title="You have unsaved changes">
