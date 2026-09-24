@@ -1499,10 +1499,16 @@ export function collectPostImageReferences(documents, urls = new Set()) {
       // approval identity. This sees reference definitions, clickable media,
       // raw img/source srcset, and browser-decoded character references that
       // a `/media/` regex would miss (and could otherwise orphan a live key).
+      let parseFailed = false;
       transformMediaDestinations(body, (candidate) => {
         urls.add(candidate);
         return candidate;
-      });
+      }, () => { parseFailed = true; });
+      // Display callers may keep a parser's raw/partial fallback, but GC must
+      // never treat it as a complete mark set. The observer is best-effort and
+      // swallows throws, so reject here, after parsing has returned. runGC's
+      // existing inventory guard then stops before any R2 list or delete.
+      if (parseFailed) throw new Error('Image-reference GC query could not parse content completely');
     }
   }
   return urls;
