@@ -77,7 +77,8 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   in `src/index.css` (`3xl` = 1600px, `4xl` = 1920px) — which sort by value alongside sm–2xl.
 - An `appearance-none` `<select>` keeps a UA-internal box that is TALLER than its padding
   in Safari (the label renders clipped by the bottom border). Every toolbar select goes
-  through `SELECT_CLASS` in `src/utils/facetStyles.js`, which pins an explicit `h-8 py-0`.
+  through `SELECT_CLASS` in `src/utils/facetStyles.js`, which pins an explicit `h-11 py-0`
+  and caps intrinsic width so long options/enlarged text cannot widen the feed.
 
 ## The review pipeline (2026-08-18 — read before touching the queue)
 Spool has THREE axes, and until this date the UI conflated the first two:
@@ -200,9 +201,12 @@ something the client did; pulling a post back to staging must not erase it.
   a month into two identically-labelled runs. A heading's count is the run's TRUE size even
   when the window has only mounted part of it.
 - `PostCard`'s hover action cluster is ABSOLUTE on `[@media(pointer:fine)]` and in flow on
-  touch: eight `opacity-0` icon buttons still RESERVE ~190px of the header row, which is what
-  used to wrap the platform/date/client onto three lines (and makes a 300px compact card
-  impossible). Don't put it back in flow without re-checking the header at 300px.
+  touch. Both clusters wrap and stay bounded to the card; touch actions own a separate
+  row and icon actions have 44px minimum targets. Do not restore a single unbounded
+  action row or force the metadata and review badge to share one line.
+  Feed columns preserve the existing viewport caps but also require a font-relative
+  minimum width, dropping columns as text grows. Empty grid slots remain reserved.
+  See `docs/FEED-REFLOW-2026-09-24.md` for scope, tradeoffs and remaining limits.
 - `src/utils/` — `review.js` (the review pipeline), `readiness.js` (per-post blockers),
   `helpers.js` (sorts, date formatters), `grouping.js` (feed group headings),
   `facetStyles.js` (shared toolbar select styling).

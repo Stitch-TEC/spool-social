@@ -56,11 +56,11 @@ const PostControls = ({
   // own flex-wrap never got the chance to wrap and the whole PAGE scrolled sideways on
   // a phone. Letting it shrink is what lets the controls wrap instead.
   return (
-    <div className="flex flex-wrap items-center gap-2 min-w-0" role="group" aria-label="Sort and filter posts">
+    <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full" role="group" aria-label="Sort and filter posts">
       {/* Platform filter */}
       {showFilters && (
-      <div className="relative">
-        <Layers size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+      <div className="relative min-w-0 max-w-full">
+        <Layers size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
         <select
           value={filterPlatform || ''}
           onChange={(e) => onPlatformChange(e.target.value || null)}
@@ -80,8 +80,8 @@ const PostControls = ({
 
       {/* Tag filter — only when there are shared tags to filter by */}
       {showFilters && tags.length > 0 && (
-        <div className="relative">
-          <Tag size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <div className="relative min-w-0 max-w-full">
+          <Tag size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
           <select
             value={filterTag || ''}
             onChange={(e) => onTagChange(e.target.value || null)}
@@ -98,8 +98,8 @@ const PostControls = ({
       )}
 
       {/* Sort */}
-      <div className="relative">
-        <ArrowUpDown size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+      <div className="relative min-w-0 max-w-full">
+        <ArrowUpDown size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
         <select
           value={sortBy}
           onChange={(e) => onSortChange(e.target.value)}
@@ -117,7 +117,7 @@ const PostControls = ({
 };
 
 export const Chevron = () => (
-  <svg className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+  <svg className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
     <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );

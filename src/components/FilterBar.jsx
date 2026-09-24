@@ -36,7 +36,7 @@ const TONES = {
   emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:border-emerald-300',
 };
 const COUNT_TONES = {
-  slate: 'bg-slate-100 text-slate-500',
+  slate: 'bg-slate-100 text-slate-600',
   amber: 'bg-amber-100 text-amber-700',
   rose: 'bg-rose-100 text-rose-700',
   emerald: 'bg-emerald-100 text-emerald-700',
@@ -69,8 +69,8 @@ const FacetSelect = ({ icon: Icon, label, value, onChange, options, counts, allL
   const present = options.filter((o) => (counts[o.value] || 0) > 0 || o.value === value);
   if (present.length === 0) return null;
   return (
-    <div className="relative">
-      {Icon && <Icon size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />}
+    <div className="relative min-w-0 max-w-full">
+      {Icon && <Icon size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />}
       <select
         value={value || ''}
         onChange={(e) => onChange(e.target.value || null)}
@@ -126,14 +126,14 @@ const FilterBar = memo(({
               onClick={() => onReviewChange(key)}
               aria-pressed={active}
               title={hint}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+              className={`flex flex-wrap items-center justify-center min-h-[44px] min-w-0 max-w-full gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 ${
                 active ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : TONES[tone]
               }`}
             >
-              {Icon && <Icon size={12} className={active ? '' : 'text-amber-500'} />}
+              {Icon && <Icon size={12} className={active ? '' : 'text-amber-700'} />}
               {label}
               <span className={`px-1.5 py-0.5 rounded-full text-[10px] leading-none tabular-nums ${
-                active ? 'bg-white/20' : COUNT_TONES[tone]
+                active ? 'bg-white/10' : COUNT_TONES[tone]
               }`}>
                 {count}
               </span>
@@ -179,7 +179,7 @@ const FilterBar = memo(({
         {activeFilterCount > 0 && (
           <button
             onClick={onClearFilters}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+            className="flex flex-wrap items-center min-h-[44px] min-w-[44px] max-w-full gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:text-rose-600 hover:bg-rose-50 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
             title="Clear every filter (the client scope in the sidebar stays)"
           >
             <FilterX size={13} /> Clear {activeFilterCount}
@@ -187,7 +187,7 @@ const FilterBar = memo(({
         )}
 
         {showDensity && onDensityChange && (
-          <div className="ml-auto">
+          <div className="ml-auto max-w-full">
             <DensityToggle value={density} onChange={onDensityChange} />
           </div>
         )}

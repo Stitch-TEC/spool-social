@@ -154,3 +154,32 @@ describe('FilterBar — density', () => {
     expect(screen.queryByRole('group', { name: 'Feed density' })).toBeNull();
   });
 });
+
+describe('FilterBar — narrow and enlarged-text layout contract', () => {
+  it('bounds native selects without removing their full option labels or Safari height', () => {
+    render(<FilterBar {...base} tagCounts={{ 'a-very-long-client-content-series-tag': 4 }} />);
+    for (const select of screen.getAllByRole('combobox')) {
+      expect(select).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'h-11', 'py-0');
+      expect(select.parentElement).toHaveClass('min-w-0', 'max-w-full');
+    }
+    expect(optionText('Filter by tag')).toContain('#a-very-long-client-content-series-tag (4)');
+  });
+
+  it('allows review and clear controls to wrap while retaining visible keyboard focus', () => {
+    render(<FilterBar {...base} activeFilterCount={4} onClearFilters={() => {}} showSuggestions />);
+    const review = screen.getByRole('group', { name: 'Filter by review state' });
+    for (const button of [...within(review).getAllByRole('button'), screen.getByText('Clear 4')]) {
+      expect(button).toHaveClass('flex-wrap', 'max-w-full', 'min-h-[44px]', 'focus-visible:outline-2');
+    }
+  });
+
+  it('keeps all density choices reachable in a wrapping group with 44px targets', () => {
+    render(<FilterBar {...base} density={DENSITY.COMPACT} onDensityChange={() => {}} />);
+    const group = screen.getByRole('group', { name: 'Feed density' });
+    expect(group).toHaveClass('flex-wrap', 'max-w-full');
+    for (const button of within(group).getAllByRole('button')) {
+      expect(button).toHaveClass('min-h-[44px]', 'min-w-[44px]', 'focus-visible:outline-2');
+    }
+    expect(screen.getByLabelText('Compact view')).toHaveAttribute('aria-pressed', 'true');
+  });
+});
