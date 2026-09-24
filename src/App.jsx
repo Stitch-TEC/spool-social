@@ -1925,19 +1925,19 @@ const App = () => {
                       only (suggestionPosts is empty for everyone else), hidden on the lane itself and
                       on templates/archived, one click into the lane, session-dismissible. */}
                   {isOperator && !showTemplates && !showArchived && filterReview !== SUGGESTIONS_LANE && suggestionPosts.length > 0 && !suggestionsBannerDismissed && (
-                    <div className="mb-6 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-3 sm:p-4">
+                    <div className="mb-6 flex flex-wrap items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-3 sm:p-4">
                       <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
                         <Lightbulb size={18} className="text-amber-600" />
                       </div>
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1 basis-[12rem]">
                         <p className="text-sm font-bold text-amber-900">
                           {suggestionPosts.length} AI {suggestionPosts.length === 1 ? 'suggestion is' : 'suggestions are'} parked for your review
                         </p>
-                        <p className="text-xs text-amber-700/80">From your automations — promote the good ones into a client&rsquo;s queue.</p>
+                        <p className="text-xs text-amber-800">From your automations — promote the good ones into a client&rsquo;s queue.</p>
                       </div>
                       <button
                         onClick={() => { setFilterReview(SUGGESTIONS_LANE); exitSelectionMode(); }}
-                        className="shrink-0 flex items-center gap-1.5 bg-amber-500 text-white px-3 py-2 rounded-xl font-bold text-xs shadow-sm hover:bg-amber-600 transition-colors"
+                        className="min-h-[44px] min-w-[44px] max-w-full flex items-center justify-center gap-1.5 bg-amber-700 text-white px-3 py-2 rounded-xl font-bold text-xs shadow-sm hover:bg-amber-800 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-900"
                       >
                         Review
                       </button>
@@ -1945,7 +1945,7 @@ const App = () => {
                         onClick={() => setSuggestionsBannerDismissed(true)}
                         aria-label="Dismiss suggestions notice"
                         title="Dismiss"
-                        className="shrink-0 p-1.5 text-amber-500 hover:text-amber-700 rounded-full"
+                        className="shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center p-1.5 text-amber-800 hover:text-amber-900 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-900"
                       >
                         <X size={16} />
                       </button>

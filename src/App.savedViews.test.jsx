@@ -84,4 +84,47 @@ describe('actual App saved-view integration, real filters and storage; synthetic
     state.currentUser = { uid: 'operator-b' }; state.revision = 2; state.auth = { ...state.auth, user: state.currentUser, authRevision: 2 }; app.rerender(<App />); open();
     expect(screen.queryByRole('option', { name: views[0].name })).toBeNull(); expect(screen.getByLabelText('New view name')).toHaveValue('');
   });
+
+  it('wraps the suggestions notice but retains its read-only lane navigation and selection reset', () => {
+    state.posts.push({ ...makePost('Parked option', 'Lyf Fit', '', 'pending'), source: 'suggestion', forClientId: 'lyf-fit', reviewStage: 'private' });
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }));
+    fireEvent.click(within(grid()).getByRole('button', { name: 'Alpha changes', exact: true }));
+    const review = screen.getByRole('button', { name: 'Review', exact: true });
+    expect(review.parentElement).toHaveClass('flex-wrap');
+    expect(review).toHaveClass('min-h-[44px]', 'focus-visible:outline-2');
+    fireEvent.click(review);
+    expect(titles()).toEqual(['Parked option']);
+    expect(grid().dataset.selected).toBe('');
+    expect(grid().dataset.selectable).toBe('false');
+    expect(screen.queryByLabelText('Dismiss suggestions notice')).toBeNull();
+  });
+
+  it('dismisses only the notice without changing the current feed or writing data', () => {
+    state.posts.push({ ...makePost('Parked option', 'Lyf Fit', '', 'pending'), source: 'suggestion', forClientId: 'lyf-fit', reviewStage: 'private' });
+    render(<App />);
+    const before = titles();
+    const dismiss = screen.getByLabelText('Dismiss suggestions notice');
+    expect(dismiss).toHaveClass('min-h-[44px]', 'min-w-[44px]', 'focus-visible:outline-2');
+    fireEvent.click(dismiss);
+    expect(screen.queryByLabelText('Dismiss suggestions notice')).toBeNull();
+    expect(titles()).toEqual(before);
+  });
+
+  it.each(['member', 'guest'])('keeps the suggestions notice hidden from %s', kind => {
+    state.posts.push({ ...makePost('Parked option', 'Lyf Fit', '', 'pending'), source: 'suggestion', forClientId: 'lyf-fit', reviewStage: 'private' });
+    state.auth.isOperator = false;
+    state.auth.isClientMember = kind === 'member';
+    state.auth.isReadOnly = kind === 'guest';
+    render(<App />);
+    expect(screen.queryByLabelText('Dismiss suggestions notice')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review', exact: true })).toBeNull();
+  });
+
+  it.each(['Archives fixture', 'Templates fixture'])('keeps the suggestions notice hidden on %s', label => {
+    state.posts.push({ ...makePost('Parked option', 'Lyf Fit', '', 'pending'), source: 'suggestion', forClientId: 'lyf-fit', reviewStage: 'private' });
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(screen.queryByLabelText('Dismiss suggestions notice')).toBeNull();
+  });
 });

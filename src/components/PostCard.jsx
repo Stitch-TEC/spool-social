@@ -54,11 +54,15 @@ const DENSITY_STYLES = {
 // the flow entirely and floats over the card's top-right corner on hover, handing
 // the whole header row back to the platform, date and client.
 //
-// On TOUCH it stays exactly where it was: `[@media(pointer:fine)]` guards every
-// rule, and a device with no hover has no way to reveal an overlay.
+// On TOUCH it stays in flow on its own wrapping row: a device with no hover has
+// no way to reveal an overlay. Both modes bound the cluster to the card instead
+// of clipping later actions when the viewport is narrow or text is enlarged.
 const ACTIONS_CLS = [
-  'flex gap-1 transition-opacity',
+  'flex flex-wrap basis-full max-w-full gap-1 transition-opacity',
+  '[&_button]:min-h-[44px] [&_button]:min-w-[44px] [&_button]:flex [&_button]:items-center [&_button]:justify-center',
+  '[&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-indigo-600',
   '[@media(pointer:fine)]:absolute [@media(pointer:fine)]:top-2 [@media(pointer:fine)]:right-2 [@media(pointer:fine)]:z-10',
+  '[@media(pointer:fine)]:max-w-[calc(100%_-_1rem)]',
   '[@media(pointer:fine)]:rounded-lg [@media(pointer:fine)]:border [@media(pointer:fine)]:border-slate-100',
   '[@media(pointer:fine)]:bg-white/95 [@media(pointer:fine)]:backdrop-blur-sm [@media(pointer:fine)]:shadow-sm [@media(pointer:fine)]:p-0.5',
   '[@media(pointer:fine)]:opacity-0',
@@ -82,7 +86,7 @@ const FeedbackTrail = ({ post, className = 'mb-4' }) => {
   const shown = expanded ? entries : entries.slice(-1);
   const hidden = entries.length - shown.length;
   return (
-    <div className={`${className} space-y-1`}>
+    <div className={`${className} space-y-1 [overflow-wrap:anywhere]`}>
       {shown.map((f, i) => (
         <div key={i} className="p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900">
           <span className="font-bold uppercase tracking-wider text-[10px] text-rose-600 mr-1">
@@ -211,7 +215,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
   return (
     <div
       onClick={selectable ? toggle : undefined}
-      className={`group relative bg-white border rounded-xl shadow-sm transition-all overflow-hidden flex flex-col ${getStatusColor()} ${
+      className={`group relative min-w-0 bg-white border rounded-xl shadow-sm transition-all overflow-hidden flex flex-col ${getStatusColor()} ${
         selectable
           ? `cursor-pointer ${selected ? 'border-indigo-500 ring-2 ring-indigo-500/40' : 'border-slate-200 hover:border-indigo-300'}`
           : 'border-slate-100 hover:shadow-md'
@@ -224,11 +228,11 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
       )}
       <div className={`${D.accent} w-full ${isPosted ? 'bg-indigo-500' : isScheduled ? 'bg-amber-400' : 'bg-slate-300'}`} />
       <div className={`${D.pad} flex-1 flex flex-col`}>
-        <div className={`flex justify-between items-start ${D.headerMb} ${selectable ? 'pl-7' : ''}`}>
+        <div className={`flex flex-wrap justify-between items-start gap-2 ${D.headerMb} ${selectable ? 'pl-7' : ''}`}>
           {/* min-w-0 here as well as on the text column: without it this flex item can't
               shrink past its min-content width, and it pushed the review badge out of
               the card (which is overflow-hidden, so the badge lost its last character). */}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="flex items-center gap-2 min-w-0 flex-1 basis-[9rem]">
             <PlatformIcon platformId={post.platform} size={D.platformIcon} />
             {/* min-w-0 + truncate: without them this column can't shrink, so a narrow
                 card broke "X / Twitter" and "Jul 1, 12:00 PM" across lines instead. */}
@@ -240,11 +244,11 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                       : post.isTemplate
                       ? <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Template</span>
                       : (
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
                           {/* Auto-generated drafts get a distinct 'Auto' badge (operator-only) so a
                               machine draft is never mistaken for a hand-written one in the queue. */}
                           {isAutomationDraft && <span className="text-[10px] font-bold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-100 px-1.5 py-0.5 rounded inline-flex items-center gap-1"><Zap size={9} /> Auto</span>}
-                          <div className="flex items-center gap-1 text-xs text-slate-400 whitespace-nowrap"><Clock size={10} /><span>{formattedDate}</span></div>
+                          <div className="flex items-center gap-1 min-w-0 text-xs text-slate-400"><Clock size={10} className="shrink-0" /><span>{formattedDate}</span></div>
                         </div>
                       )}
                     {post.client && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-100 bg-slate-50 font-medium truncate max-w-[80px]" style={{ color: brandColor }}>{post.client}</span>}
@@ -310,7 +314,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         {/* Compact caps the tag row: a post with eight traceability tags would otherwise
             spend the line the thumbnail just bought back. `+N` keeps the count honest. */}
         {post.tags && post.tags.length > 0 && (
-          <div className={`flex flex-wrap gap-1 ${D.tagMb}`}>
+          <div className={`flex flex-wrap gap-1 [overflow-wrap:anywhere] ${D.tagMb}`}>
             {post.tags.slice(0, D.tagMax).map((tag, i) => <span key={i} className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-100 text-slate-500 border border-slate-200">{tag}</span>)}
             {post.tags.length > D.tagMax && (
               <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-slate-50 text-slate-400 border border-slate-200" title={post.tags.slice(D.tagMax).join(' · ')}>
@@ -329,8 +333,8 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             </div>
           )}
           <div className="min-w-0 flex-1">
-            {post.title && <h5 className="font-bold text-slate-800 text-sm mb-1 line-clamp-1">{post.title}</h5>}
-            <p className={`text-slate-600 text-sm ${D.clamp} leading-relaxed font-medium`}>{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
+            {post.title && <h5 className="font-bold text-slate-800 text-sm mb-1 line-clamp-1 [overflow-wrap:anywhere]">{post.title}</h5>}
+            <p className={`text-slate-600 text-sm ${D.clamp} leading-relaxed font-medium [overflow-wrap:anywhere]`}>{post.content || <span className="italic text-slate-300">Empty...</span>}</p>
           </div>
           {!compact && post.imageUrl && <div className="mt-3 relative h-32 w-full bg-slate-50 rounded-lg overflow-hidden border border-slate-100"><img src={post.imageUrl} alt={post.altText || 'Asset'} className="w-full h-full object-cover" loading="lazy" /></div>}
         </div>
@@ -343,14 +347,14 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         {/* Guests keep the single latest note (their own words, no history UI needed
             on a card — the review modal shows them the full thread). */}
         {isReadOnly
-          ? (post.feedback && <div className={`${D.feedbackMb} p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic`}>“{post.feedback}”</div>)
+          ? (post.feedback && <div className={`${D.feedbackMb} p-2 bg-rose-50 rounded-lg border border-rose-100 text-xs text-rose-900 italic [overflow-wrap:anywhere]`}>“{post.feedback}”</div>)
           : <FeedbackTrail post={post} className={D.feedbackMb} />}
 
         {/* Template card: primary action is "Use as draft" (clone into a new post).
             !isSuggestion keeps the action rows mutually exclusive — a bad doc carrying both
             flags renders the suggestion row (its lane is the more restrictive one). */}
         {!isReadOnly && !selectable && onUseTemplate && !isSuggestion && (
-          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
+          <div className={`flex flex-wrap items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
@@ -361,7 +365,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onUseTemplate(post); }}
-              className="flex-1 flex items-center justify-center gap-1.5 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              className="flex-1 flex items-center justify-center min-w-0 max-w-full gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
             >
               <FilePlus size={14} /> Use as draft
             </button>
@@ -374,7 +378,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         {/* Provenance: WHY this suggestion exists — its automation seed and (when site-grounded)
             the real page it drew from — so "Use this" is an informed click. */}
         {(isSuggestion || isAutomationDraft) && (post.suggestPageTitle || post.suggestPageUrl || post.suggestSeed || generatedDate) && (
-          <div className="text-[10px] text-slate-400 mb-2 flex items-start gap-1 min-w-0" title={post.suggestPageUrl || post.suggestSeed || ''}>
+          <div className="text-[10px] text-slate-400 mb-2 flex items-start gap-1 min-w-0 [overflow-wrap:anywhere]" title={post.suggestPageUrl || post.suggestSeed || ''}>
             <Sparkles size={11} className="text-amber-400 shrink-0 mt-px" />
             <span className="min-w-0 line-clamp-2">
               {/* Grounded (page) provenance wins; else the operator's seed (suggestions only); else a
@@ -397,7 +401,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
           </div>
         )}
         {!isReadOnly && !selectable && isSuggestion && (
-          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
+          <div className={`flex flex-wrap items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); onDismissSuggestion(post); }}
               className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full px-3 py-2 transition-colors"
@@ -407,7 +411,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onPromoteSuggestion(post); }}
-              className="flex-1 flex items-center justify-center gap-1.5 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
+              className="flex-1 flex items-center justify-center min-w-0 max-w-full gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-2 transition-colors"
               title="Move this draft into the client's review queue" aria-label="Use this suggestion"
             >
               <CheckCircle size={14} /> Use this
@@ -416,7 +420,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
         )}
 
         {!isReadOnly && !selectable && !onUseTemplate && !isSuggestion && (
-          <div className={`flex items-center justify-between ${D.footerPt} border-t border-slate-50 mt-auto`}>
+          <div className={`flex flex-wrap items-center justify-between gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             <button
               onClick={(e) => { e.stopPropagation(); copyToClipboard(post.content); }}
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors active:scale-95 p-1 sm:p-0 ${copied ? 'text-emerald-600' : 'text-slate-500 hover:text-indigo-700'}`}
@@ -433,7 +437,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               <button
                 onClick={(e) => { e.stopPropagation(); onResubmit(post); }}
                 title="Send the revised post back to the client for review"
-                className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+                className="flex items-center justify-center gap-1.5 min-w-0 max-w-full text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
                 <RefreshCw size={13} /> Back for review
               </button>
@@ -444,7 +448,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
               <button
                 onClick={(e) => { e.stopPropagation(); onSendForReview(post); }}
                 title="Make this visible on the client's review link"
-                className="flex items-center gap-1.5 shrink-0 whitespace-nowrap text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
+                className="flex items-center justify-center gap-1.5 min-w-0 max-w-full text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-3 py-1.5 transition-colors"
               >
                 <SendHorizontal size={13} /> Send for review
               </button>
@@ -455,7 +459,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
                 onChange={(e) => { e.stopPropagation(); onStatusChange(post.id, e.target.value); }}
                 aria-label="Set post status"
                 title="Set status"
-                className={`text-xs font-bold rounded-full px-2.5 h-7 py-0 leading-none border cursor-pointer transition-colors ${statusPill}`}
+                className={`min-w-0 max-w-full text-xs font-bold rounded-full px-2.5 h-7 py-0 leading-none border cursor-pointer transition-colors ${statusPill}`}
               >
                 {availableStatuses.map(status => (
                   <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>
@@ -472,7 +476,7 @@ const PostCard = memo(({ post, clientSettings = {}, onEdit, onDelete, onDuplicat
 
         {/* Guest reviewer quick-actions (approve / request changes from the card) */}
         {isReadOnly && (
-          <div className={`flex items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
+          <div className={`flex flex-wrap items-center gap-2 ${D.footerPt} border-t border-slate-50 mt-auto`}>
             {post.approvalStatus === APPROVAL_STATUS.APPROVED ? (
               <span className="flex-1 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg py-2 flex items-center justify-center gap-1"><CheckCircle size={14} /> Approved</span>
             ) : (

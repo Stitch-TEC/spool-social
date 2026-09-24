@@ -293,3 +293,89 @@ describe('PostCard — compact density', () => {
     expect(screen.getByAltText('Studio')).toHaveAttribute('src', 'https://example.com/a.jpg');
   });
 });
+
+describe('PostCard — reflow action invariants', () => {
+  it.each([DENSITY.CARDS, DENSITY.COMPACT])('keeps every approved-blog action and prevents bubbling in %s density', (density) => {
+    const post = { ...basePost, platform: 'blog', reviewStage: 'in_review', approvalStatus: 'approved' };
+    const parentClick = vi.fn();
+    const actions = [
+      ['Archive Thread', 'onArchive', post.id],
+      ['Move to staging', 'onHoldFromReview', post],
+      ['Push to Sender (email template)', 'onPushToSender', post],
+      ['Publish to site (opens a PR via POM dispatch)', 'onPublishToSite', post],
+      ['Blast: Clone to All Clients', 'onCloneToAll', post],
+      ['Clone Draft', 'onDuplicate', post],
+      ['Edit Thread', 'onEdit', post],
+      ['Delete Thread', 'onDelete', post.id],
+    ];
+    const handlers = Object.fromEntries(actions.map(([, prop]) => [prop, vi.fn()]));
+    render(<div onClick={parentClick}><PostCard post={post} density={density} {...handlers} /></div>);
+    const cluster = screen.getByLabelText('Delete Thread').parentElement;
+    expect(cluster).toHaveClass('flex-wrap', 'basis-full', 'max-w-full', '[@media(pointer:fine)]:max-w-[calc(100%_-_1rem)]');
+    for (const [label, prop, argument] of actions) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(handlers[prop]).toHaveBeenCalledExactlyOnceWith(argument);
+    }
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('keeps the suggestion gate separate from template and publishing actions', () => {
+    const post = { ...basePost, source: 'suggestion', isTemplate: true, platform: 'blog', approvalStatus: 'approved' };
+    const onPromoteSuggestion = vi.fn();
+    const onDismissSuggestion = vi.fn();
+    const parentClick = vi.fn();
+    render(<div onClick={parentClick}><PostCard
+      post={post} onEdit={() => {}} onDelete={() => {}} onDuplicate={() => {}}
+      onUseTemplate={() => {}} onPushToSender={() => {}} onPublishToSite={() => {}}
+      onArchive={() => {}} onCloneToAll={() => {}}
+      onPromoteSuggestion={onPromoteSuggestion} onDismissSuggestion={onDismissSuggestion}
+    /></div>);
+    expect(screen.queryByText('Use as draft')).toBeNull();
+    for (const label of ['Clone Draft', 'Archive Thread', 'Push to Sender (email template)', 'Publish to site (opens a PR via POM dispatch)']) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+    fireEvent.click(screen.getByLabelText('Use this suggestion'));
+    fireEvent.click(screen.getByLabelText('Dismiss suggestion'));
+    expect(onPromoteSuggestion).toHaveBeenCalledExactlyOnceWith(post);
+    expect(onDismissSuggestion).toHaveBeenCalledExactlyOnceWith(post);
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('keeps selection mode free of card actions and toggles only the selected post', () => {
+    const onToggleSelect = vi.fn();
+    const onEdit = vi.fn();
+    render(<PostCard post={basePost} onEdit={onEdit} onToggleSelect={onToggleSelect} selectable />);
+    expect(screen.queryByLabelText('Edit Thread')).toBeNull();
+    expect(screen.queryByLabelText('Delete Thread')).toBeNull();
+    expect(screen.queryByLabelText('Copy content to clipboard')).toBeNull();
+    fireEvent.click(screen.getByText('Draft content'));
+    expect(onToggleSelect).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it('keeps guest review callbacks and hides every operator action after wrapping', () => {
+    const onEdit = vi.fn();
+    const onStatusChange = vi.fn();
+    const parentClick = vi.fn();
+    render(<div onClick={parentClick}><PostCard
+      post={basePost} isReadOnly onEdit={onEdit} onStatusChange={onStatusChange}
+      onArchive={() => {}} onDelete={() => {}} onDuplicate={() => {}}
+    /></div>);
+    fireEvent.click(screen.getByRole('button', { name: 'Request changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith(basePost);
+    expect(onStatusChange).toHaveBeenCalledExactlyOnceWith('p1', 'scheduled', basePost);
+    expect(screen.queryByLabelText('Delete Thread')).toBeNull();
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('lets review labels wrap and retains the explicit Safari status-select height', () => {
+    const { rerender } = render(<PostCard post={{ ...basePost, reviewStage: 'private' }} onSendForReview={() => {}} />);
+    const send = screen.getByRole('button', { name: 'Send for review' });
+    expect(send).toHaveClass('min-w-0', 'max-w-full');
+    expect(send).not.toHaveClass('whitespace-nowrap');
+    expect(send.parentElement).toHaveClass('flex-wrap');
+    rerender(<PostCard post={{ ...basePost, reviewStage: 'in_review' }} onStatusChange={() => {}} />);
+    expect(screen.getByLabelText('Set post status')).toHaveClass('max-w-full', 'h-7', 'py-0');
+  });
+});

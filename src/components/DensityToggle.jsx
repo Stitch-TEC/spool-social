@@ -32,7 +32,7 @@ const MODES = [
  * apart from the filter controls rather than among them.
  */
 const DensityToggle = ({ value, onChange }) => (
-  <div className="flex bg-slate-100 p-0.5 rounded-lg shrink-0" role="group" aria-label="Feed density">
+  <div className="flex flex-wrap max-w-full bg-slate-100 p-0.5 rounded-lg" role="group" aria-label="Feed density">
     {MODES.map((mode) => {
       const Icon = mode.icon;
       const { value: v, label, hint } = mode;
@@ -45,8 +45,8 @@ const DensityToggle = ({ value, onChange }) => (
           aria-pressed={active}
           aria-label={`${label} view`}
           title={hint}
-          className={`p-1.5 rounded-md transition-colors ${
-            active ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'
+          className={`flex items-center justify-center min-h-[44px] min-w-[44px] p-1.5 rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 ${
+            active ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:text-slate-800'
           }`}
         >
           <Icon size={15} />

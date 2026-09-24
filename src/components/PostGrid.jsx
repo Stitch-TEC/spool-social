@@ -21,17 +21,16 @@ const PAGE_SIZE = {
   [DENSITY.LIST]: 150,
 };
 
-// Column counts per density. Every breakpoint up to `xl` is exactly what CARDS did
-// before; the wide steps are new. They're derived from card WIDTH, not from a wish
-// for more columns: with the 256px sidebar and the page's `lg:p-8`, a 1600px window
-// leaves ~1290px of content, so four columns there are ~305px wide — the same width
-// a card already has at the xl breakpoint. The screenshot that prompted this was
-// 1614px, spending that room on three ~390px columns instead.
+// The existing viewport steps are column CAPS, not a requirement to squeeze that
+// many cards into the remaining space. Enlarged root text also grows the sidebar,
+// page padding and card controls, without changing viewport media queries. Give
+// each card a rem-based readable minimum; the per-column fraction preserves the
+// existing count when it fits, and auto-fill drops columns when it doesn't.
+// min(100%, ...) keeps a single column fitting the narrowest available width.
+// auto-fill (not auto-fit) preserves empty slots when the feed has only one post.
 const GRID_CLASS = {
-  [DENSITY.CARDS]: 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4 gap-6',
-  // Compact cards need ~290px (56px thumbnail + two lines of copy), so its columns
-  // step up one breakpoint later than the raw count difference suggests.
-  [DENSITY.COMPACT]: 'grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 4xl:grid-cols-5 gap-4',
+  [DENSITY.CARDS]: 'grid [--feed-cols:1] md:[--feed-cols:2] xl:[--feed-cols:3] 3xl:[--feed-cols:4] grid-cols-[repeat(auto-fill,minmax(min(100%,max(18rem,calc((100%_-_(var(--feed-cols)_-_1)*1.5rem)/var(--feed-cols)))),1fr))] gap-6',
+  [DENSITY.COMPACT]: 'grid [--feed-cols:1] sm:[--feed-cols:2] xl:[--feed-cols:3] 2xl:[--feed-cols:4] 4xl:[--feed-cols:5] grid-cols-[repeat(auto-fill,minmax(min(100%,max(17.5rem,calc((100%_-_(var(--feed-cols)_-_1)*1rem)/var(--feed-cols)))),1fr))] gap-4',
 };
 
 // The list is one bordered surface with hairline separators rather than N floating

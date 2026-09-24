@@ -71,6 +71,20 @@ describe('PostGrid — density', () => {
     expect(screen.getAllByText('Approve')).toHaveLength(2);
     expect(screen.queryByLabelText('Send for review')).toBeNull();
   });
+
+  it.each([
+    [DENSITY.CARDS, '18rem', '3xl:[--feed-cols:4]'],
+    [DENSITY.COMPACT, '17.5rem', '4xl:[--feed-cols:5]'],
+  ])('keeps %s column caps while allowing a readable intrinsic minimum', (density, minimum, cap) => {
+    const { container } = render(<PostGrid {...baseProps} posts={make(1)} density={density} />);
+    const grid = container.querySelector('.grid');
+    expect(grid).toHaveClass('[--feed-cols:1]', cap);
+    // CSS auto-fill preserves the other empty slots; auto-fit would stretch a
+    // single remaining post across the whole desktop feed. Browser QA covers
+    // the computed track counts and geometry, which jsdom cannot measure.
+    expect(grid.className).toContain(`repeat(auto-fill,minmax(min(100%,max(${minimum},`);
+    expect(grid.className).not.toContain('auto-fit');
+  });
 });
 
 describe('PostGrid — group headings', () => {

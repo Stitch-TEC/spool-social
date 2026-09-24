@@ -79,4 +79,17 @@ describe('PostControls', () => {
     fireEvent.change(sel, { target: { value: '' } });
     expect(onTagChange).toHaveBeenLastCalledWith(null);
   });
+
+  it('keeps a long active zero-count tag intact inside a width-bounded native select', () => {
+    const tag = 'a-long-content-series-label-that-must-remain-selectable';
+    const onTagChange = vi.fn();
+    render(<PostControls {...base} filterTag={tag} onTagChange={onTagChange} tagCounts={{ growth: 3 }} />);
+    const select = screen.getByLabelText('Filter by tag');
+    expect(optionText('Filter by tag')).toContain(`#${tag} (0)`);
+    expect(select).toHaveValue(tag);
+    expect(select).toHaveClass('max-w-full', 'h-11', 'py-0');
+    expect(select.parentElement).toHaveClass('min-w-0', 'max-w-full');
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onTagChange).toHaveBeenCalledExactlyOnceWith(null);
+  });
 });
