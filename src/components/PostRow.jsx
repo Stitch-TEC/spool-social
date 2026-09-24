@@ -9,29 +9,32 @@ import { DATE_FORMATTERS } from '../utils/helpers';
 import { reviewStateOf, daysAwaiting } from '../utils/review';
 import { readinessOf, READINESS_LABELS } from '../utils/readiness';
 
-// Same four review states, same colours as the card — an operator switching density
-// must not have to re-learn what a colour means. Only the label is dropped on narrow
+// Same four review states and color families as the card, with stronger text
+// foregrounds for these small row badges. Only the label is dropped on narrow
 // screens; the rail and icon carry the state on their own.
 const REVIEW_BADGES = {
-  [REVIEW_STATE.NOT_SENT]: { label: 'Not sent', icon: EyeOff, cls: 'text-slate-500 bg-slate-100 border-slate-200', rail: 'border-l-slate-300' },
+  [REVIEW_STATE.NOT_SENT]: { label: 'Not sent', icon: EyeOff, cls: 'text-slate-600 bg-slate-100 border-slate-200', rail: 'border-l-slate-300' },
   [REVIEW_STATE.AWAITING]: { label: 'Awaiting', icon: Clock, cls: 'text-sky-700 bg-sky-50 border-sky-100', rail: 'border-l-sky-400' },
-  [REVIEW_STATE.CHANGES]: { label: 'Changes', icon: AlertCircle, cls: 'text-rose-600 bg-rose-50 border-rose-100', rail: 'border-l-rose-500' },
-  [REVIEW_STATE.APPROVED]: { label: 'Approved', icon: CheckCircle, cls: 'text-emerald-600 bg-emerald-50 border-emerald-100', rail: 'border-l-emerald-500' },
+  [REVIEW_STATE.CHANGES]: { label: 'Changes', icon: AlertCircle, cls: 'text-rose-700 bg-rose-50 border-rose-100', rail: 'border-l-rose-500' },
+  [REVIEW_STATE.APPROVED]: { label: 'Approved', icon: CheckCircle, cls: 'text-emerald-700 bg-emerald-50 border-emerald-100', rail: 'border-l-emerald-500' },
 };
 
 const STATUS_PILLS = {
   [STATUS.POSTED]: 'bg-indigo-100 text-indigo-700 border-indigo-200',
   [STATUS.SCHEDULED]: 'bg-amber-100 text-amber-800 border-amber-200',
-  [STATUS.ARCHIVED]: 'bg-slate-200 text-slate-500 border-slate-300',
+  [STATUS.ARCHIVED]: 'bg-slate-200 text-slate-600 border-slate-300',
   [STATUS.DRAFT]: 'bg-slate-100 text-slate-600 border-slate-200',
 };
 
-// ONE fixed-width status slot, whether it's editable or not — so the column stays a
-// column. (Editable and read-only variants of different widths made the right-hand
-// side of the list jitter from row to row.)
-const STATUS_SLOT = 'w-[78px] text-center appearance-none text-[10px] font-bold px-1 py-0.5 rounded-full border capitalize shrink-0';
+// The editable/static slots share a font-relative width. Explicit height and
+// zero vertical padding keep native Safari select labels vertically readable.
+const STATUS_SLOT = 'w-[5.5rem] max-w-full min-w-0 h-11 min-h-[44px] items-center justify-center text-center appearance-none text-xs font-bold px-1 py-0 leading-none rounded-full border capitalize shrink-0';
 
-const iconBtn = 'p-1.5 text-slate-400 rounded-md transition-colors';
+const FOCUS_CLASS = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600';
+const ICON_LAYOUT = `flex items-center justify-center min-h-[44px] min-w-[44px] p-1.5 rounded-md transition-colors ${FOCUS_CLASS}`;
+const iconBtn = `${ICON_LAYOUT} text-slate-600`;
+const primaryIconBtn = `${ICON_LAYOUT} text-indigo-700`;
+const useBtn = `flex items-center justify-center min-h-[44px] min-w-[44px] max-w-full gap-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-2 py-1 transition-colors ${FOCUS_CLASS}`;
 
 // A 32px square: enough to recognise "the one with the recording studio photo"
 // without spending a card's worth of vertical space on it. When the channel wants
@@ -62,7 +65,9 @@ const Thumb = ({ post, wantsImage }) => {
 };
 
 /**
- * One post as a single ~48px row — the LIST density (see constants.DENSITY).
+ * One post as a compact scanning row — the LIST density (see constants.DENSITY).
+ * Rows wrap when their contents cannot fit; neither controls nor date text may
+ * escape the row just to preserve a fixed height.
  *
  * The trade is explicit: a row shows what you scan by (channel, copy opening,
  * client, date, review state, what's missing) and drops what you act by. The
@@ -111,16 +116,20 @@ const PostRow = memo(({
   const rail = isSuggestion ? 'border-l-amber-400' : (post.isTemplate ? 'border-l-indigo-300' : badge.rail);
 
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+  const activateRow = () => selectable ? onToggleSelect?.(post.id) : onEdit(post);
+  const titleLabel = String(post.title || '').replace(/\s+/g, ' ').trim();
+  const contentLabel = String(post.content || '').replace(/\s+/g, ' ').trim();
+  const rowLabel = (titleLabel || contentLabel || 'Empty draft').slice(0, 120);
 
   return (
     <div
-      onClick={selectable ? () => onToggleSelect?.(post.id) : () => onEdit(post)}
-      className={`group flex items-center gap-2 sm:gap-3 pl-2 pr-2 sm:pr-3 py-2 border-l-4 ${rail} cursor-pointer transition-colors ${
+      onClick={activateRow}
+      className={`group flex flex-wrap items-center min-w-0 gap-2 sm:gap-3 pl-2 pr-2 sm:pr-3 py-2 border-l-4 ${rail} cursor-pointer transition-colors ${
         selected ? 'bg-indigo-50/70' : 'hover:bg-slate-50'
       }`}
     >
       {selectable && (
-        <span className={`w-5 h-5 rounded flex items-center justify-center border-2 shrink-0 ${
+        <span aria-hidden="true" className={`w-5 h-5 rounded flex items-center justify-center border-2 shrink-0 ${
           selected ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300'
         }`}>
           {selected && <Check size={13} strokeWidth={3} />}
@@ -135,17 +144,24 @@ const PostRow = memo(({
       </span>
       <Thumb post={post} wantsImage={blockers.includes('image_missing') || warnings.includes('image_suggested')} />
 
-      {/* The copy itself, one line. Title first when there is one (long-form posts are
-          found by their headline), then the opening of the body in a lighter weight. */}
-      <div className="min-w-0 flex-1 truncate text-sm">
+      {/* The copy is the native keyboard route to the same row action. Keep it a
+          sibling of status/actions, never a button wrapped around other controls.
+          Its flex basis gives the preview room before metadata wraps below. */}
+      <button
+        type="button"
+        onClick={stop(activateRow)}
+        aria-label={`${selectable ? 'Select thread' : 'Open thread'}: ${rowLabel}`}
+        aria-pressed={selectable ? selected : undefined}
+        className={`min-w-0 flex-1 basis-[10rem] min-h-[44px] truncate text-left text-sm rounded ${FOCUS_CLASS}`}
+      >
         {post.title && <span className="font-bold text-slate-800 mr-1.5">{post.title}</span>}
-        <span className={post.content ? 'text-slate-600' : 'italic text-slate-300'}>
+        <span className={post.content ? 'text-slate-600' : 'italic text-slate-600'}>
           {post.content || 'Empty…'}
         </span>
-      </div>
+      </button>
 
-      {/* Everything from here right is a fixed-width scanning column, dropped
-          progressively on narrower screens so the copy never gets squeezed out. */}
+      {/* Metadata keeps its existing viewport visibility. Items can move to the
+          next line instead of squeezing the copy or clipping later actions. */}
       {isAutomationDraft && (
         <span className="hidden xl:inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-violet-700 bg-violet-50 border border-violet-100 px-1.5 py-0.5 rounded shrink-0" title="Generated by an automation">
           <Zap size={9} /> Auto
@@ -160,7 +176,7 @@ const PostRow = memo(({
       {gaps.length > 0 && (
         <span
           className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 tabular-nums ${
-            blockers.length ? 'text-rose-700 bg-rose-50 border-rose-100' : 'text-slate-500 bg-slate-50 border-slate-200'
+            blockers.length ? 'text-rose-700 bg-rose-50 border-rose-100' : 'text-slate-600 bg-slate-50 border-slate-200'
           }`}
           title={gaps.map((c) => READINESS_LABELS[c] || c).join(' · ')}
         >
@@ -177,17 +193,16 @@ const PostRow = memo(({
         </span>
       )}
 
-      {/* Fixed width so the dates line up as a column across rows, and wide enough for
-          the longest value the short formatter produces ("Sep 30, 12:00 PM") — at 104px
-          a two-digit August day wrapped and made that one row taller than its neighbours. */}
-      <span className={`hidden md:flex items-center gap-1 text-xs shrink-0 w-[126px] justify-end whitespace-nowrap tabular-nums ${formattedDate ? 'text-slate-400' : 'text-slate-300 italic'}`}>
-        <Clock size={10} /> {formattedDate || 'No date'}
+      {/* 126px at ordinary root text, scaling with enlarged text. Wrapping remains
+          allowed inside a bounded slot; nowrap text must not spill into neighbors. */}
+      <span className={`hidden md:flex items-center gap-1 text-xs shrink-0 w-[7.875rem] max-w-full min-w-0 justify-end text-right tabular-nums text-slate-600 ${formattedDate ? '' : 'italic'}`}>
+        <Clock size={10} className="shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">{formattedDate || 'No date'}</span>
       </span>
 
       {/* Status: editable when changing it is the meaningful next step, static when the
           primary verb (send / back for review) has taken the action slot instead. */}
       {!isSuggestion && (primaryVerb || !onStatusChange || !canChangeCurrentStatus ? (
-        <span className={`hidden md:inline-block ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}>
+        <span className={`hidden md:inline-flex ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}>
           {post.status || STATUS.DRAFT}
         </span>
       ) : (
@@ -198,7 +213,7 @@ const PostRow = memo(({
           aria-label="Set post status"
           title="Set status"
           /* appearance-none costs the native arrow, so hover is what says "editable". */
-          className={`hidden md:inline-block cursor-pointer hover:ring-1 hover:ring-indigo-300 focus:ring-2 focus:ring-indigo-500 focus:outline-none ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}
+          className={`hidden md:inline-block cursor-pointer hover:ring-1 hover:ring-indigo-300 ${FOCUS_CLASS} ${STATUS_SLOT} ${STATUS_PILLS[post.status] || STATUS_PILLS[STATUS.DRAFT]}`}
         >
           {availableStatuses.map(status => (
             <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>
@@ -211,7 +226,7 @@ const PostRow = memo(({
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border flex items-center gap-1 shrink-0 ${badge.cls}`} title={isNotSent ? 'In staging — the client cannot see this yet' : undefined}>
           <BadgeIcon size={10} />
           <span className="hidden lg:inline">{badge.label}</span>
-          {waiting > 0 && <span className="opacity-70 tabular-nums">{waiting}d</span>}
+          {waiting > 0 && <span className="tabular-nums">{waiting}d</span>}
         </span>
       )}
       {post.isTemplate && (
@@ -220,25 +235,25 @@ const PostRow = memo(({
 
       {/* Actions. The primary verb is always visible (it's the whole point of the row);
           the rest fade in on hover on pointer devices and stay put on touch. */}
-      <div className="flex items-center gap-0.5 shrink-0">
+      <div className="flex flex-wrap items-center gap-0.5 min-w-0 max-w-full">
         {isSuggestion ? (
           <>
             <button onClick={stop(() => onDismissSuggestion(post))} title="Dismiss this suggestion (deletes it)" aria-label="Dismiss suggestion" className={`${iconBtn} hover:text-rose-600`}><X size={15} /></button>
-            <button onClick={stop(() => onPromoteSuggestion(post))} title="Move this draft into the client's review queue" aria-label="Use this suggestion" className="flex items-center gap-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-2 py-1 transition-colors"><CheckCircle size={12} /> Use</button>
+            <button onClick={stop(() => onPromoteSuggestion(post))} title="Move this draft into the client's review queue" aria-label="Use this suggestion" className={useBtn}><CheckCircle size={12} /> Use</button>
           </>
         ) : isTemplateRow ? (
           <>
-            <span className="flex gap-0.5 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
+            <span className="flex flex-wrap max-w-full gap-0.5 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
               <button onClick={stop(() => onDelete(post.id))} title="Delete Thread" aria-label="Delete Thread" className={`${iconBtn} hover:text-rose-600`}><Trash2 size={15} /></button>
             </span>
-            <button onClick={stop(() => onUseTemplate(post))} title="Spin off a new draft from this template" aria-label="Use as draft" className="flex items-center gap-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-2 py-1 transition-colors"><FilePlus size={12} /> Use</button>
+            <button onClick={stop(() => onUseTemplate(post))} title="Spin off a new draft from this template" aria-label="Use as draft" className={useBtn}><FilePlus size={12} /> Use</button>
           </>
         ) : (
           <>
-            {/* hidden below sm: on a phone these three buttons are always visible (no
-                hover to gate them) and cost ~90px of a 390px row — most of the copy.
-                Tapping the row opens the editor, which is where all of this lives. */}
-            <span className="hidden sm:flex gap-0.5 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
+            {/* Existing narrow-screen visibility stays: three 44px secondary targets
+                plus gaps cost much of a phone row. The copy's native button (or
+                tapping row whitespace) opens the editor, where these verbs live. */}
+            <span className="hidden sm:flex flex-wrap max-w-full gap-0.5 transition-opacity [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100">
               <button onClick={stop(() => onEdit(post))} title="Edit Thread" aria-label="Edit Thread" className={`${iconBtn} hover:text-emerald-700`}><Edit3 size={15} /></button>
               {isArchived
                 ? onRestore && <button onClick={stop(() => onRestore(post.id))} title="Restore Thread" aria-label="Restore Thread" className={`${iconBtn} hover:text-indigo-600`}><ArchiveRestore size={15} /></button>
@@ -248,10 +263,10 @@ const PostRow = memo(({
             {/* The status control lives in its own column; this slot is for the verb that
                 REPLACES it — so the two can never both claim the row. */}
             {primaryVerb === 'resubmit' && (
-              <button onClick={stop(() => onResubmit(post))} title="Send the revised post back to the client for review" aria-label="Back for review" className={`${iconBtn} text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50`}><RefreshCw size={15} /></button>
+              <button onClick={stop(() => onResubmit(post))} title="Send the revised post back to the client for review" aria-label="Back for review" className={`${primaryIconBtn} hover:text-indigo-800 hover:bg-indigo-50`}><RefreshCw size={15} /></button>
             )}
             {primaryVerb === 'send' && (
-              <button onClick={stop(() => onSendForReview(post))} title="Make this visible on the client's review link" aria-label="Send for review" className={`${iconBtn} text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50`}><SendHorizontal size={15} /></button>
+              <button onClick={stop(() => onSendForReview(post))} title="Make this visible on the client's review link" aria-label="Send for review" className={`${primaryIconBtn} hover:text-indigo-800 hover:bg-indigo-50`}><SendHorizontal size={15} /></button>
             )}
           </>
         )}

@@ -185,9 +185,14 @@ something the client did; pulling a post back to staging must not erase it.
   VIEW preference — no stored field, no filter semantics — persisted per browser in
   `localStorage['spool.feedDensity']` (every access try/caught: Safari private windows throw).
   `compact` is `PostCard` with a 56px thumbnail beside two lines; `list` is its own component
-  (`PostRow`, ~48px a row) which deliberately drops the verbs you'd only use after reading the
+  (`PostRow`, compact rows that wrap when needed) which deliberately drops the verbs you'd only use after reading the
   whole post (clone-to-all, duplicate, hold, push-to-Sender, publish) — the row click opens the
-  editor. **Review guests are pinned to `cards`** in BOTH App (the control is hidden) and
+  editor. The preview is also a native keyboard button; in selection mode it calls
+  the same row selection handler and exposes `aria-pressed`. Status/actions remain
+  sibling controls. Date slots scale with text, and existing visible actions wrap
+  instead of clipping. See `docs/LIST-REFLOW-2026-09-24.md` for target/visibility
+  scope and the deliberate variable-height tradeoff.
+  **Review guests are pinned to `cards`** in BOTH App (the control is hidden) and
   PostGrid (the value is coerced): a one-line row invites approving copy the client only
   skimmed, so PostRow never has to reason about a read-only viewer.
 - **Group headings** (`src/utils/grouping.js`): month / client / platform runs over a
