@@ -8,7 +8,7 @@ raw content is exactly unchanged in a later metadata-only Firestore snapshot.
 that every update reparsed the entire workspace before the change.
 
 The first snapshot, a reconnect's first snapshot and actual content changes
-still normalize. There is no query, pagination, Firestore rule, Worker, API,
+still normalize. There is no query, pagination, Firestore rule, API contract,
 dependency, configuration, persisted data or browser-storage change. Initial
 network reads remain unbounded and whole-workspace search/facets/export remain
 unchanged. This is not a cold-start or network optimization.
@@ -54,6 +54,14 @@ own exceptions/non-callable values cannot turn a compatibility fallback into a
 display crash. A failed parse still displays the same fallback; a later update
 tries again and only a successful result becomes reusable. The normalizer's
 origins are module-lifetime configuration, not the current browser hostname.
+
+The media-markup parser is shared with `worker/media.js` and `worker/firestore.js`.
+Its optional observer therefore changes the Worker bundle too, even though no
+file under `worker/` changed. The three server call sites still pass two arguments;
+their default output and catch behavior are unchanged. Server media identity,
+draft-output versioning and image-reference collection require regression review,
+and deployment verification must compare the changed uploaded Worker bundle with
+a build of the reviewed source, not assert an unchanged Worker script checksum.
 
 ## Verification and limits
 
