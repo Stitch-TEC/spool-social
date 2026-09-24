@@ -131,12 +131,13 @@ const BackToTop = () => {
 };
 
 /**
- * A run heading — "August 2026 · 34" — sticky under the app header so you always
- * know which month/client/platform you are looking at, however far down you are.
- * `top-16` is the app header's height; the page itself is the scroll container.
+ * A run heading — "August 2026 · 34". DashboardHeader has a natural, wrapping
+ * height (including enlarged desktop text), so headings scroll normally rather
+ * than sticking underneath it at a stale fixed offset. Counts/grouping stay the
+ * same; the page itself remains the scroll container.
  */
 const GroupHeading = ({ label, hint, count }) => (
-  <h3 className="sticky top-16 z-10 flex items-center gap-2 mb-3 py-2 bg-slate-50/90 backdrop-blur-sm border-b border-slate-200">
+  <h3 className="flex items-center gap-2 mb-3 py-2 bg-slate-50/90 backdrop-blur-sm border-b border-slate-200">
     <span className="text-xs font-bold uppercase tracking-wider text-slate-500 truncate">{label}</span>
     <span className="text-[10px] font-bold text-slate-500 bg-slate-200/70 rounded-full px-1.5 py-0.5 tabular-nums shrink-0">{count}</span>
     {hint && <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 shrink-0">{hint}</span>}

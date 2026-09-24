@@ -83,6 +83,8 @@ describe('PostGrid — group headings', () => {
 
     const july = screen.getByRole('heading', { name: /July 2026/ });
     expect(july).toBeInTheDocument();
+    // The naturally wrapping header has no fixed offset, at any screen width.
+    expect(july).not.toHaveClass('sticky', 'top-16', '2xl:sticky', '2xl:top-16');
     expect(july.textContent).toContain('4');
     expect(screen.getByRole('heading', { name: /August 2026/ }).textContent).toContain('10');
   });
