@@ -31,6 +31,7 @@ import DashboardHeader from './components/DashboardHeader';
 import BrandFooter from './components/BrandFooter';
 import PostGrid from './components/PostGrid';
 import FilterBar, { SUGGESTIONS_LANE } from './components/FilterBar';
+import SavedViews from './components/SavedViews';
 import DensityToggle from './components/DensityToggle';
 import Toast from './components/Toast';
 import FeedbackWidget from './components/FeedbackWidget';
@@ -111,7 +112,8 @@ const App = () => {
   // /api/clients 403s anyone else, and a client member's writes are pinned to myClientId anyway,
   // so for them the roster stays empty and every consumer fails open to legacy behavior.
   // Feeds the clientIdFor ladder below AND AdminPanel's picker (via props).
-  const { clients: rosterClients, loading: rosterLoading } = useClients(isOperator);
+  const savedViewSession = JSON.stringify([db.app?.options?.projectId || '', user?.uid || '', authRevision]);
+  const { clients: rosterClients, loading: rosterLoading, error: rosterError } = useClients(isOperator && !authLoading, savedViewSession);
 
   const clientParam = useMemo(
     () => new URLSearchParams(window.location.search).get('client'),
@@ -1349,6 +1351,16 @@ const App = () => {
     setFilterTag(null); setFilterMedia(null); setFilterNeeds(null);
   }, []);
 
+  const applySavedView = useCallback(filters => {
+    if (!isOperator || !getRecoveryUser()) return;
+    setFilterClient(filters.clientName);
+    setFilterReview(filters.review); setFilterStatus(filters.status);
+    setFilterPlatform(filters.platform); setFilterMedia(filters.media); setFilterNeeds(filters.needs);
+    setSortBy(filters.sort); setFilterTag(null); setSearchQuery('');
+    setShowArchived(false); setShowTemplates(false); setView('grid');
+    setSelectionMode(false); setSelectedIds(new Set());
+  }, [isOperator, getRecoveryUser]);
+
   const setDensity = useCallback((v) => {
     if (!DENSITY_VALUES.includes(v)) return;
     setDensityState(v);
@@ -1822,6 +1834,18 @@ const App = () => {
               three columns. 1700px is where a fourth card column lands at the same card
               width the third one has today (see PostGrid's GRID_CLASS). */}
           <div className={`flex-1 p-4 sm:p-6 lg:p-8 max-w-[1700px] mx-auto w-full ${selectionMode && selectedIds.size > 0 ? 'pb-28' : ''}`}>
+            {isOperator && !isReadOnly && !authLoading && user && (
+              <SavedViews
+                key={savedViewSession}
+                projectId={db.app?.options?.projectId || ''}
+                uid={user.uid}
+                isCurrent={() => isOperator && !!getRecoveryUser()}
+                roster={{ clients: rosterClients, loading: rosterLoading, error: rosterError }}
+                currentFilters={{ clientName: filterClient, review: filterReview, status: filterStatus, platform: filterPlatform, media: filterMedia, needs: filterNeeds, sort: sortBy }}
+                canSave={!showArchived && !showTemplates && filterReview !== SUGGESTIONS_LANE}
+                onApply={applySavedView}
+              />
+            )}
             <div className="flex items-center justify-between mb-6 gap-3">
               <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
                 <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
