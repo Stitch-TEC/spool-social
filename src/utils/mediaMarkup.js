@@ -11,6 +11,10 @@ const MARKDOWN_DESTINATION_TYPES = new Map([
 const HTML_TOKEN_TYPES = new Set(['htmlFlow', 'htmlText']);
 const MARKDOWN_UNSAFE = new Set(['\\', '"', "'", '`', '(', ')', '<', '>']);
 
+function notifyParseError(observer) {
+  try { observer?.(); } catch { /* Observation cannot break compatibility fallback. */ }
+}
+
 const asciiWhitespace = (char) => (
   char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f'
 );
@@ -133,11 +137,12 @@ function encodeHtmlAttributeValue(value, quote) {
   return output.replace(/[\t\n\f\r "'`=>]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-function collectHtmlEdits(source, transform) {
+function collectHtmlEdits(source, transform, onParseError) {
   let fragment;
   try {
     fragment = parseFragment(source, { sourceCodeLocationInfo: true });
   } catch {
+    notifyParseError(onParseError);
     return [];
   }
 
@@ -207,13 +212,14 @@ function htmlParseView(value, ranges) {
  * supply the source offsets; labels, titles, surrounding prose, and code remain
  * byte-for-byte intact.
  */
-export function transformMediaDestinations(markup, transform) {
+export function transformMediaDestinations(markup, transform, onParseError) {
   const value = String(markup || '');
   let events;
   try {
     const chunks = preprocess()(value, undefined, true);
     events = postprocess(parse().document().write(chunks));
   } catch {
+    notifyParseError(onParseError);
     return value;
   }
 
@@ -241,7 +247,7 @@ export function transformMediaDestinations(markup, transform) {
   // HTML together and mask every non-HTML byte with same-length whitespace. That
   // preserves parse5's absolute offsets while preventing code/prose from being
   // mistaken for markup and retaining raw-text element state across tokens.
-  if (htmlRanges.length) edits.push(...collectHtmlEdits(htmlParseView(value, htmlRanges), transform));
+  if (htmlRanges.length) edits.push(...collectHtmlEdits(htmlParseView(value, htmlRanges), transform, onParseError));
 
   return edits.length ? applyEdits(value, edits) : value;
 }

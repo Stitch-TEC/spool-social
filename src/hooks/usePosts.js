@@ -100,6 +100,9 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
     let firstBrandingSnapshot = true;
     let retryTimer = null;
     const brandingDocs = new Map();
+    // Private, weakly held metadata belongs to this listener attempt only.
+    // Never attach raw content/cache fields to post objects that writers spread.
+    let normalizedContentByPost = new WeakMap();
     const isCurrent = () => active && (!getAuthRevision || getAuthRevision() === authRevision);
     const updateCurrent = (update, allowDenied = false) => {
       if (!isCurrent() || (accessDenied && !allowDenied)) return;
@@ -113,6 +116,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
       accessDenied = true;
       postsTerminated = true;
       retriesRef.current.denied = true;
+      normalizedContentByPost = new WeakMap();
       if (retryTimer) clearTimeout(retryTimer);
       // An explicit auth denial is not a connection warning. Neither the last
       // posts nor branding may keep displaying, and the other listener cannot
@@ -175,17 +179,27 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
 
             const scheduledDate = getStableDate(data.scheduledDate, 'scheduledDate');
             const createdAt = getStableDate(data.createdAt, 'createdAt') || new Date();
-            // Media migration parsing used to run twice for every document in
-            // the initial snapshot (once for display, once for search). Besides
-            // doubling the work, that made a 400-post workspace a large
-            // synchronous allocation spike on iPhone Safari. Normalize once and
-            // reuse the exact string for both fields.
-            const content = versionSpoolMediaContent(data.content || '');
+            // Metadata-only updates need not repeat CommonMark/HTML parsing.
+            // Reuse only an exact raw primitive string, on the same current
+            // document and verified owner/client. Suggestions/legacy ownership
+            // shapes remain on the ordinary path. A retry's first snapshot and
+            // removed/re-added documents must normalize again.
+            const cacheableContent = typeof data.content === 'string'
+              && typeof data.uid === 'string' && data.uid.length > 0 && data.uid.trim() === data.uid
+              && typeof data.clientId === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(data.clientId)
+              && data.source !== 'suggestion' && !data.forClientId;
+            const cached = !replace && change.type === 'modified' && postMap.get(change.doc.id) === existing
+              ? normalizedContentByPost.get(existing) : null;
+            let normalizationFailed = false;
+            const content = cacheableContent && cached?.id === change.doc.id && cached.rawContent === data.content
+              && cached.uid === data.uid && cached.clientId === data.clientId
+              ? cached.content
+              : versionSpoolMediaContent(data.content || '', () => { normalizationFailed = true; });
 
             // Pre-calculate numeric timestamp for O(1) sort comparisons.
             const _sortTs = (scheduledDate || createdAt).getTime();
 
-            postMap.set(change.doc.id, {
+            const post = {
               id: change.doc.id,
               ...data,
               // Old /media URLs were browser-cacheable for one year. Read them
@@ -207,9 +221,21 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
               tags: Array.isArray(data.tags)
                 ? data.tags.filter((tag) => typeof tag === 'string').slice(0, 10)
                 : [],
-            });
+            };
+            // A copied review/editor may still hold the old post object. Do not
+            // keep its raw string alive just because that consumer still does.
+            if (existing) normalizedContentByPost.delete(existing);
+            // A snapshot updater queued before termination may still apply the
+            // existing retained-feed policy, but must not repopulate its cache.
+            if (!postsTerminated && cacheableContent && !normalizationFailed) {
+              normalizedContentByPost.set(post, {
+                id: change.doc.id, rawContent: data.content, content, uid: data.uid, clientId: data.clientId,
+              });
+            }
+            postMap.set(change.doc.id, post);
             hasChanges = true;
           } else if (change.type === 'removed') {
+            normalizedContentByPost.delete(postMap.get(change.doc.id));
             postMap.delete(change.doc.id);
             hasChanges = true;
           }
@@ -227,6 +253,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
     }, (err) => {
       if (!isCurrent() || postsTerminated) return;
       postsTerminated = true;
+      normalizedContentByPost = new WeakMap();
       console.error("🔥 Firestore Error:", err);
       if (ACCESS_DENIED_CODES.has(err?.code)) { denyAccess(err); return; }
       // Re-attach on codes that can clear by themselves, with capped exponential
@@ -273,6 +300,7 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
 
     return () => {
       active = false;
+      normalizedContentByPost = new WeakMap();
       unsubscribe();
       clientUnsub();
       if (retryTimer) clearTimeout(retryTimer);

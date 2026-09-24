@@ -155,12 +155,15 @@ export const versionMediaUrl = (u) => {
   return `${PUBLIC_SPOOL_ORIGIN}/media/v2/${encodedKey}`;
 };
 
-export const versionSpoolMediaContent = (value) => {
+// The optional observer lets a scoped caller avoid reusing a compatibility
+// fallback. It receives no content/error data and does not change the output.
+export const versionSpoolMediaContent = (value, onNormalizationError) => {
   const content = String(value || '');
   if (!content.includes('media/')) return content;
   try {
-    return transformMediaDestinations(content, (url) => versionMediaUrl(url));
+    return transformMediaDestinations(content, (url) => versionMediaUrl(url), onNormalizationError);
   } catch (error) {
+    try { onNormalizationError?.(); } catch { /* Observation cannot break display fallback. */ }
     console.warn('Spool media URL normalization skipped:', error);
     return content;
   }
