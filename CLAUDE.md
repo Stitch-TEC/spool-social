@@ -189,8 +189,11 @@ something the client did; pulling a post back to staging must not erase it.
   editor. **Review guests are pinned to `cards`** in BOTH App (the control is hidden) and
   PostGrid (the value is coerced): a one-line row invites approving copy the client only
   skimmed, so PostRow never has to reason about a read-only viewer.
-- **Group headings** (`src/utils/grouping.js`): sticky month / client / platform runs over a
+- **Group headings** (`src/utils/grouping.js`): month / client / platform runs over a
   long feed, on above `GROUP_MIN_POSTS` (12) posts and 2+ runs, else the grid renders flat.
+  Headings scroll normally at every width: the app header can wrap with screen size
+  and enlarged text, so a fixed sticky offset is not valid. See
+  `docs/MOBILE-HEADER-2026-09-23.md`; do not restore `top-16` independently of that layout.
   The group key MUST be the key the SORT orders by — that's what makes runs contiguous. In
   particular the scheduled sorts group by `scheduledDate || createdAt` (exactly usePosts'
   `_sortTs`); keying off `scheduledDate` alone dropped undated posts into an island that split
