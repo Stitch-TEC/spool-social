@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import PostRow from './PostRow';
+import { DATE_FORMATTERS } from '../utils/helpers';
 
 const basePost = {
   id: 'p1',
@@ -175,5 +176,151 @@ describe('PostRow', () => {
   it('shows "No date" for an unscheduled post rather than an empty column', () => {
     render(<PostRow post={{ ...basePost, scheduledDate: null }} onEdit={() => {}} />);
     expect(screen.getByText('No date')).toBeInTheDocument();
+  });
+});
+
+describe('PostRow — native preview action', () => {
+  it('offers a native open button without nesting any sibling action or status control', () => {
+    const onEdit = vi.fn();
+    const parentClick = vi.fn();
+    render(<div onClick={parentClick}><PostRow
+      post={basePost} onEdit={onEdit} onDelete={() => {}} onStatusChange={() => {}}
+    /></div>);
+    const open = screen.getByRole('button', { name: 'Open thread: Draft content' });
+    expect(open.tagName).toBe('BUTTON');
+    expect(open).toHaveAttribute('type', 'button');
+    expect(open).not.toHaveAttribute('aria-pressed');
+    expect(open.querySelector('button, select')).toBeNull();
+    expect(open.parentElement.tagName).toBe('DIV');
+    expect(open.parentElement).not.toHaveAttribute('role');
+    fireEvent.click(open);
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith(basePost);
+    expect(parentClick).not.toHaveBeenCalled();
+    // Whitespace still delegates through the original row click, separately.
+    fireEvent.click(open.parentElement);
+    expect(onEdit).toHaveBeenCalledTimes(2);
+    expect(parentClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes the same button an announced selection toggle without opening the editor', () => {
+    const onToggleSelect = vi.fn();
+    const onEdit = vi.fn();
+    const { rerender } = render(<PostRow post={basePost} selectable selected={false} onEdit={onEdit} onToggleSelect={onToggleSelect} />);
+    const select = screen.getByRole('button', { name: 'Select thread: Draft content' });
+    expect(select).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(select);
+    expect(onToggleSelect).toHaveBeenCalledExactlyOnceWith('p1');
+    rerender(<PostRow post={basePost} selectable selected onEdit={onEdit} onToggleSelect={onToggleSelect} />);
+    expect(screen.getByRole('button', { name: 'Select thread: Draft content' })).toHaveAttribute('aria-pressed', 'true');
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it('uses a bounded descriptive name while leaving the original preview intact', () => {
+    const title = `A\nheadline ${'x'.repeat(200)}`;
+    const { rerender } = render(<PostRow post={{ ...basePost, title }} onEdit={() => {}} />);
+    const open = screen.getByRole('button', { name: /^Open thread:/ });
+    expect(open.getAttribute('aria-label')).toBe(`Open thread: ${title.replace(/\s+/g, ' ').slice(0, 120)}`);
+    expect(open).toHaveTextContent('Draft content');
+    rerender(<PostRow post={{ ...basePost, title: '', content: '' }} onEdit={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Open thread: Empty draft' })).toHaveTextContent('Empty…');
+  });
+
+  it('uses nonblank content when the title contains only whitespace', () => {
+    const { rerender } = render(<PostRow post={{ ...basePost, title: ' \n\t ', content: '  Useful\npreview  ' }} onEdit={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Open thread: Useful preview' })).toBeInTheDocument();
+    rerender(<PostRow post={{ ...basePost, title: '  ', content: '\n\t' }} onEdit={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Open thread: Empty draft' })).toBeInTheDocument();
+  });
+});
+
+describe('PostRow — reflow invariants', () => {
+  it('lets rows and action groups wrap while preserving readable native control geometry', () => {
+    render(<PostRow post={basePost} onEdit={() => {}} onDelete={() => {}} onArchive={() => {}} onStatusChange={() => {}} />);
+    const open = screen.getByRole('button', { name: /^Open thread:/ });
+    expect(open.parentElement).toHaveClass('flex-wrap', 'min-w-0');
+    expect(open).toHaveClass('basis-[10rem]', 'min-h-[44px]', 'focus-visible:outline-2');
+    const status = screen.getByLabelText('Set post status');
+    expect(status).toHaveClass('w-[5.5rem]', 'max-w-full', 'h-11', 'py-0', 'min-h-[44px]', 'focus-visible:outline-2');
+    const date = screen.getByText(DATE_FORMATTERS.short.format(basePost.scheduledDate));
+    expect(date.parentElement).toHaveClass('w-[7.875rem]', 'max-w-full');
+    expect(date.parentElement).not.toHaveClass('whitespace-nowrap');
+    const secondary = screen.getByLabelText('Delete Thread').parentElement;
+    expect(secondary).toHaveClass('flex-wrap', 'max-w-full');
+    expect(secondary.parentElement).toHaveClass('flex-wrap', 'max-w-full');
+    for (const label of ['Edit Thread', 'Archive Thread', 'Delete Thread']) {
+      expect(screen.getByLabelText(label)).toHaveClass('min-h-[44px]', 'min-w-[44px]', 'focus-visible:outline-2');
+    }
+  });
+
+  it.each([false, true])('preserves secondary action arguments and stops the row action (selection=%s)', (selectable) => {
+    const onEdit = vi.fn();
+    const onArchive = vi.fn();
+    const onDelete = vi.fn();
+    const onToggleSelect = vi.fn();
+    const parentClick = vi.fn();
+    render(<div onClick={parentClick}><PostRow
+      post={basePost} selectable={selectable} onEdit={onEdit} onArchive={onArchive}
+      onDelete={onDelete} onToggleSelect={onToggleSelect}
+    /></div>);
+    fireEvent.click(screen.getByLabelText('Archive Thread'));
+    fireEvent.click(screen.getByLabelText('Delete Thread'));
+    expect(onArchive).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(onDelete).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Edit Thread'));
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith(basePost);
+    expect(onToggleSelect).not.toHaveBeenCalled();
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('keeps native status click/change separate from both row selection and opening', () => {
+    const onEdit = vi.fn();
+    const onToggleSelect = vi.fn();
+    const onStatusChange = vi.fn();
+    render(<PostRow post={basePost} selectable onEdit={onEdit} onToggleSelect={onToggleSelect} onStatusChange={onStatusChange} />);
+    const status = screen.getByLabelText('Set post status');
+    fireEvent.click(status);
+    fireEvent.change(status, { target: { value: 'scheduled' } });
+    expect(onStatusChange).toHaveBeenCalledExactlyOnceWith('p1', 'scheduled');
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onToggleSelect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['private', 'pending', 'Send for review', 'onSendForReview'],
+    ['in_review', 'changes_requested', 'Back for review', 'onResubmit'],
+  ])('keeps the %s primary review action isolated from row selection', (reviewStage, approvalStatus, label, prop) => {
+    const post = { ...basePost, reviewStage, approvalStatus };
+    const callback = vi.fn();
+    const onEdit = vi.fn();
+    const onToggleSelect = vi.fn();
+    render(<PostRow post={post} selectable onEdit={onEdit} onToggleSelect={onToggleSelect} {...{ [prop]: callback }} />);
+    fireEvent.click(screen.getByLabelText(label));
+    expect(callback).toHaveBeenCalledExactlyOnceWith(post);
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onToggleSelect).not.toHaveBeenCalled();
+  });
+
+  it('preserves template and suggestion action separation and propagation', () => {
+    const onEdit = vi.fn();
+    const onToggleSelect = vi.fn();
+    const onUseTemplate = vi.fn();
+    const onPromoteSuggestion = vi.fn();
+    const onDismissSuggestion = vi.fn();
+    const post = { ...basePost, isTemplate: true };
+    const common = { onEdit, onToggleSelect, selectable: true, onUseTemplate, onPromoteSuggestion, onDismissSuggestion };
+    const { rerender } = render(<PostRow post={post} {...common} onDelete={() => {}} />);
+    fireEvent.click(screen.getByLabelText('Use as draft'));
+    expect(onUseTemplate).toHaveBeenCalledExactlyOnceWith(post);
+    const suggestion = { ...post, source: 'suggestion' };
+    rerender(<PostRow post={suggestion} {...common} />);
+    expect(screen.queryByLabelText('Use as draft')).toBeNull();
+    expect(screen.queryByLabelText('Delete Thread')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Use this suggestion'));
+    fireEvent.click(screen.getByLabelText('Dismiss suggestion'));
+    expect(onPromoteSuggestion).toHaveBeenCalledExactlyOnceWith(suggestion);
+    expect(onDismissSuggestion).toHaveBeenCalledExactlyOnceWith(suggestion);
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onToggleSelect).not.toHaveBeenCalled();
   });
 });
