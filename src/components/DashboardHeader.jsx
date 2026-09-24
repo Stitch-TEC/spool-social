@@ -46,7 +46,7 @@ const DashboardHeader = ({
     // The header grows with its controls/text, including enlarged desktop text.
     // In short viewports it scrolls too, so tall controls cannot cover the feed.
     // PostGrid headings scroll normally: there is no fixed header-height offset.
-    <header className="bg-white border-b border-slate-200 sticky top-0 [@media(max-height:32rem)]:static z-40 px-4 sm:px-6 py-2 flex flex-wrap items-center gap-2 shadow-sm 2xl:gap-4">
+    <header className="bg-white border-b border-slate-200 sticky top-0 [@media(max-height:40rem)]:static z-40 px-4 sm:px-6 py-2 flex flex-wrap items-center gap-2 shadow-sm 2xl:gap-4">
       <div className="shrink-0 flex items-center gap-2">
         {!isReadOnly && <ToolSwitcher />}
         {!isReadOnly && (

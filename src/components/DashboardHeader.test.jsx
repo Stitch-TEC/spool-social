@@ -115,7 +115,7 @@ describe('DashboardHeader controls and responsive contract', () => {
     render(<DashboardHeader {...base} searchQuery="query" />);
     const header = screen.getByRole('banner');
     expect(header).toHaveClass('flex-wrap', 'sticky', 'top-0');
-    expect(header).toHaveClass('[@media(max-height:32rem)]:static');
+    expect(header).toHaveClass('[@media(max-height:40rem)]:static');
     expect(header).not.toHaveClass('h-16', '2xl:h-16', '2xl:flex-nowrap', 'overflow-hidden', 'overflow-x-hidden');
     expect(screen.getByRole('textbox', { name: 'Search threads' }).parentElement.parentElement)
       .toHaveClass('min-w-[min(100%,10rem)]');

@@ -20,10 +20,14 @@ also overflowed when branding, account information and Share text became visible
   own row below 1536px and may share the row above it when they actually fit.
   Nothing is hidden with overflow clipping and no resize observer is added.
 - Keep the app header sticky in taller windows, but let it scroll normally in
-  short viewports (height at most 32rem / ordinarily 512px). With 200% root text,
+  short viewports (height at most 40rem / ordinarily 640px). With 200% root text,
   a 449px header in a 320px-high window otherwise covers the feed throughout a
   scroll. The short-height fallback keeps every control and the feed reachable
-  without clipping or capping the header's height.
+  without clipping or capping the header's height. A 512px cutoff was insufficient:
+  at 320×520 with 200% root text and a long selected client, the header reached
+  537px and still covered the feed. The 640px fallback addresses the tested
+  320px-and-wider, up-to-200%-root-text cases; it is not a guarantee for arbitrary
+  zoom levels or untested browser accessibility settings.
 - Remove sticky positioning from post-group
   headings at **all** widths. Group labels, counts and sort order are unchanged.
   This is an intentional desktop tradeoff: a fixed 64px group offset would be
