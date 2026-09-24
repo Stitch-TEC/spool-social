@@ -57,8 +57,12 @@ guests, suggestions, templates, archived posts or selection mode. Existing
 snippet line clamps, compact tag/readiness caps and full-editor access remain.
 
 This is not a complete feed accessibility certification. List rows still use
-their existing interaction model, and some older card-footer/disclosure controls
-remain below 44px. The 44px design target is not a blanket WCAG 2.1 AA requirement.
+their existing interaction model and fixed-width columns. Rich-post testing at
+200% root text exposes clipped list-row actions at tablet width and long date
+text extending into the preceding column. List-row reflow is a separate retained
+issue, not claimed fixed by the shared toolbar or card/grid changes. Some older
+card-footer/disclosure controls remain below 44px. The 44px design target is not
+a blanket WCAG 2.1 AA requirement.
 Untouched metadata/brand colors are not certified for contrast. A 200% root-font
 fixture is a useful enlarged-text stress case, not a substitute for physical
 Safari zoom, iPhone keyboard or VoiceOver testing.
