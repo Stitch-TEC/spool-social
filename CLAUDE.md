@@ -27,8 +27,9 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   Wrangler is exactly `4.131.0`, and invokes that local binary directly. This reviewed
   toolchain uses Miniflare `5.20260910.0-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
   See `docs/TOOLCHAIN-SECURITY-2026-09-21.md`; source verification is not live acceptance.
-- `main` is **branch-protected**: PR + the `build` check (CI runs lint + test + build + audit).
-  You cannot push straight to `main` — open a PR.
+- `main` uses active release ruleset `21514076`: PR, one approving review and the
+  `build`, `audit`, `analyze` and `dependency-review` checks (verified September 27).
+  Do not push straight to `main` or assume a POM-only override covers Spool.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
@@ -59,6 +60,12 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   every post in the workspace. Bounding it needs pagination that the whole-workspace facet
   counts currently assume away. The grid window + density cap the RENDER cost, not the read.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
+- **Linked-video convenience (September 27 source):** Editor inserts supported HTTPS sharing
+  links into ordinary draft text; Editor/ReviewModal expose external actions without fetching
+  or embedding. Links travel with normal text/AI/export/publish paths. No private attachment,
+  video storage, rules change or curated-library expansion is included. External bytes may
+  change behind a link; approval is not immutable video sign-off. Read
+  `docs/VIDEO-REFERENCES-AND-STORAGE.md` before extending media or claiming video publishing.
 - **Ordinary new-editor recovery (2026-09-23 source):** native IndexedDB v3 records an
   account/project/client-scoped reserved ID, frozen create payload and revisioned work.
   Dispatch uses Firebase-ID-token REST create-only after durable admission; uncertain

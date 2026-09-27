@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, AlertCircle, CheckCircle, ThumbsDown } from 'lucide-react';
 import MobilePreview from './MobilePreview';
+import VideoReferenceLinks from './VideoReferenceLinks';
 import CharCountCircle from './CharCountCircle';
 import { DATE_FORMATTERS } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
@@ -112,6 +113,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
                      {post.content}
                    </div>
                  </div>
+                 <VideoReferenceLinks content={post.content} />
                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
                      <dt className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Title</dt>
