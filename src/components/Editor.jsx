@@ -15,6 +15,8 @@ import AIGenerate from './AIGenerate';
 import CharCountCircle from './CharCountCircle'; // ✅ NEW
 import ConfirmModal from './ConfirmModal';
 import SaveRecoveryHelp from './SaveRecoveryHelp';
+import VideoLinkComposer from './VideoLinkComposer';
+import VideoReferenceLinks from './VideoReferenceLinks';
 import { PLATFORMS, STATUS, DEFAULT_CLIENT_SETTINGS } from '../constants';
 import { processImageFile } from '../utils/helpers';
 import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
@@ -25,6 +27,7 @@ import { recoveryScope, readRecovery } from '../utils/editorRecovery';
 import useAsyncRequest from '../hooks/useAsyncRequest';
 import useCreateRecovery from '../hooks/useCreateRecovery';
 import { createScope } from '../utils/createJournal';
+import { hasVideoReference, parseVideoReference } from '../utils/videoReferences';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -904,6 +907,27 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                  <CharCountCircle current={charCount} max={currentPlatform.maxChars} />
               </div>
             )}
+          </div>
+
+          <div className="mb-5 min-w-0 space-y-3">
+            {!isReadOnly && <VideoLinkComposer
+              key={JSON.stringify([recoveryPrincipalId, post?.id || '', genClientId(formData.client), formData.client])}
+              content={formData.content}
+              disabled={isSaving || isCheckingPreviousSave}
+              onInsert={url => {
+                if (isReadOnly || savingRef.current || !editorAliveRef.current || !parseVideoReference(url)) return 'unavailable';
+                if (hasVideoReference(formDataRef.current.content, url)) return 'duplicate';
+                setFormData(previous => {
+                  if (hasVideoReference(previous.content, url)) return previous;
+                  // Append without replacing or trimming existing work. This uses the
+                  // ordinary content edit path, including recovery and save-time approval reset.
+                  const separator = !previous.content || previous.content.endsWith('\n\n') ? '' : previous.content.endsWith('\n') ? '\n' : '\n\n';
+                  return { ...previous, content: `${previous.content}${separator}${url}` };
+                });
+                return 'inserted';
+              }}
+            />}
+            <VideoReferenceLinks content={formData.content} />
           </div>
 
           {/* Evergreen: mark as a reusable template (kept out of the dated queue,

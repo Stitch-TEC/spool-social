@@ -231,6 +231,42 @@ describe('App and Editor save lifecycle', () => {
     window.localStorage.clear();
   });
 
+  it('saves an inserted video link through the existing transaction and invalidates live approval', async () => {
+    const url = 'https://drive.google.com/file/d/synthetic-video/view?usp=sharing';
+    state.posts[0] = { ...state.posts[0], approvalStatus: 'approved', reviewStage: 'in_review' };
+    state.documents.set('a', { ...state.documents.get('a'), approvalStatus: 'approved', reviewStage: 'in_review' });
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit a' }));
+    await screen.findByText('Edit Thread');
+    fireEvent.click(screen.getByText('Add video link to draft text'));
+    fireEvent.change(screen.getByLabelText('Video sharing link'), { target: { value: url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Insert link into draft text' }));
+    expect(state.updates).toHaveLength(0);
+    expect(state.creates).toHaveLength(0);
+    expect(state.forbiddenRequests).toEqual([]);
+    save();
+    await waitFor(() => expect(state.updates).toHaveLength(1));
+    expect(state.documents.get('a')).toMatchObject({ content: `Original A\n\n${url}`, approvalStatus: 'pending', reviewStage: 'in_review', clientId: 'acme' });
+    expect(state.updates[0].patch).not.toHaveProperty('videoUrl');
+    expect(state.updates[0].patch).not.toHaveProperty('attachments');
+  });
+
+  it('keeps a new video-link draft private and uses the normal reserved-ID recovery/save', async () => {
+    const url = 'https://drive.google.com/file/d/synthetic-video/view?usp=sharing';
+    render(<App />);
+    await openNew('Private review preparation');
+    fireEvent.click(screen.getByText('Add video link to draft text'));
+    fireEvent.change(screen.getByLabelText('Video sharing link'), { target: { value: url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Insert link into draft text' }));
+    await waitForWork(`Private review preparation\n\n${url}`);
+    expect(state.creates).toHaveLength(0);
+    const create = await createPending();
+    expect(create.data).toMatchObject({ content: `Private review preparation\n\n${url}`, reviewStage: 'private', approvalStatus: 'pending', clientId: 'acme' });
+    expect(create.data).not.toHaveProperty('videoUrl');
+    expect(create.data).not.toHaveProperty('attachments');
+    await acknowledge(create);
+  });
+
   it('copies current editor text deliberately, not the save reference or stored payload', async () => {
     const clipboard = { writeText: vi.fn().mockResolvedValue() };
     vi.stubGlobal('navigator', { clipboard });

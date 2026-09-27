@@ -43,6 +43,20 @@ describe('ReviewModal — feedback attribution', () => {
 });
 
 describe('ReviewModal — review actions', () => {
+  it('opens recognized draft video links without embedding, fetching, approving or changing the source text', () => {
+    const url = 'https://drive.google.com/file/d/synthetic-video/view?usp=sharing';
+    const content = `Review this edit\n\n${url}`;
+    const onApprove = vi.fn(), onRequestChanges = vi.fn();
+    const { container } = render(<ReviewModal post={{ ...post, content }} onApprove={onApprove} onRequestChanges={onRequestChanges} onClose={noop} />);
+    const link = container.querySelector(`a[href="${url}"]`);
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
+    expect(container.querySelector('iframe, video')).toBeNull();
+    expect(screen.getByText(/Review this edit/, { selector: 'div.whitespace-pre-wrap' })).toHaveTextContent(url);
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onRequestChanges).not.toHaveBeenCalled();
+  });
+
   it('approves from the default view', () => {
     const onApprove = vi.fn();
     render(<ReviewModal post={post} onApprove={onApprove} onRequestChanges={noop} onClose={noop} />);
