@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, lazy, Suspense, useDeferredValue } from 'react';
 import { Loader2, ShieldCheck, X, CheckSquare, Files, Plus, Lightbulb } from 'lucide-react';
 import {
   collection,
@@ -21,6 +21,9 @@ import { needsImage, hasBlockers, isOverdue, readinessOf, READINESS_LABELS } fro
 import { convertToCSV, postsToJSON, downloadFile } from './utils/csv';
 import { ensureHostedImage, pushToSender, publishToSite } from './utils/generationApi';
 import useAuth from './hooks/useAuth';
+import useClientHandoff from './hooks/useClientHandoff';
+import { parseClientHandoff } from './utils/clientHandoff';
+import ClientHandoffNotice from './components/ClientHandoffNotice';
 import usePosts from './hooks/usePosts';
 import useReviewSelection from './hooks/useReviewSelection';
 import useToast from './hooks/useToast';
@@ -113,7 +116,18 @@ const App = () => {
   // so for them the roster stays empty and every consumer fails open to legacy behavior.
   // Feeds the clientIdFor ladder below AND AdminPanel's picker (via props).
   const savedViewSession = JSON.stringify([db.app?.options?.projectId || '', user?.uid || '', authRevision]);
-  const { clients: rosterClients, loading: rosterLoading, error: rosterError } = useClients(isOperator && !authLoading, savedViewSession);
+  const handoffSearch = useMemo(() => window.location.search, []);
+  const hasClientHandoff = useMemo(() => parseClientHandoff(handoffSearch).status !== 'absent', [handoffSearch]);
+  const roster = useClients(isOperator && !authLoading, savedViewSession, { strict: hasClientHandoff, isCurrent: getRecoveryUser });
+  const { clients: rosterClients, loading: rosterLoading, error: rosterError } = roster;
+  const getHandoffUser = useCallback(() => auth.currentUser, []);
+  const clientHandoff = useClientHandoff({
+    search: handoffSearch, user, authRevision, getAuthRevision, getCurrentUser: getHandoffUser, authLoading,
+    isOperator, isReadOnly, role, clientId: myClientId, sharedUid, shareClientId,
+    roster, scopeKey: savedViewSession,
+    content: { posts, clientMap, loading: postsLoading, error: postsError },
+  });
+  const { active: handoffActive, isCurrent: isHandoffCurrent, dismiss: dismissHandoff } = clientHandoff;
 
   const clientParam = useMemo(
     () => new URLSearchParams(window.location.search).get('client'),
@@ -123,7 +137,41 @@ const App = () => {
   // --- UI state ---
   const [view, setView] = useState('grid'); // 'grid' | 'calendar' | 'editor'
   const [currentDate, setCurrentDate] = useState(() => new Date());
-  const [filterClient, setFilterClient] = useState(clientParam);
+  const [manualFilterClient, setManualFilterClient] = useState(hasClientHandoff ? null : clientParam);
+  // Derive this before paint: an unresolved URL must never flash all clients or
+  // put the raw slug into a draft/media/import default. Explicit manual choices
+  // consume the navigation hint so a late response cannot re-apply it.
+  const filterClient = clientHandoff.active ? clientHandoff.clientName : manualFilterClient;
+  const setFilterClient = useCallback(name => {
+    if (handoffActive && !dismissHandoff()) return false;
+    setManualFilterClient(name);
+    return true;
+  }, [handoffActive, dismissHandoff]);
+  const consumeHandoffForWork = useCallback(() => {
+    if (!handoffActive) return true;
+    if (!isHandoffCurrent() || !dismissHandoff()) return false;
+    setManualFilterClient(filterClient);
+    return true;
+  }, [handoffActive, isHandoffCurrent, dismissHandoff, filterClient]);
+  const handoffFocus = useRef(null);
+  const handoffReadyRef = useRef(null);
+  const feedHeadingRef = useRef(null);
+  const continueHandoff = event => {
+    if (setFilterClient(null)) handoffFocus.current = { trigger: event.currentTarget, destination: 'feed' };
+  };
+  const revalidateHandoff = event => {
+    if (clientHandoff.revalidate()) handoffFocus.current = { trigger: event.currentTarget, destination: 'ready' };
+  };
+  useLayoutEffect(() => {
+    const pending = handoffFocus.current;
+    if (!pending) return;
+    handoffFocus.current = null;
+    const focused = document.activeElement;
+    // Restore only focus owned by the action that disappeared; never steal
+    // focus from someone who deliberately moved elsewhere.
+    if (focused !== pending.trigger && (focused !== document.body || pending.trigger.isConnected)) return;
+    (pending.destination === 'ready' ? handoffReadyRef : feedHeadingRef).current?.focus();
+  }, [clientHandoff.status]);
   // The PRIMARY axis: where a post sits in the client review loop (see utils/review.js).
   // null = all · REVIEW_STATE value · 'suggestions' (the operator-only parked lane).
   const [filterReview, setFilterReview] = useState(null);
@@ -287,9 +335,9 @@ const App = () => {
   // --- Link sharing ---
   // Opens the Share Manager (create/copy/revoke per-client review links).
   const handleOpenShare = useCallback(() => {
-    if (!user || isReadOnly) return;
+    if (!user || isReadOnly || !consumeHandoffForWork()) return;
     setIsShareOpen(true);
-  }, [user, isReadOnly]);
+  }, [user, isReadOnly, consumeHandoffForWork]);
 
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData, saveContext = {}) => {
@@ -1086,12 +1134,14 @@ const App = () => {
   // Stable identity matters: an inline arrow here handed memo(PostGrid) a new prop
   // on every single App render, so the memo never bailed and all N cards re-rendered.
   const handleCreateNew = useCallback(() => {
+    if (!consumeHandoffForWork()) return;
     setEditingIdentity(editorIdentity);
     setEditingPost(null);
     setView('editor');
-  }, [editorIdentity]);
+  }, [editorIdentity, consumeHandoffForWork]);
 
   const handleSelectPost = useCallback((p) => {
+    if (!consumeHandoffForWork()) return;
     if (isReadOnly) {
       openReview(p);
     } else {
@@ -1099,7 +1149,7 @@ const App = () => {
       setEditingPost(p);
       setView('editor');
     }
-  }, [isReadOnly, editorIdentity, openReview]);
+  }, [isReadOnly, editorIdentity, openReview, consumeHandoffForWork]);
 
   const handleDuplicatePost = useCallback((p) => {
     // Reset review state — a copy of an approved post is a fresh draft,
@@ -1122,7 +1172,7 @@ const App = () => {
   // non-template draft. Nothing is written until the user saves — so they alter
   // + schedule this iteration before it lands in the queue.
   const handleUseTemplate = useCallback((tmpl) => {
-    if (isReadOnly) return;
+    if (isReadOnly || !consumeHandoffForWork()) return;
     setEditingIdentity(editorIdentity);
     setEditingPost({
       ...tmpl,
@@ -1136,7 +1186,7 @@ const App = () => {
     });
     setShowTemplates(false);
     setView('editor');
-  }, [isReadOnly, editorIdentity]);
+  }, [isReadOnly, editorIdentity, consumeHandoffForWork]);
 
   // Batch-create draft posts (used by "Repurpose blog → social"). Returns count.
   const handleCreateDrafts = useCallback(async (drafts) => {
@@ -1353,13 +1403,13 @@ const App = () => {
 
   const applySavedView = useCallback(filters => {
     if (!isOperator || !getRecoveryUser()) return;
-    setFilterClient(filters.clientName);
+    if (!setFilterClient(filters.clientName)) return;
     setFilterReview(filters.review); setFilterStatus(filters.status);
     setFilterPlatform(filters.platform); setFilterMedia(filters.media); setFilterNeeds(filters.needs);
     setSortBy(filters.sort); setFilterTag(null); setSearchQuery('');
     setShowArchived(false); setShowTemplates(false); setView('grid');
     setSelectionMode(false); setSelectedIds(new Set());
-  }, [isOperator, getRecoveryUser]);
+  }, [isOperator, getRecoveryUser, setFilterClient]);
 
   const setDensity = useCallback((v) => {
     if (!DENSITY_VALUES.includes(v)) return;
@@ -1679,7 +1729,7 @@ const App = () => {
       console.error("Merge client error:", err);
       showToast("Couldn't rename/merge client", "error");
     }
-  }, [isReadOnly, user, isOperator, clientMap, clientIdByName, filterClient, showToast, clientIdFor]);
+  }, [isReadOnly, user, isOperator, clientMap, clientIdByName, filterClient, setFilterClient, showToast, clientIdFor]);
 
   // --- Render ---
 
@@ -1771,6 +1821,14 @@ const App = () => {
     );
   }
 
+  // The handoff is a one-time navigation intent. Explicitly opening an editor
+  // consumes it above; later roster refreshes never unmount unsaved editor work.
+  if (clientHandoff.active && clientHandoff.status !== 'ready') {
+    return <ClientHandoffNotice handoff={clientHandoff} onContinue={continueHandoff} onRevalidate={revalidateHandoff}
+      onRetry={() => roster.refresh?.()} canRetry={isOperator && !authLoading && clientHandoff.status !== 'retired'
+        && !!clientHandoff.slug && !!getRecoveryUser()} />;
+  }
+
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 flex">
@@ -1786,16 +1844,18 @@ const App = () => {
             filterClient={filterClient}
             onFilterClient={setFilterClient}
             uniqueClients={uniqueClients}
-            onOpenClientSettings={() => setIsClientSettingsOpen(true)}
-            onOpenMedia={() => setIsMediaOpen(true)}
-            onOpenData={() => setIsDataOpen(true)}
+            onOpenClientSettings={() => { if (consumeHandoffForWork()) setIsClientSettingsOpen(true); }}
+            onOpenMedia={() => { if (consumeHandoffForWork()) setIsMediaOpen(true); }}
+            onOpenData={() => { if (consumeHandoffForWork()) setIsDataOpen(true); }}
             isOperator={isOperator}
-            onOpenAdmin={() => setIsAdminOpen(true)}
-            onOpenAutomations={() => setIsAutomationsOpen(true)}
+            onOpenAdmin={() => { if (consumeHandoffForWork()) setIsAdminOpen(true); }}
+            onOpenAutomations={() => { if (consumeHandoffForWork()) setIsAutomationsOpen(true); }}
           />
         )}
 
         <main className="flex-1 min-w-0 flex flex-col min-h-screen">
+
+          {clientHandoff.active && <ClientHandoffNotice handoff={clientHandoff} readyRef={handoffReadyRef} onContinue={continueHandoff} />}
 
           <DashboardHeader
             isReadOnly={isReadOnly}
@@ -1847,7 +1907,7 @@ const App = () => {
               />
             )}
             <div className="flex items-center justify-between mb-6 gap-3">
-              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0">
+              <h2 ref={feedHeadingRef} tabIndex={-1} className="text-2xl font-bold text-slate-800 flex items-center gap-2 min-w-0 focus:outline-none">
                 <span className="truncate">{view === 'calendar' ? 'Calendar' : (filterClient ? `${filterClient} Threads` : 'All Threads')}</span>
                 {/* How big is this list, actually? The chip row answers it per review
                     state; nothing answered it for the list you are actually looking at. */}
@@ -1970,7 +2030,7 @@ const App = () => {
                           const atLimit = !!filterClient && templatesList.length >= TEMPLATE_LIMIT_PER_CLIENT;
                           return (
                             <button
-                              onClick={() => { setEditingIdentity(editorIdentity); setEditingPost({ isTemplate: true }); setView('editor'); }}
+                              onClick={() => { if (!consumeHandoffForWork()) return; setEditingIdentity(editorIdentity); setEditingPost({ isTemplate: true }); setView('editor'); }}
                               disabled={atLimit}
                               title={atLimit ? `Template limit reached (${TEMPLATE_LIMIT_PER_CLIENT}) for ${filterClient}` : 'New template'}
                               className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"

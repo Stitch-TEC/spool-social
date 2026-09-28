@@ -6,6 +6,8 @@
 // degrades gracefully to Spool's own client settings. The slug is the suite join key (= Spool's clientId,
 // reconciled to the POM slug).
 
+import { readJsonBounded } from './httpBody.js';
+
 const DEFAULT_URL = 'https://feedback.stitchtec.dev';
 
 // `tier` (cheap|standard|hard) = the TASK's difficulty — the broker sizes the aiContext slice to it
@@ -413,5 +415,49 @@ export async function fetchClientRoster(env) {
       }));
   } catch {
     return [];
+  }
+}
+
+// Navigation must distinguish an unavailable roster from an empty one. Keep
+// the older, intentionally fail-open consumers above unchanged. This confirms
+// a complete eligible broker response (which may be cached for 60 seconds),
+// not a new direct Firestore read or a complete inventory of historical labels.
+export async function fetchClientHandoffRoster(env) {
+  if (!env?.CONTEXT_KEY) return null;
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await fetch(`${env.SUITE_FEEDBACK_URL || DEFAULT_URL}/clients`, {
+          headers: { Authorization: `Bearer ${env.CONTEXT_KEY}` },
+          signal: controller.signal,
+          redirect: 'error',
+        });
+        if (response.status !== 200) return null;
+        const data = await readJsonBounded(response, 512_000);
+        if (data?.ok !== true || data.source !== 'firestore' || !Array.isArray(data.clients)
+          || data.clients.length > 1000) return null;
+        const statuses = new Set(['active', 'project', 'nonprofit', 'prospect', 'internal', 'archived']);
+        if (data.clients.some(client => !client || typeof client !== 'object' || Array.isArray(client)
+          || typeof client.slug !== 'string' || client.slug.length > 128 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(client.slug)
+          || typeof client.name !== 'string' || !client.name || client.name.length > 200
+          || client.name !== client.name.trim() || [...client.name].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+          || !statuses.has(client.status)
+          || (client.domains != null && (!Array.isArray(client.domains) || client.domains.length > 100
+            || client.domains.some(domain => typeof domain !== 'string' || domain.length > 255))))) return null;
+        // Project only the same public-to-operator fields as the existing route.
+        // Never forward context, connection details or upstream diagnostics.
+        return data.clients.map(({ slug, name, status, domains }) => ({ slug, name, status, domains: domains || [] }));
+      })(),
+      new Promise(resolve => {
+        timer = setTimeout(() => { controller.abort(); resolve(null); }, 5000);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
   }
 }

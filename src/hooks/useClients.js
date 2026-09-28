@@ -11,7 +11,7 @@
 // when the roster CONTENT actually changed (row-signature compare), so an unchanged roster
 // keeps the same array identity and the App.jsx memo cascade stays quiet.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { listClients } from '../lib/clientsClient';
 
 // Module-level singletons for the disabled state. A fresh `{ clients: [] }` per render would give
@@ -32,7 +32,7 @@ const REFRESH_MIN_MS = 15 * 60 * 1000;
 const rosterSig = (rows) =>
   rows.map((c) => `${c.slug}\u0000${c.name}\u0000${c.status}\u0000${(c.domains || []).join(',')}`).join('\u0001');
 
-export function useClients(enabled = true, scopeKey = '') {
+function useLegacyClients(enabled = true, scopeKey = '') {
   // Retire the previous return synchronously, not one effect/paint after a new
   // session. A fresh owner object also prevents A→B→A from reviving old A data.
   const [owner, setOwner] = useState(() => ({ enabled, scopeKey }));
@@ -76,4 +76,79 @@ export function useClients(enabled = true, scopeKey = '') {
   if (!enabled) return DISABLED;
   if (owner.enabled !== enabled || owner.scopeKey !== scopeKey || result?.owner !== owner) return PENDING;
   return { clients: result.clients, loading: result.loading, error: result.error };
+}
+
+function useStrictClients(enabled, scopeKey, isCurrent) {
+  const [owner, setOwner] = useState(() => ({ enabled, scopeKey }));
+  const [result, setResult] = useState(null);
+  const latestRef = useRef(null);
+  const requestRef = useRef(null);
+  const sequenceRef = useRef(0);
+  if (owner.enabled !== enabled || owner.scopeKey !== scopeKey) setOwner({ enabled, scopeKey });
+  useLayoutEffect(() => {
+    latestRef.current = { owner, enabled, scopeKey, isCurrent };
+    return () => { latestRef.current = null; };
+  });
+  useEffect(() => {
+    if (!owner.enabled) return undefined;
+    let alive = true, busy = false, controller = null;
+    let lastFetchAt = Date.now();
+    const current = () => {
+      try {
+        const latest = latestRef.current;
+        return alive && latest?.owner === owner && latest.enabled && latest.scopeKey === owner.scopeKey
+          && typeof latest.isCurrent === 'function' && !!latest.isCurrent();
+      } catch { return false; }
+    };
+    const load = () => {
+      if (busy || !current()) return false;
+      busy = true;
+      controller = new AbortController();
+      const readVersion = `${owner.scopeKey}:${++sequenceRef.current}`;
+      lastFetchAt = Date.now();
+      setResult(previous => ({ owner, clients: previous?.owner === owner ? previous.clients : EMPTY_CLIENTS,
+        loading: true, error: null, confirmed: false, readVersion }));
+      listClients({ strict: true, isCurrent: current, signal: controller.signal }).then(rows => {
+        if (!current()) return;
+        setResult({ owner, clients: rows, loading: false, error: null, confirmed: true, readVersion });
+      }).catch(() => {
+        if (!current()) return;
+        setResult({ owner, clients: EMPTY_CLIENTS, loading: false,
+          error: 'Client list could not be verified. Reload it before continuing.', confirmed: false, readVersion });
+      }).finally(() => { busy = false; });
+      return true;
+    };
+    requestRef.current = { owner, load };
+    load();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastFetchAt >= REFRESH_MIN_MS) load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      alive = false; controller?.abort();
+      if (requestRef.current?.owner === owner) requestRef.current = null;
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [owner]);
+  const refresh = useCallback(() => {
+    const latest = latestRef.current;
+    const request = requestRef.current;
+    return !!(latest?.enabled && latest.owner === owner && request?.owner === owner && request.load());
+  }, [owner]);
+  const valid = enabled && owner.enabled === enabled && owner.scopeKey === scopeKey && result?.owner === owner;
+  return {
+    clients: valid ? result.clients : EMPTY_CLIENTS,
+    loading: enabled && (!valid || result.loading), error: valid ? result.error : null,
+    confirmed: valid && result.confirmed === true, scopeKey,
+    readVersion: valid ? result.readVersion : null, refresh,
+  };
+}
+
+// Only a navigation handoff opts into the strict source/transport contract.
+// Ordinary pickers retain their existing graceful-degradation behavior.
+export function useClients(enabled = true, scopeKey = '', options = {}) {
+  const strict = options.strict === true;
+  const legacy = useLegacyClients(enabled && !strict, scopeKey);
+  const handoff = useStrictClients(enabled && strict, scopeKey, options.isCurrent);
+  return strict ? handoff : legacy;
 }
