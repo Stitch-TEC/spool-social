@@ -60,6 +60,12 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   every post in the workspace. Bounding it needs pagination that the whole-workspace facet
   counts currently assume away. The grid window + density cap the RENDER cost, not the read.
 - CI build needs dummy `VITE_FIREBASE_*` env (firebase.js calls `getAuth()` at module load).
+- **Client-view handoff (September 27 source):** `?clientSlug=` is an operator-only navigation
+  hint, resolved through a strict opt-in roster read and observed-content conflict checks. It is
+  never an access grant, review token or raw editor default. Existing `?client=` means a name;
+  `s`/`uid` retain review precedence. Intent ends on explicit manual selection/editor entry.
+  POM must not send these links before receiver release verification. See `docs/CLIENT-HANDOFF.md`
+  for the one-time lifetime, eligible-roster/cache limits, tests and coordinated rollback.
 - **Linked-video convenience (September 27 source):** Editor inserts supported HTTPS sharing
   links into ordinary draft text; Editor/ReviewModal expose external actions without fetching
   or embedding. Links travel with normal text/AI/export/publish paths. No private attachment,

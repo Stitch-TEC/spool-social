@@ -67,7 +67,7 @@ import {
 import { applySecurityHeaders, forceMediaDownload, withSecurityHeaders } from './security.js';
 import { STALE_ASSET_RECOVERY_PARAM } from '../src/staleAssetRecovery.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
-import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, renderSenderPreview, publishDraftToSite, rosterNameLookup } from './suiteContext.js';
+import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientHandoffRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite, renderSenderPreview, rosterNameLookup } from './suiteContext.js';
 // Shared with the SPA editor (pure string helpers — no DOM at module scope).
 import { stripLeadingDuplicateH1 } from '../src/utils/markdownEditing.js';
 
@@ -761,6 +761,16 @@ export default {
       if (auth.mode !== 'apikey') {
         const caller = await resolveShareCaller(auth, env);
         if (!caller || !caller.isOperator) return json({ error: 'Not authorized' }, 403, cors);
+      }
+      if (url.searchParams.has('handoff')) {
+        const noStore = { ...cors, 'Cache-Control': 'no-store' };
+        if (url.searchParams.getAll('handoff').length !== 1 || url.searchParams.get('handoff') !== '1') {
+          return json({ ok: false, error: 'Invalid handoff request' }, 400, noStore);
+        }
+        const clients = await fetchClientHandoffRoster(env);
+        return clients === null
+          ? json({ ok: false, error: 'Client list could not be verified' }, 503, noStore)
+          : json({ ok: true, confirmed: true, clients }, 200, noStore);
       }
       const clients = await fetchClientRoster(env);
       return json({ ok: true, clients }, 200, cors);
