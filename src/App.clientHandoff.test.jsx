@@ -99,4 +99,18 @@ describe('actual App canonical client handoff — real lifetime hook and filters
     try { await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Open verified client' }))); expect(external).toHaveFocus(); }
     finally { external.remove(); }
   });
+  it('restores focus owned by the pending notice when the first roster resolves', () => {
+    state.roster = { ...state.roster, confirmed: false, loading: true }; const app = render(<App />);
+    screen.getByRole('button', { name: 'Continue to Spool' }).focus();
+    state.roster = { ...state.roster, confirmed: true, loading: false, readVersion: 'read-2' }; app.rerender(<App />);
+    expect(screen.getByRole('region', { name: 'Client opened from a link' })).toHaveFocus();
+  });
+  it('does not steal external focus when the pending roster resolves', () => {
+    state.roster = { ...state.roster, confirmed: false, loading: true }; const app = render(<App />);
+    const external = document.createElement('button'); external.textContent = 'Outside app'; document.body.append(external); external.focus();
+    try {
+      state.roster = { ...state.roster, confirmed: true, loading: false, readVersion: 'read-2' }; app.rerender(<App />);
+      expect(external).toHaveFocus();
+    } finally { external.remove(); }
+  });
 });

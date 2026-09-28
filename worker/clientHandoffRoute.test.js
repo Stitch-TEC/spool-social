@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ authenticate: vi.fn(), getUserRecord: vi.fn(), checkRateLimit: vi.fn() }));
 vi.mock('./auth.js', async importOriginal => ({ ...await importOriginal(), authenticate: mocks.authenticate }));
 vi.mock('./firestore.js', async importOriginal => ({ ...await importOriginal(), getUserRecord: mocks.getUserRecord }));
-vi.mock('./rateLimit.js', () => ({ checkRateLimit: mocks.checkRateLimit }));
+vi.mock('./ratelimit.js', () => ({ checkRateLimit: mocks.checkRateLimit }));
 import worker from './index.js';
 const env = { CONTEXT_KEY: 'synthetic-context-key', OWNER_UID: 'operator', ALLOWED_ORIGINS: '*' };
 const client = { slug: 'acme-stable', name: 'Acme Studio', status: 'active', domains: [] };
@@ -28,6 +28,7 @@ describe('strict roster route retains the existing auth and rate-limit boundary'
     if (kind === 'member') mocks.getUserRecord.mockResolvedValue({ roles: ['client_admin'], clientId: 'acme-stable' });
     if (kind === 'rate-limited') mocks.checkRateLimit.mockResolvedValue({ ok: false, limit: 10, scope: 'minute', retryAfter: 30 });
     const response = await request('?handoff=1', kind === 'method' ? 'POST' : 'GET');
+    if (kind !== 'anonymous' && kind !== 'method') expect(mocks.checkRateLimit).toHaveBeenCalledOnce();
     expect(response.status).toBe({ anonymous: 401, member: 403, unprovisioned: 403, 'rate-limited': 429, method: 405 }[kind]);
     expect(fetch).not.toHaveBeenCalled();
   });

@@ -156,6 +156,9 @@ const App = () => {
   const handoffFocus = useRef(null);
   const handoffReadyRef = useRef(null);
   const feedHeadingRef = useRef(null);
+  const rememberHandoffFocus = useCallback(trigger => {
+    if (!handoffFocus.current) handoffFocus.current = { trigger, destination: 'ready' };
+  }, []);
   const continueHandoff = event => {
     if (setFilterClient(null)) handoffFocus.current = { trigger: event.currentTarget, destination: 'feed' };
   };
@@ -1824,7 +1827,7 @@ const App = () => {
   // The handoff is a one-time navigation intent. Explicitly opening an editor
   // consumes it above; later roster refreshes never unmount unsaved editor work.
   if (clientHandoff.active && clientHandoff.status !== 'ready') {
-    return <ClientHandoffNotice handoff={clientHandoff} onContinue={continueHandoff} onRevalidate={revalidateHandoff}
+    return <ClientHandoffNotice handoff={clientHandoff} onContinue={continueHandoff} onRevalidate={revalidateHandoff} onGateUnmount={rememberHandoffFocus}
       onRetry={() => roster.refresh?.()} canRetry={isOperator && !authLoading && clientHandoff.status !== 'retired'
         && !!clientHandoff.slug && !!getRecoveryUser()} />;
   }
