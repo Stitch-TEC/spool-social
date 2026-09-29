@@ -48,11 +48,11 @@
     "tailwindcss": "^4.1.18",
     "vite": "^7.2.4",
     "vitest": "4.1.11",
-    "wrangler": "4.131.0",
+    "wrangler": "4.143.1",
     "yaml": "2.9.0"
   },
   "overrides": {
     "esbuild": "^0.28.1",
-    "undici": "^7.29.0"
+    "undici": "^7.30.0"
   }
 }
