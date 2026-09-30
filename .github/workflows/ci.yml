@@ -71,11 +71,11 @@ jobs:
       # The reviewed pins in package.json keep it green. Do NOT "tidy" them without
       # re-running `npm audit --audit-level=high` first:
       #
-      #   overrides.undici ^7.29.0 — retained for the reviewed shared 7.x fix line.
+      #   overrides.undici ^7.30.0 — retained for the reviewed shared 7.x fix line.
       #     Review all consumers before removing this or the esbuild override.
       #
-      #   wrangler 4.131.0 — exact release/deploy pin. Its matching Miniflare
-      #     5.20260910.0-alpha pins Sharp 0.35.4 / libheif 1.23.2, fixing the
+      #   wrangler 4.143.1 — exact release/deploy pin. Its matching Miniflare
+      #     5.20260926.1-alpha pins Sharp 0.35.4 / libheif 1.23.2, fixing the
       #     later GHSA-rgj7-g3m4-5g8c advisory. The old 4.116 line still pins
       #     vulnerable Sharp 0.35.2; this deliberate upgrade is native-tested.
       #   vitest 4.1.11 — patched mocker boundary, GHSA-82fw-gwwq-j7x9.

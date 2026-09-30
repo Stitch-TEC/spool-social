@@ -24,8 +24,8 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - **App auto-deploys** to Cloudflare Workers on push to `main` (`.github/workflows/deploy.yml`,
   auth via `CLOUDFLARE_API_TOKEN` repo secret; `VITE_FIREBASE_*` injected from Actions vars).
   The release job uses exact Node `22.19.0`, runs `npm ci`, verifies the lockfile-installed
-  Wrangler is exactly `4.131.0`, and invokes that local binary directly. This reviewed
-  toolchain uses Miniflare `5.20260910.0-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
+  Wrangler is exactly `4.143.1`, and invokes that local binary directly. This reviewed
+  toolchain uses Miniflare `5.20260926.1-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
   See `docs/TOOLCHAIN-SECURITY-2026-09-21.md`; source verification is not live acceptance.
 - `main` uses active release ruleset `21514076`: PR, one approving review and the
   `build`, `audit`, `analyze` and `dependency-review` checks (verified September 27).

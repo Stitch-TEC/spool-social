@@ -1,5 +1,20 @@
 # Spool development-tool security — September 21, 2026
 
+## September 30 dependency-update follow-up (source preparation)
+
+The dependency update to Wrangler **4.143.1** and the existing Undici override's
+**7.30.0** line must move together with the exact deployment check and regression
+expectations. Wrangler selects Miniflare **5.20260926.1-alpha** and workerd
+**1.20260926.1**; Sharp **0.35.4** / libheif **1.23.2**, Vitest **4.1.11**, and
+Node **22.19.0** remain unchanged. The native AVIF regression and exact-version
+checks remain mandatory; no audit or release gate is relaxed. The historical
+September 21 version table below records that earlier release, not this update.
+
+This follow-up is not deployment approval. Validate the locked install, complete
+unit/rules suites, lint, audits, build, Worker bundle and local smoke before
+release, then verify the exact deployed version separately. No app/Worker source,
+rules, provider settings, permissions or workflow triggers are changed.
+
 ## Scope and release boundary
 
 This repairs development/build dependency findings, not app behavior. The fresh audit of main
