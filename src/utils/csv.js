@@ -1,4 +1,5 @@
 import { PLATFORMS, STATUS, APPROVAL_STATUS } from '../constants';
+import { assertLegacyReviewWriter, hasReviewDetailsFields } from './reviewDetails';
 
 // Data transfer (CSV + JSON) for posts.
 //
@@ -39,6 +40,9 @@ const serializeCell = (header, post) => {
  * Handles escaping quotes and wrapping fields that contain commas or newlines.
  */
 export const convertToCSV = (posts) => {
+  if ((posts || []).some(hasReviewDetailsFields)) {
+    throw new Error('CSV cannot preserve review details yet. Use a JSON backup; restoring these details is not enabled yet.');
+  }
   const rows = (posts || []).map(post =>
     CSV_COLUMNS.map(header => {
       const stringValue = serializeCell(header, post);
@@ -156,6 +160,7 @@ const splitTags = (value) => {
  */
 export const normalizeImportedPost = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
+  assertLegacyReviewWriter(raw);
 
   const client = String(raw.client || '').trim().replace(/\//g, '').slice(0, 50);
   const content = String(raw.content || '').trim();

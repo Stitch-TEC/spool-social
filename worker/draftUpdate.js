@@ -7,6 +7,14 @@ import {
   versionMediaReference,
 } from './media.js';
 import { reviewScheduledDateIdentity } from '../src/utils/reviewIdentity.js';
+import { REVIEW_DETAILS_FIELDS, copyReviewDetailsFields, hasReviewDetailsFields, reviewDetailsIdentity, reviewDetailsSnapshot } from '../src/utils/reviewDetails.js';
+import {
+  REVIEW_DETAILS_PUBLIC_FIELDS,
+  assertObservedReviewDetails,
+  assertReviewDetailsAuthoringDisabled,
+  assertStoredReviewDetails,
+  storedReviewDetailsAck,
+} from './reviewDetails.js';
 
 function dataImageParts(value, fallbackMime = '') {
   const text = String(value || '').trim();
@@ -55,13 +63,20 @@ export const DRAFT_PUBLIC_FIELD_PATHS = Object.freeze([
   'feedback', 'feedbackThread', 'reviewStage', 'imageUrl', 'tags',
   'isTemplate', 'scheduledDate', 'createdAt', 'updatedAt', 'source',
   'automationId', 'forClientId', 'sentForReviewAt', 'reviewedBy', 'reviewedAt',
+  ...REVIEW_DETAILS_PUBLIC_FIELDS,
 ]);
 
 export function publicDraftFields(draft) {
+  assertStoredReviewDetails(draft);
   const output = {};
   if (Object.prototype.hasOwnProperty.call(draft || {}, 'id')) output.id = draft.id;
   for (const field of DRAFT_PUBLIC_FIELD_PATHS) {
+    if (REVIEW_DETAILS_PUBLIC_FIELDS.includes(field)) continue;
     if (Object.prototype.hasOwnProperty.call(draft || {}, field)) output[field] = draft[field];
+  }
+  Object.assign(output, copyReviewDetailsFields(draft));
+  if (Object.prototype.hasOwnProperty.call(draft, 'reviewDetailsAck')) {
+    output.reviewDetailsAck = storedReviewDetailsAck(draft);
   }
   return output;
 }
@@ -97,9 +112,10 @@ export function publicationPathMatchesSlug(path, slug) {
 }
 
 export function draftPayloadIdentity(origin, draft, legacyOrigins = []) {
+  assertStoredReviewDetails(draft);
   const image = String(draft?.imageUrl || '');
   const normalizedImage = versionMediaReference(origin, image, legacyOrigins);
-  return JSON.stringify([
+  const identity = [
     normalizeSpoolMediaContentIdentity(origin, String(draft?.content || ''), legacyOrigins),
     String(draft?.title || ''),
     // Canonical versioning collapses v1/v2/legacy host variants without
@@ -111,11 +127,14 @@ export function draftPayloadIdentity(origin, draft, legacyOrigins = []) {
     // Long-form publication target. Missing legacy values and explicit empty
     // strings intentionally hash alike; callers never invent a fallback.
     draftPublicationSlug(draft),
-  ]);
+  ];
+  if (hasReviewDetailsFields(draft)) identity.push(reviewDetailsSnapshot(draft));
+  return JSON.stringify(identity);
 }
 
 export function draftReviewIdentity(draft) {
-  return JSON.stringify([
+  assertStoredReviewDetails(draft);
+  const identity = [
     String(draft?.status || ''),
     String(draft?.approvalStatus || ''),
     String(draft?.reviewStage || ''),
@@ -125,7 +144,9 @@ export function draftReviewIdentity(draft) {
     String(draft?.reviewedBy || ''),
     String(draft?.reviewedAt || ''),
     reviewScheduledDateIdentity(draft?.scheduledDate),
-  ]);
+  ];
+  if (hasReviewDetailsFields(draft)) identity.push(storedReviewDetailsAck(draft));
+  return JSON.stringify(identity);
 }
 
 export const draftPayloadRevision = (origin, draft, legacyOrigins = []) =>
@@ -135,7 +156,7 @@ export const draftReviewRevision = (draft) => sha256(draftReviewIdentity(draft))
 
 const REVIEW_EDITORIAL_FIELDS = Object.freeze([
   'content', 'title', 'platform', 'altText', 'metaDescription', 'slug', 'tags', 'scheduledDate',
-  'image', 'imageUrl',
+  'image', 'imageUrl', ...REVIEW_DETAILS_FIELDS,
 ]);
 
 /** A review verb is consent about the exact payload represented by the caller's
@@ -207,7 +228,8 @@ export function draftApprovedPayloadChanged(origin, live, next, legacyOrigins = 
     || String(live?.platform || '') !== String(next?.platform || '')
     || String(live?.altText || '') !== String(next?.altText || '')
     || String(live?.metaDescription || '') !== String(next?.metaDescription || '')
-    || draftPublicationSlug(live) !== draftPublicationSlug(next);
+    || draftPublicationSlug(live) !== draftPublicationSlug(next)
+    || reviewDetailsIdentity(live) !== reviewDetailsIdentity(next);
 }
 
 export function nextDraftUpdatedAt(live, nowMs = Date.now()) {
@@ -225,6 +247,11 @@ export function nextDraftUpdatedAt(live, nowMs = Date.now()) {
  * concurrent client action is preserved rather than overwritten.
  */
 export function buildDraftMutation(origin, live, intent, nowMs = Date.now(), legacyOrigins = []) {
+  assertStoredReviewDetails(live);
+  assertReviewDetailsAuthoringDisabled(intent.fields);
+  const observedDetails = intent.isReviewIntent || intent.hasApproval || intent.hasReviewStage
+    ? assertObservedReviewDetails(live, intent.reviewDetailsAck)
+    : null;
   const patch = { ...(intent.fields || {}) };
   const updatedAt = nextDraftUpdatedAt(live, nowMs);
 
@@ -294,6 +321,7 @@ export function buildDraftMutation(origin, live, intent, nowMs = Date.now(), leg
       patch.approvalStatus = intent.approvalStatus;
       patch.reviewedBy = intent.reviewedBy === 'client' ? 'client' : 'you';
       patch.reviewedAt = updatedAt;
+      if (observedDetails) patch.reviewDetailsAck = { ...observedDetails, at: updatedAt };
     }
     if (intent.reviewAction === 'request_changes') {
       if (typeof intent.feedback !== 'string' || !intent.feedback.trim() || intent.feedback.length > 500) {

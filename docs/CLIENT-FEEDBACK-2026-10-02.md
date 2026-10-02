@@ -1,6 +1,6 @@
 # Spool client feedback — October 2, 2026
 
-Status: first repair batch implemented and locally tested; protected PR/release acceptance pending, NOT deployed. Owner requested review and fixes after a client-role pilot. Preserve all existing drafts, media, review history and dates; no bulk cleanup is authorized merely by a bug report. Client-specific feedback and QA remain in private suite evidence, not this public repository.
+Status: first repair batch #138 is merged and verified live (`8f67844f`, Worker `55456a8c-39ba-4e3a-b5d6-c0a0c6226d64`). The next review-details compatibility foundation is prepared, not yet released; authoring is off. Owner requested review and fixes after a client-role pilot. Preserve all existing drafts, media, review history and dates; no bulk cleanup is authorized merely by a bug report. Client-specific feedback and QA remain in private suite evidence, not this public repository.
 
 ## First release: correct saves and trustworthy controls
 
@@ -18,9 +18,11 @@ Status: first repair batch implemented and locally tested; protected PR/release 
 
 No client content is rewritten by deploying these changes. Existing approval/reset and tenant-move transactions remain authoritative. UI checks are not server permission proof, locks, guaranteed cancellation after dispatch or durable storage immunity.
 
-Current local gates: 1,677 application tests pass; 77 strict native Firestore permission/REST cases pass separately. Lint, synthetic production build, raw full/runtime audits (zero) and immutable-action pins pass. Independent review includes queued/token/session changes, read-only unsaved-work preservation, text-only clipboard fallback and viewport-safe confirmations. Native browser acceptance and protected hosted checks bind their own exact source and explicit limits; they do not certify real client devices or deployed rules. No production release is claimed by these results.
+First-release acceptance: 1,677 application tests and 77 separate strict native Firestore permission/REST cases pass. Lint/build, both raw audits (zero), action pins, independent reviews and protected checks pass. Exact Worker/configuration and all 27 public files were verified; no client content or deployed rules changed. Native browser evidence has its documented provider/helper limits and does not certify physical devices or PWA behavior. Later preparation tests must not be substituted for this dated release record.
 
 ## Recommended next release: clean review media
+
+The staged compatibility contract, authoring-off release gates and native recovery version-2 limits are now in [Review details rollout](REVIEW-DETAILS-ROLLOUT.md). This foundation is not an enabled editor feature or a rule deployment.
 
 Highest-value product change: review media must be separate from publishable copy. Add bounded `reviewMedia` references with stable IDs, display labels and optional source-version notes. Provide a per-thread first-comment field. Keep caption, first comment and review attachments visibly distinct.
 
@@ -64,4 +66,4 @@ Required: focused regressions and full application tests/lint/build/audits, inde
 After release, verify exact reviewed source, Worker/configuration and public assets. Owner/client should reopen an undated draft, add a tag and save, then create a new draft with no date, and check the originally reported access/older-thread experience without clearing device recovery. Do not use real drafts as destructive tests or automatically repair the mistakenly assigned date without confirming the intended plan.
 
 A source rollback is acceptable only if it preserves all newly written null-date/recovery identities; never deploy a null-unaware recovery implementation as an incidental rollback. Prefer a forward fix or hold. Full feedback and QA evidence remain in the suite's dated private archive; this document records decisions without uploading client content.
-<!-- This record describes a proposed release; update verification status only after its gates complete. -->
+<!-- The first-release status is verified. Record later release acceptance separately from preparation. -->

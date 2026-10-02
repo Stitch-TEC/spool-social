@@ -64,6 +64,13 @@ import {
   sameLegacyImageBytes,
   versionDraftMedia,
 } from './draftUpdate.js';
+import {
+  assertObservedReviewDetails,
+  assertReviewDetailsAuthoringDisabled,
+  assertReviewDetailsHandoffSupported,
+  assertStoredReviewDetails,
+  reviewDetailsError,
+} from './reviewDetails.js';
 import { applySecurityHeaders, forceMediaDownload, withSecurityHeaders } from './security.js';
 import { STALE_ASSET_RECOVERY_PARAM } from '../src/staleAssetRecovery.js';
 import { runDueAutomations, generateForAutomation } from './automation.js';
@@ -174,6 +181,13 @@ export function symbolicErrorPayload(error, message, extra = {}) {
 
 function apiError(error, message, status, cors, extra) {
   return json(symbolicErrorPayload(error, message, extra), status, cors);
+}
+
+function reviewDetailsErrorResponse(err, cors) {
+  if (!['review_details_invalid', 'review_details_required',
+    'review_details_authoring_disabled', 'review_details_handoff_unsupported'].includes(err?.code)) return null;
+  const safe = reviewDetailsError(err.code);
+  return apiError(safe.code, safe.message, safe.status, cors);
 }
 
 function generationErrorResponse(err, cors, operation = 'generation') {
@@ -1451,6 +1465,8 @@ export default {
       catch { return json({ error: 'valid postId is required' }, 400, cors); }
       const post = await getPost(env, postId);
       if (!post) return json({ error: 'Post not found' }, 404, cors);
+      try { assertReviewDetailsHandoffSupported(post); }
+      catch (err) { return reviewDetailsErrorResponse(err, cors); }
       // A parked suggestion has no tenant — promote it first (the explicit gate stays load-bearing).
       if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
       // Review gate (operator decision 2026-08-13, closing the §8 asymmetry with the publish
@@ -1526,6 +1542,8 @@ export default {
 
       let body;
       try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
+      try { assertReviewDetailsHandoffSupported(body); }
+      catch (err) { return reviewDetailsErrorResponse(err, cors); }
       // Bound every field to the save path's own limits — this is preview-only,
       // but it still flows through the broker's 500KB relay cap. A data-URL
       // hero that would blow that cap is DROPPED whole (never truncated —
@@ -1605,6 +1623,8 @@ export default {
       catch { return json({ error: 'valid postId is required' }, 400, cors); }
       const post = await getPost(env, postId);
       if (!post) return json({ error: 'Post not found' }, 404, cors);
+      try { assertReviewDetailsHandoffSupported(post); }
+      catch (err) { return reviewDetailsErrorResponse(err, cors); }
       if (post.source === 'suggestion') return json({ error: 'Promote the suggestion first — suggestions aren’t client content yet' }, 400, cors);
       // Same review gate as the Sender push (aligned 2026-08-13): only content that
       // finished the review loop may stage — site publication is the client's public voice.
@@ -1738,7 +1758,13 @@ export default {
         if (!existing || existing.uid !== env.OWNER_UID) return json({ error: 'Draft not found' }, 404, cors);
 
         if (request.method === 'GET') {
-          return json({ draft: await versionDraftMedia(publicOrigin, existing, legacyOrigins) }, 200, cors);
+          try {
+            return json({ draft: await versionDraftMedia(publicOrigin, existing, legacyOrigins) }, 200, cors);
+          } catch (err) {
+            const detailsResponse = reviewDetailsErrorResponse(err, cors);
+            if (detailsResponse) return detailsResponse;
+            throw err;
+          }
         }
 
         if (request.method === 'DELETE') {
@@ -1749,6 +1775,10 @@ export default {
         if (request.method === 'PATCH') {
           let body;
           try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
+          try {
+            assertReviewDetailsAuthoringDisabled(body, { allowObservedAck: true });
+            assertStoredReviewDetails(existing);
+          } catch (err) { return reviewDetailsErrorResponse(err, cors); }
           // Every internal caller must bind its update to the tenant + approved
           // payload it actually rendered. A missing baseline is not equivalent
           // to "latest"; callers GET/list the draft first and receive both
@@ -1861,6 +1891,17 @@ export default {
             : hasReviewStage
               ? body.reviewStage === 'in_review' ? 'send' : 'hold'
               : '';
+          // Require proof of the exact additional details BEFORE image hosting
+          // or the transaction, then verify it again against every live retry.
+          let reviewDetailsAck;
+          try {
+            if (isReviewIntent) {
+              const observed = assertObservedReviewDetails(existing, body.reviewDetailsAck);
+              if (observed) reviewDetailsAck = observed;
+            } else {
+              assertReviewDetailsAuthoringDisabled(body);
+            }
+          } catch (err) { return reviewDetailsErrorResponse(err, cors); }
           try {
             assertIsolatedDraftReviewIntent(body, { hasApproval, hasReviewStage, hasStatus });
           } catch (err) {
@@ -1944,6 +1985,7 @@ export default {
             baseReviewRevision: isReviewIntent ? body.baseReviewRevision : '',
             isReviewIntent,
             reviewAction,
+            reviewDetailsAck,
           };
           try {
             const result = await mutatePostAtomically(env, id, async (live) => {
@@ -1962,6 +2004,8 @@ export default {
             return json({ draft: await versionDraftMedia(publicOrigin, result.document, legacyOrigins) }, 200, cors);
           } catch (err) {
             console.error('Draft update failed:', err?.message || err);
+            const detailsResponse = reviewDetailsErrorResponse(err, cors);
+            if (detailsResponse) return detailsResponse;
             if (err?.status === 404 || err?.code === 'not_found') return json({ error: 'Draft not found' }, 404, cors);
             if (err?.code === 'feedback_thread_full') {
               return apiError('feedback_thread_full', 'Feedback history is full', 409, cors);
@@ -2099,6 +2143,8 @@ export default {
           return json(responseBody, 200, cors);
         } catch (err) {
           console.error('Draft list failed:', err?.message || err);
+          const detailsResponse = reviewDetailsErrorResponse(err, cors);
+          if (detailsResponse) return detailsResponse;
           if (err?.code === 'draft_row_too_large') {
             return apiError(
               'draft_row_too_large',
@@ -2117,6 +2163,8 @@ export default {
       if (request.method === 'POST') {
         let body;
         try { body = await parseJson(request, IMAGE_JSON_BYTES); } catch (err) { return jsonBodyError(err, cors); }
+        try { assertReviewDetailsAuthoringDisabled(body); }
+        catch (err) { return reviewDetailsErrorResponse(err, cors); }
 
         const platform = String(body?.platform || 'gmb');
         // Own-property check, not `in` (which walks the prototype chain — 'constructor'/'toString'/… would

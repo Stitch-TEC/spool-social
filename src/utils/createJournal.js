@@ -1,21 +1,32 @@
 import { EDITOR_WORK_FIELDS, reconcileEditorSave } from './editorSaveState';
 import { OPERATOR_UID } from '../config/roles';
+import { REVIEW_DETAILS_FIELDS, copyReviewDetailsFields, isValidReviewDetails } from './reviewDetails';
 
 export const CREATE_JOURNAL_DATABASE = 'spool-create-recovery-v3';
+// The native version fences cached version-1 writers without changing the
+// reserved-ID namespace or rewriting any existing recovery record. A device
+// touched by this version needs a version-2-compatible forward fix/rollback.
+export const CREATE_JOURNAL_NATIVE_VERSION = 2;
 const STORE = 'intents';
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ID = /^[a-zA-Z0-9_-]{20,80}$/;
 const PAYLOAD_FIELDS = [...EDITOR_WORK_FIELDS, 'slug', 'uid', 'clientId', 'approvalStatus', 'feedback', 'reviewStage', 'createdAt', 'updatedAt'];
+const ALLOWED_PAYLOAD_FIELDS = [...PAYLOAD_FIELDS, ...REVIEW_DETAILS_FIELDS];
 // Editor work uses a datetime-local string; the storage boundary deliberately
 // represents an unscheduled post as null. No other nullable payload field is
 // accepted, and a frozen null schedule remains part of exact acknowledgement.
-const validPayloadTypes = p => p && PAYLOAD_FIELDS.every(k => k === 'tags'
+const validPayloadTypes = p => p && isValidReviewDetails(p) && PAYLOAD_FIELDS.every(k => k === 'tags'
   ? Array.isArray(p[k]) && p[k].every(t => typeof t === 'string')
   : k === 'scheduledDate' && p[k] === null
     ? true
     : typeof p[k] === (k === 'isTemplate' ? 'boolean' : 'string'));
-export const workCopy = form => Object.fromEntries(EDITOR_WORK_FIELDS.map(k => [k, form[k] ?? (k === 'tags' ? [] : k === 'isTemplate' ? false : '')]));
+export const workCopy = form => ({
+  ...Object.fromEntries(EDITOR_WORK_FIELDS.map(k => [k, form[k] ?? (k === 'tags' ? [] : k === 'isTemplate' ? false : '')])),
+  ...copyReviewDetailsFields(form),
+});
 export const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const sameDetails = (a, b) => sameValue(copyReviewDetailsFields(a), copyReviewDetailsFields(b));
+const keepsReviewVersion = (before, after) => before.reviewDetailsVersion !== 1 || after.reviewDetailsVersion === 1;
 
 export function createScope({ principalId, clientId, projectId, isTemplate = false }) {
   if (typeof principalId !== 'string' || !principalId.trim() || !SLUG.test(clientId || '')
@@ -25,7 +36,7 @@ export function createScope({ principalId, clientId, projectId, isTemplate = fal
 }
 
 export function validWork(work) {
-  return work && typeof work === 'object' && EDITOR_WORK_FIELDS.every(key => key === 'tags'
+  return work && typeof work === 'object' && isValidReviewDetails(work) && EDITOR_WORK_FIELDS.every(key => key === 'tags'
     ? Array.isArray(work[key]) && work[key].every(t => typeof t === 'string')
     : typeof work[key] === (key === 'isTemplate' ? 'boolean' : 'string'));
 }
@@ -38,11 +49,11 @@ export function isEmptyDraftIntent(record) {
     && validWork(record.work)
     && record.work.status === 'draft' && record.work.isTemplate === (record.scope?.flow === 'template')
     && ['content', 'title', 'altText', 'metaDescription', 'imageUrl'].every(key => record.work[key] === '')
-    && record.work.tags.length === 0;
+    && record.work.tags.length === 0 && !record.work.firstComment && !(record.work.reviewMedia?.length);
 }
 
 const validCreatePayload = (p, scope) => !!p && !!scope
-  && !Object.keys(p).some(k => !PAYLOAD_FIELDS.includes(k)) && validPayloadTypes(p)
+  && !Object.keys(p).some(k => !ALLOWED_PAYLOAD_FIELDS.includes(k)) && validPayloadTypes(p)
   && p.clientId === scope.clientId && p.uid === OPERATOR_UID
   && ['draft', 'scheduled', 'posted', 'archived'].includes(p.status)
   && ['pending', 'approved', 'changes_requested'].includes(p.approvalStatus)
@@ -69,10 +80,12 @@ export function validateIntent(record, scope) {
     || !validWork(record.work)) throw new Error('This device’s previous save record could not be verified. Copy your text and ask the operator to review it.');
   if (['draft', 'discarded'].includes(record.state) && record.payload === null && record.submittedWork === null) return record;
   const p = record.payload;
-  if (!validWork(record.submittedWork) || !validCreatePayload(p, scope)) throw new Error('This device’s previous save identity could not be verified. No request was sent.');
+  if (!validWork(record.submittedWork) || !validCreatePayload(p, scope)
+    || !sameDetails(record.submittedWork, p) || !keepsReviewVersion(record.submittedWork, record.work)) throw new Error('This device’s previous save identity could not be verified. No request was sent.');
   if (['confirmed', 'complete'].includes(record.state) && (!validWork(record.baselineWork) || !validPayloadTypes(record.baseline)
     || record.baseline?.id !== record.id || record.baseline?.clientId !== scope.clientId
-    || record.baseline?.uid !== p.uid || record.baseline?.createdAt !== p.createdAt)) throw new Error('This device’s saved-thread identity could not be verified. Keep this copy for review.');
+    || record.baseline?.uid !== p.uid || record.baseline?.createdAt !== p.createdAt
+    || !sameDetails(record.baseline, p) || !sameDetails(record.baselineWork, p))) throw new Error('This device’s saved-thread identity could not be verified. Keep this copy for review.');
   return record;
 }
 
@@ -91,7 +104,7 @@ export function createJournal(factory = globalThis.indexedDB) {
     };
     const timer = setTimeout(() => { try { tx?.abort(); } catch { /* already ended */ } finish(new Error('Device recovery did not respond. No new request can start; copy your text and try again.')); }, 5000);
     let request;
-    try { request = factory.open(CREATE_JOURNAL_DATABASE, 1); }
+    try { request = factory.open(CREATE_JOURNAL_DATABASE, CREATE_JOURNAL_NATIVE_VERSION); }
     catch (error) { finish(error); return; }
     request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE, { keyPath: 'key' }); };
     request.onblocked = () => finish(new Error('Another Spool tab is blocking device recovery. Close older tabs, then try again.'));
@@ -136,11 +149,13 @@ export function createJournal(factory = globalThis.indexedDB) {
       current(record, old);
       if (old.state === 'discarded') throw new Error('This unsent copy was discarded. Copy any newer text before reopening.');
       if (old.state !== 'draft') throw new Error('The first submitted copy is fixed. Check previous save before saving newer edits.');
+      if (!keepsReviewVersion(old.work, work) || !keepsReviewVersion(old.work, payload)) throw new Error('Keep this draft’s review details version. No new request was sent.');
       return { ...old, state: 'prepared', payload, submittedWork: workCopy(work) };
     }),
     writeWork: (record, work) => transact(record.scope, old => {
       current(record, old);
       if (old.state === 'discarded') throw new Error('This unsent copy was discarded. Copy any newer text before reopening.');
+      if (!keepsReviewVersion(old.work, work)) throw new Error('Keep this draft’s review details version. Your existing recovery copy is unchanged.');
       // A local edit can arrive while retirement is committing. Preserve it
       // against this SAME acknowledged ID, never mint a replacement. If a new
       // tab/intent already won, current() rejects instead of overwriting it.
