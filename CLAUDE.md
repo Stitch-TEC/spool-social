@@ -5,8 +5,9 @@ posts). A React (Vite) SPA served by a single Cloudflare Worker (`worker/index.j
 also hosts the `/api` + `/media` routes. Data lives in **Firebase project `spool-social`**
 (Firestore + Auth). Live at https://spool.stitchtec.dev.
 
-**Suite role:** one of the 3 Stitch TEC apps (POM, **Spool**, Sender). Pre-launch,
-internal-only (~6–11 clients). Calls the shared AI gateway under **appId `spool`**.
+**Suite role:** one of the 3 Stitch TEC apps (POM, **Spool**, Sender). Pre-launch with
+a limited client-role pilot reported October 2; preserve authored drafts, media, dates and
+review history. No incidental wipe/re-seed. Calls the shared AI gateway under **appId `spool`**.
 
 ## Stack
 React 19 + Vite 7 + Tailwind 4 + react-markdown · Firebase (Firestore/Auth) ·

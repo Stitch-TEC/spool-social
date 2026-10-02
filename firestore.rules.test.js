@@ -137,6 +137,15 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     for (const fixture of [restFixture('member-user', 'foreign'), restFixture('member-user', 'acme', 'private'), restFixture('unknown-user')]) await expect(intentRequest({ ...fixture, create: true })).rejects.toThrow('not confirmed');
   });
 
+  it.each([['member-user', 'in_review'], [OWNER_UID, 'private']])('creates and reconciles an unscheduled null date with the real REST adapter for %s', async (uid, stage) => {
+    const f = restFixture(uid, 'acme', stage);
+    f.record.payload = { ...f.record.payload, scheduledDate: null };
+    const saved = await intentRequest({ ...f, create: true });
+    expect(saved).toMatchObject({ id: f.record.id, scheduledDate: null, reviewStage: stage });
+    expect(await intentRequest({ ...f, record: { ...f.record, state: 'submitted' } })).toEqual(saved);
+    expect(f.methods).toEqual(['POST', 'GET']);
+  });
+
   it('keeps changed, deleted and unreadable outcomes unresolved; checks never recreate a document', async () => {
     const f = restFixture();
     await intentRequest({ ...f, create: true });

@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   restReads: [],
   forbiddenRequests: [],
   readStatus: null,
+  postsLoading: false,
+  postsError: null,
   liveAuthRevision: 1,
 }));
 
@@ -39,7 +41,7 @@ vi.mock('./config/firebase', () => ({
 }));
 vi.mock('./hooks/useAuth', () => ({ default: () => state.auth }));
 vi.mock('./hooks/usePosts', () => ({
-  default: () => ({ posts: state.posts, clientMap: state.clientMap, isLoading: false }),
+  default: () => ({ posts: state.posts, clientMap: state.clientMap, isLoading: state.postsLoading, error: state.postsError }),
 }));
 vi.mock('./hooks/useClients', () => ({
   useClients: () => ({ clients: state.clients, loading: false }),
@@ -121,10 +123,10 @@ const deferred = () => {
   value.promise = new Promise((resolve, reject) => Object.assign(value, { resolve, reject }));
   return value;
 };
-const encode = value => typeof value === 'string' ? { stringValue: value }
+const encode = value => value === null ? { nullValue: null } : typeof value === 'string' ? { stringValue: value }
   : typeof value === 'boolean' ? { booleanValue: value }
     : { arrayValue: { values: value.map(encode) } };
-const decode = value => 'stringValue' in value ? value.stringValue
+const decode = value => 'nullValue' in value ? null : 'stringValue' in value ? value.stringValue
   : 'booleanValue' in value ? value.booleanValue : (value.arrayValue.values || []).map(decode);
 const restDocument = (id, data) => ({
   name: `projects/demo-spool/databases/(default)/documents/posts/${id}`,
@@ -216,6 +218,8 @@ describe('App and Editor save lifecycle', () => {
     state.restReads = [];
     state.forbiddenRequests = [];
     state.readStatus = null;
+    state.postsLoading = false;
+    state.postsError = null;
     state.idb = intentIndexedDB();
     vi.stubGlobal('indexedDB', state.idb);
     // Only invented Firestore documents are served. Optional AI/provider/API
@@ -299,7 +303,7 @@ describe('App and Editor save lifecycle', () => {
     await openNew('Preserve text when copying is unavailable');
     await waitForWork('Preserve text when copying is unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Copy text' }));
-    await screen.findByText('Copy is unavailable here. Select the text in the editor and copy it manually.');
+    await screen.findByText('Copy is unavailable here. Select and copy the recovery text manually.');
     expect(editorContent()).toHaveValue('Preserve text when copying is unavailable');
     expect(state.creates).toHaveLength(0);
   });
@@ -318,7 +322,7 @@ describe('App and Editor save lifecycle', () => {
       else pending.reject(new Error('delayed clipboard denial'));
     });
     expect(screen.queryByText('Text copied. Images and settings are not included.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Copy is unavailable here. Select the text in the editor and copy it manually.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Copy is unavailable here. Select and copy the recovery text manually.')).not.toBeInTheDocument();
     expect(state.creates).toHaveLength(0);
   });
 
@@ -629,7 +633,8 @@ describe('App and Editor save lifecycle', () => {
     state.liveAuthRevision += 1;
     expect(state.auth.authRevision).toBe(1);
     save();
-    await waitFor(() => expect(consoleError).toHaveBeenCalledWith('Save Error:', expect.any(Error)));
+    await screen.findByText('Sign-in or workspace changed. Keep your text; no save was submitted.');
+    expect(consoleError).not.toHaveBeenCalled();
     expect(state.auth.user).toBe(originalUser);
     expect(prepareImage).not.toHaveBeenCalled();
     expect(originalUser.getIdToken).not.toHaveBeenCalled();
@@ -663,6 +668,36 @@ describe('App and Editor save lifecycle', () => {
     expect(state.updates).toHaveLength(0);
   });
 
+  it.each(['client list loading', 'client list failed', 'sign-in loading'])('retires a new create when a token wait spans %s and recovery', async (change) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const token = deferred();
+    const originalUser = state.auth.user;
+    originalUser.getIdToken.mockReturnValue(token.promise);
+    const app = render(<App />);
+    await openNew('Preserve this unscheduled draft');
+    save();
+    await waitFor(() => expect(originalUser.getIdToken).toHaveBeenCalledTimes(1));
+    const reservedId = journalRecord().id;
+    expect(journalRecord()).toMatchObject({ state: 'prepared', payload: { scheduledDate: null } });
+    if (change === 'client list loading') state.postsLoading = true;
+    if (change === 'client list failed') state.postsError = new Error('Synthetic read failure');
+    if (change === 'sign-in loading') state.auth = { ...state.auth, authLoading: true };
+    app.rerender(<App />);
+    state.postsLoading = false;
+    state.postsError = null;
+    state.auth = { ...state.auth, authLoading: false };
+    app.rerender(<App />);
+    expect(state.auth.user).toBe(originalUser);
+    expect(state.liveAuthRevision).toBe(1);
+    await act(async () => { token.resolve('synthetic-id-token'); });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save', exact: true })).not.toHaveTextContent('Saving'));
+    expect(state.creates).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(state.updates).toHaveLength(0);
+    expect(journalRecord()).toMatchObject({ id: reservedId, state: 'prepared', work: { content: 'Preserve this unscheduled draft' } });
+    expect(editorContent()).toHaveValue('Preserve this unscheduled draft');
+  });
+
   it('preserves legacy v2 work without offering it as a retry-safe new create', async () => {
     const scope = recoveryScope({ principalId: 'operator-test', clientId: 'acme' });
     const legacy = JSON.stringify({ scope, work: { content: 'Ambiguous older-build work' } });
@@ -685,9 +720,9 @@ describe('App and Editor save lifecycle', () => {
     vi.stubGlobal('indexedDB', state.idb);
     render(<App />);
     await openNew('Keep the only available copy');
-    await screen.findByText(/Device recovery could not be committed/);
+    await screen.findAllByText(/Device recovery could not be committed/);
     save();
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled());
     expect(editorContent()).toHaveValue('Keep the only available copy');
     expect(state.creates).toHaveLength(0);
     expect(journalEntries()).toEqual([]);
@@ -704,7 +739,9 @@ describe('App and Editor save lifecycle', () => {
     expect(journalRecord()).toMatchObject({ state: 'draft', payload: null, submittedWork: null });
     await closeEditor();
     await openNew(null);
-    expect(await screen.findByRole('button', { name: 'Restore previous work' })).toBeEnabled();
+    await waitFor(() => expect(screen.queryByText('Checking this device for previous work…')).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Restore previous work' })).not.toBeInTheDocument();
+    expect(journalRecord()).toMatchObject({ id: abandonedId, state: 'draft' });
     expect(editorContent()).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Discard unsent recovery' }));

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info, Globe } from 'lucide-react';
+import { X, ImageOff, Loader2, AlertCircle, FolderHeart, Images, Info, Globe, Video, Search } from 'lucide-react';
 import { listMedia, listClientMedia, fetchContentIndex, importSiteImage } from '../utils/generationApi';
 import { imageContentId } from '../utils/helpers';
-import useEscapeKey from '../hooks/useEscapeKey';
+import { useMediaSession, useMediaDialog } from '../hooks/useMediaSession';
+import { readableMediaItems, videoMediaPresentation, mediaMatchesSearch } from '../utils/mediaPresentation';
+const EMPTY_ITEMS = [];
 
 // One selectable thumbnail — shared by all sections so they look identical. `busy` marks the one
 // site image currently being imported into the library (pick disabled meanwhile).
@@ -12,7 +14,8 @@ const Thumb = ({ item, onPick, busy = false }) => (
     onClick={onPick}
     disabled={busy}
     title={item.alt || 'Use this image'}
-    className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-500 hover:ring-2 hover:ring-indigo-500/30 transition-all disabled:opacity-60"
+    aria-label={item.alt ? `Use image: ${item.alt}` : 'Use this image'}
+    className="group relative min-h-11 min-w-11 aspect-square rounded-lg overflow-hidden border border-slate-300 hover:border-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 transition-all disabled:opacity-60"
   >
     <img src={item.url} alt={item.alt || ''} loading="lazy" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
     {busy && (
@@ -24,72 +27,82 @@ const Thumb = ({ item, onPick, busy = false }) => (
 );
 
 /**
- * Modal that lists reusable images so the editor can insert one instead of regenerating.
+ * Modal for reusable cover images and separately identified video links.
  *
  * Three sections, deduplicated across each other (an image already shown in an
  * earlier section never repeats in a later one):
  *   1. Images already used on this client's posts (`clientImages`) — the most
  *      relevant reuse source, no re-upload needed.
  *   2. The client's curated library (the slug-keyed folder shared with POM's
- *      Assets card) when `clientKey` is resolved. Images only — a video
- *      reference can't be a post's imageUrl. Degrades gracefully on fetch error.
+ *      Assets card) when `clientKey` is resolved. Video references use an
+ *      explicit separate callback; they never become imageUrl or native videos.
  *   3. The user's generated/uploaded AI-cache pool.
  * onSelect receives the image URL.
  */
-const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName = '', clientImages = [] }) => {
-  useEscapeKey(onClose);
-  const [items, setItems] = useState(null); // null = loading
-  const [error, setError] = useState(null);
-  const [clientItems, setClientItems] = useState(null); // null = loading (only relevant when clientKey)
-  const [clientError, setClientError] = useState(null);
-  const [siteItems, setSiteItems] = useState([]); // the durable index's site-image inventory ([] = none/miss)
-  const [importingUrl, setImportingUrl] = useState('');
+const MediaPicker = ({ onClose, onSelect, onSelectVideo, showToast, clientKey = '', clientName = '', clientImages = [], sessionKey = '', isSessionCurrent }) => {
+  const { scope, isCurrent, retire } = useMediaSession(sessionKey, clientKey, isSessionCurrent);
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  const dispatchRef = useRef(null);
+  const close = () => { retire(); onClose(); };
+  useMediaDialog(dialogRef, closeRef, close);
+  const [poolRead, setPoolRead] = useState(null);
+  const [clientRead, setClientRead] = useState(null);
+  const [siteRead, setSiteRead] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const [search, setSearch] = useState('');
+  const items = poolRead?.scope === scope ? poolRead.items : null;
+  const error = poolRead?.scope === scope ? poolRead.error : null;
+  const clientItems = clientRead?.scope === scope ? clientRead.items : null;
+  const clientError = clientRead?.scope === scope ? clientRead.error : null;
+  const siteItems = siteRead?.scope === scope ? siteRead.items : EMPTY_ITEMS;
+  const importingUrl = importing?.scope === scope ? importing.url : '';
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let live = true;
-    // Scope the generated pool to the client being worked on (when one is resolved) so it shows only
-    // that client's generated images, not every client's — the cross-client privacy fix.
+    if (!isCurrent()) return;
     listMedia(clientKey)
-      .then(m => { if (live) setItems(m); })
-      .catch(err => {
-        if (!live) return;
-        const msg = err.message || 'Could not load media library';
-        setError(msg);
-        showToast?.(msg, 'error');
+      .then(m => { if (live && isCurrent()) setPoolRead({ scope, items: readableMediaItems(m), error: null }); })
+      .catch(() => {
+        if (!live || !isCurrent()) return;
+        setPoolRead({ scope, items: [], error: 'Generated images could not load. Try again.' });
       });
     return () => { live = false; };
-  }, [reloadKey, showToast, clientKey]);
+    // The scope owns the captured checker; callback churn does not repeat reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey, scope]);
 
-  // Curated client library — only when the editor resolved a client slug. Videos are filtered
-  // out (not insertable as an image); a fetch failure stays inline and non-blocking.
+  // Keep images and video references separate, but admit the whole saved list.
   useEffect(() => {
-    if (!clientKey) return;
+    if (!clientKey || !isCurrent()) return;
     let live = true;
     listClientMedia(clientKey)
-      .then(m => { if (live) setClientItems(m.filter(x => x.type === 'image')); })
-      .catch(err => {
-        if (!live) return;
-        setClientError(err.message || 'Could not load the client library');
-        setClientItems([]);
+      .then(m => { if (live && isCurrent()) setClientRead({ scope, items: readableMediaItems(m), error: null }); })
+      .catch(() => {
+        if (!live || !isCurrent()) return;
+        setClientRead({ scope, items: [], error: 'Client library could not load. Try again.' });
       });
     return () => { live = false; };
-  }, [clientKey, reloadKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, reloadKey]);
 
   // The client's SITE images from the durable content index (crawled inventory w/ page attribution
   // + alt). Best-effort bonus section: any miss (old broker, index empty) leaves it hidden. Images
   // already imported carry spoolUrl — those dedupe against the curated section via that URL.
   useEffect(() => {
-    if (!clientKey) return;
+    if (!clientKey || !isCurrent()) return;
     let live = true;
     fetchContentIndex(clientKey, { images: true })
       .then((d) => {
-        if (!live) return;
-        setSiteItems((d.images || []).filter((i) => i && i.kind !== 'logo'));
+        if (!live || !isCurrent()) return;
+        if (!Array.isArray(d?.images) || d.images.length > 10000) throw new Error('Invalid site inventory');
+        setSiteRead({ scope, items: d.images.filter(i => i && typeof i.url === 'string' && i.kind !== 'logo') });
       })
-      .catch(() => { if (live) setSiteItems([]); });
+      .catch(() => { if (live && isCurrent()) setSiteRead({ scope, items: [] }); });
     return () => { live = false; };
-  }, [clientKey, reloadKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, reloadKey]);
 
   // Cross-section dedupe: an image kept by an earlier (higher-priority) section is
   // dropped from every later one. This is the fix for the same photo showing 2-3
@@ -106,41 +119,51 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
     });
     return {
       used: take(clientImages.map((url) => ({ key: url, url }))),
-      curated: clientItems === null ? null : take(clientItems),
-      generated: items === null ? null : take(items),
+      curated: clientItems === null ? null : take(clientItems.filter(m => m.type === 'image')),
+      videos: (clientItems || []).filter(m => m.type === 'video').map(m => ({ ...m, reference: videoMediaPresentation(m) })),
+      generated: items === null ? null : take(items.filter(m => m.type === 'image')),
       site: take(siteItems.map((i) => ({ key: `site:${i.url}`, url: i.url, alt: i.alt, spoolUrl: i.spoolUrl, dedupeUrl: i.spoolUrl || '' }))),
     };
   }, [clientImages, clientItems, items, siteItems]);
+  const searchComplete = items !== null && (!clientKey || clientItems !== null);
+  const hasMatch = [...sections.used, ...(sections.curated || []), ...sections.videos,
+    ...(sections.generated || []), ...sections.site].some(item => mediaMatchesSearch(item, search));
 
-  // Liveness guard for the async import: a slow import resolving after the modal closed (or after
-  // the user picked something else) must NOT fire onSelect again and silently replace the post's
-  // image — the same `live` discipline every fetch effect in this file uses.
-  const liveRef = useRef(true);
-  useEffect(() => () => { liveRef.current = false; }, []);
-
-  // While an import is in flight, EVERY pick is a no-op (not just other site thumbs) — otherwise
-  // a fast second pick races the import's own onSelect.
+  // The ref closes the same-tick double-click gap; Close retires late callbacks
+  // immediately, even if the parent does not unmount until a later render.
   const pick = (url) => {
-    if (importingUrl) return;
+    if (!isCurrent() || dispatchRef.current?.scope === scope) return;
+    dispatchRef.current = { scope };
     onSelect(url);
-    onClose();
+    close();
+  };
+  const pickVideo = (item) => {
+    if (!isCurrent() || dispatchRef.current?.scope === scope || !onSelectVideo || !item.reference) return;
+    dispatchRef.current = { scope };
+    const { url, label, provider } = item.reference;
+    onSelectVideo({ url, label, provider });
+    close();
   };
 
   // Picking a SITE image imports it into the curated library first (broker-validated + downloaded,
   // idempotent) so the post references a durable /media URL, never a hotlink that can rot or shift.
   const pickSiteImage = async (item) => {
-    if (importingUrl) return;
+    if (!isCurrent() || dispatchRef.current?.scope === scope) return;
     if (item.spoolUrl) { pick(item.spoolUrl); return; }
-    setImportingUrl(item.url);
+    const attempt = { scope };
+    dispatchRef.current = attempt;
+    setImporting({ scope, url: item.url });
     try {
       const hosted = await importSiteImage(clientKey, item.url);
-      if (!liveRef.current) return; // modal closed mid-import — the library copy exists, nothing selected
-      setImportingUrl(''); // clear BEFORE pick — pick() no-ops while an import is marked in flight
+      if (!isCurrent() || dispatchRef.current !== attempt) return;
+      if (typeof hosted !== 'string' || !hosted) throw new Error('Invalid image result');
+      setImporting(null);
       onSelect(hosted);
-      onClose();
+      close();
     } catch (e) {
-      if (!liveRef.current) return;
-      setImportingUrl('');
+      if (!isCurrent() || dispatchRef.current !== attempt) return;
+      dispatchRef.current = null;
+      setImporting(null);
       const msg = String(e?.message || '');
       showToast?.(
         msg === 'library_full' ? 'The client library is full — remove some items first.'
@@ -153,7 +176,7 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
 
   const grid = (list) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-      {list.map(m => <Thumb key={m.key} item={m} onPick={() => pick(m.url)} />)}
+      {list.filter(m => mediaMatchesSearch(m, search)).map(m => <Thumb key={m.key} item={m} busy={Boolean(importingUrl)} onPick={() => pick(m.url)} />)}
     </div>
   );
 
@@ -162,20 +185,26 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
       role="dialog"
       aria-modal="true"
       aria-label="Media Library"
-      onClick={onClose}
+      ref={dialogRef}
+      onClick={close}
       className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl shadow-xl w-full min-w-0 max-w-2xl max-h-[85vh] flex flex-col overflow-hidden [overflow-wrap:anywhere]"
       >
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-800">Media Library</h2>
-          <button onClick={onClose} aria-label="Close" className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors">
+          <button ref={closeRef} type="button" onClick={close} aria-label="Close" className="min-h-11 min-w-11 flex items-center justify-center text-slate-700 hover:bg-slate-100 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 transition-colors">
             <X size={20} />
           </button>
         </div>
         <div className="p-4 overflow-y-auto space-y-5">
+          <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-slate-500 px-3 text-slate-700 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-indigo-600">
+            <Search size={17} aria-hidden="true" />
+            <input type="search" aria-label="Search media" placeholder="Search labels, video IDs or filenames" maxLength={200} value={search} onChange={event => setSearch(event.target.value)} className="min-h-11 w-full min-w-0 bg-transparent text-base outline-none" />
+          </label>
+          {search.trim() && searchComplete && !error && !clientError && !hasMatch && <p role="status" className="text-sm text-slate-700">No matching media. Try a video ID or filename.</p>}
           {/* No client context yet (new post, client not picked) — say so instead of
               silently hiding the per-client sections. */}
           {!clientKey && (
@@ -203,20 +232,40 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
                 <FolderHeart size={13} className="text-indigo-400" /> {clientName || clientKey}&rsquo;s library
               </h3>
               {clientError ? (
-                <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                <div className="text-sm text-slate-700 flex flex-wrap items-center gap-1.5" role="alert">
                   <AlertCircle size={13} className="text-rose-400" /> {clientError}
-                </p>
+                  <button type="button" onClick={() => { if (!isCurrent()) return; setClientRead(null); setReloadKey(k => k + 1); }} className="min-h-11 rounded-lg border border-slate-400 px-3 text-indigo-700 focus-visible:outline-2 focus-visible:outline-indigo-600">Retry client library</button>
+                </div>
               ) : sections.curated === null ? (
                 <div className="flex items-center text-slate-400 text-xs py-2">
                   <Loader2 className="animate-spin mr-2" size={14} /> Loading…
                 </div>
               ) : clientItems.length === 0 ? (
-                <p className="text-xs text-slate-400">No images in this client&rsquo;s library yet.</p>
-              ) : sections.curated.length === 0 ? (
+                <p className="text-sm text-slate-600">No media in this client&rsquo;s library yet.</p>
+              ) : sections.curated.length === 0 && sections.videos.length > 0 ? null
+              : sections.curated.length === 0 ? (
                 <p className="text-xs text-slate-400">All of this library&rsquo;s images are shown above.</p>
               ) : (
                 grid(sections.curated)
               )}
+            </section>
+          )}
+
+          {clientKey && !clientError && sections.videos.length > 0 && (
+            <section aria-label="Video links">
+              <h3 className="mb-2 text-sm font-bold text-slate-700">Video links</h3>
+              <p className="mb-2 text-sm text-slate-600">Choose a link, then confirm how to add it. This does not attach or publish a video.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {sections.videos.filter(m => mediaMatchesSearch(m, search)).map(m => (
+                  <button key={m.key} type="button" onClick={() => pickVideo(m)} disabled={Boolean(importingUrl) || !onSelectVideo || !m.reference}
+                    aria-label={m.reference ? `Choose video link: ${m.reference.label}` : 'Unavailable video link'}
+                    className="min-h-11 min-w-0 rounded-lg border border-slate-500 p-3 text-left text-slate-700 hover:border-indigo-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60 [overflow-wrap:anywhere]">
+                    <span className="flex items-start gap-2"><Video size={20} className="shrink-0" aria-hidden="true" /><span className="min-w-0 font-semibold">{m.reference?.label || 'Unsupported video link'}</span></span>
+                    {m.reference && <span className="mt-1 block text-xs text-slate-600">{m.reference.provider}{m.reference.label.includes(m.reference.detail) ? '' : ` · ${m.reference.detail}`}</span>}
+                  </button>
+                ))}
+              </div>
+              {!onSelectVideo && <p className="mt-2 text-sm text-slate-600">This picker accepts cover images only.</p>}
             </section>
           )}
 
@@ -228,8 +277,8 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
                 <Globe size={13} className="text-indigo-400" /> On {clientName ? `${clientName}’s` : 'the client’s'} site
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                {sections.site.map(m => (
-                  <Thumb key={m.key} item={m} busy={importingUrl === m.url} onPick={() => pickSiteImage(m)} />
+                {sections.site.filter(m => mediaMatchesSearch(m, search)).map(m => (
+                  <Thumb key={m.key} item={m} busy={Boolean(importingUrl)} onPick={() => pickSiteImage(m)} />
                 ))}
               </div>
             </section>
@@ -247,7 +296,7 @@ const MediaPicker = ({ onClose, onSelect, showToast, clientKey = '', clientName 
               <div className="flex flex-col items-center justify-center h-40 text-slate-500 text-sm">
                 <AlertCircle size={28} className="mb-2 text-rose-400" />
                 <p className="mb-3">{error}</p>
-                <button onClick={() => { setItems(null); setError(null); setClientItems(null); setClientError(null); setReloadKey(k => k + 1); }} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700">
+                <button type="button" onClick={() => { if (!isCurrent()) return; setPoolRead(null); setClientRead(null); setReloadKey(k => k + 1); }} className="min-h-11 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700">
                   Retry
                 </button>
               </div>

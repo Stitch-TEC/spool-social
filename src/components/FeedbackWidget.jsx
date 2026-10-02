@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useId } from 'react';
 import { MessageSquare, X, Send, Loader2 } from 'lucide-react';
 import { CURRENT_APP_ID, STITCH_APPS } from '../stitch-apps';
-import CharCountCircle from './CharCountCircle';
-import { buildFeedbackPayload, submitFeedback } from '../lib/feedbackClient';
+import { buildFeedbackPayload, submitFeedback, MESSAGE_MAX } from '../lib/feedbackClient';
 import { imageFileToShot, shotFromDataTransfer, capturePageShot, dataTransferHasImage } from '../lib/screenshot';
 
 // Keep in lockstep with the broker's SCREENSHOT_MAX_B64 — reject an oversized shot in the browser
@@ -16,7 +15,6 @@ const MAX_SHOT_B64 = 900_000;
 // This is the SUITE feedback channel — deliberately separate from Spool's
 // per-post client review / change-request flow (handleRequestChanges in App).
 
-const MAX_MESSAGE = 1000;
 const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'spool@dev';
 const APP_NAME = STITCH_APPS.find(a => a.id === CURRENT_APP_ID)?.name || 'Spool';
 
@@ -25,6 +23,13 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
   const [category, setCategory] = useState('bug');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const messageId = useId();
+  const messageCountId = `${messageId}-count`;
+  const messageLimitId = `${messageId}-limit`;
+  const messageTooLong = message.length > MESSAGE_MAX;
+  const limitNotice = messageTooLong
+    ? 'Over the 1,000-character limit. Shorten your message to send.'
+    : message.length === MESSAGE_MAX ? '1,000-character limit reached.' : '';
   const textareaRef = useRef(null);
   // One optional screenshot (paste / drop / file-pick / one-click page capture).
   const [shot, setShot] = useState('');
@@ -72,7 +77,10 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const text = message.trim();
-    if (!text || sending) return;
+    // Preserve the complete input, including pasted text. The shared ingress
+    // still accepts at most MESSAGE_MAX code units; never silently send a
+    // shortened message through the payload builder's compatibility clamp.
+    if (!text || sending || message.length > MESSAGE_MAX || shotBusy) return;
 
     // §4 canonical payload — identical shape across every suite app, plus
     // role/clientId/view for triage (route alone can't tell grid/calendar/editor).
@@ -174,20 +182,27 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
 
               {/* Message */}
               <div>
-                <div className="relative">
+                <label htmlFor={messageId} className="sr-only">Feedback message</label>
+                <div>
                   <textarea
+                    id={messageId}
                     ref={textareaRef}
                     value={message}
-                    onChange={(e) => setMessage(e.target.value.slice(0, MAX_MESSAGE))}
-                    maxLength={MAX_MESSAGE}
+                    onChange={(e) => { if (!sending) setMessage(e.target.value); }}
+                    disabled={sending}
+                    aria-describedby={limitNotice ? `${messageCountId} ${messageLimitId}` : messageCountId}
+                    aria-invalid={messageTooLong || undefined}
                     rows={4}
                     required
                     placeholder="What's working, what's broken, or what you'd love to see…"
-                    className="w-full p-3 pr-12 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all resize-none"
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all resize-none disabled:opacity-70"
                   />
-                  <div className="absolute bottom-2 right-2">
-                    <CharCountCircle current={message.length} max={MAX_MESSAGE} />
-                  </div>
+                  <p id={messageCountId} className={`mt-1 text-right text-xs ${messageTooLong ? 'text-rose-700' : 'text-slate-600'}`}>
+                    {message.length.toLocaleString('en-US')} / {MESSAGE_MAX.toLocaleString('en-US')} characters
+                  </p>
+                  <p id={messageLimitId} role="status" aria-live="polite" aria-atomic="true" className="text-xs text-rose-700">
+                    {limitNotice}
+                  </p>
                 </div>
               </div>
 
@@ -229,7 +244,7 @@ const FeedbackWidget = ({ user, role, clientId, view, showToast }) => {
                 </button>
                 <button
                   type="submit"
-                  disabled={sending || !message.trim() || !!shotBusy}
+                  disabled={sending || !message.trim() || messageTooLong || !!shotBusy}
                   className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

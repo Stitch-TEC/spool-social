@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import MediaPicker from './MediaPicker';
 
 const { listMedia, listClientMedia, fetchContentIndex, importSiteImage } = vi.hoisted(() => ({
@@ -14,6 +14,8 @@ const baseProps = { onClose: vi.fn(), onSelect: vi.fn(), showToast: vi.fn() };
 
 // alt="" images have role "presentation", so query the DOM directly.
 const imgsBySrc = (container, src) => container.querySelectorAll(`img[src="${src}"]`);
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+const video = { key: 'library/o/acme/v1', type: 'video', url: 'https://youtu.be/abcdefghijk', provider: 'youtube' };
 
 describe('MediaPicker', () => {
   beforeEach(() => {
@@ -112,7 +114,121 @@ describe('MediaPicker', () => {
     await waitFor(() =>
       expect(imgsBySrc(container, '/media/library/o/acme/only.jpg')).toHaveLength(1)
     );
-    // Videos are filtered out — not insertable as a post image.
+    // Video links are presented separately and never masquerade as cover images.
     expect(container.querySelectorAll('img')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Choose video link/ })).toBeDisabled();
+  });
+
+  it('selects an identifiable video via only the explicit separate callback', async () => {
+    listClientMedia.mockResolvedValue([video]); listMedia.mockResolvedValue([]);
+    const onSelectVideo = vi.fn();
+    const { container } = render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={onSelectVideo} />);
+    const choose = await screen.findByRole('button', { name: 'Choose video link: YouTube · abcdefghijk' });
+    fireEvent.click(choose); fireEvent.click(choose);
+    expect(onSelectVideo).toHaveBeenCalledExactlyOnceWith({ url: video.url, label: 'YouTube · abcdefghijk', provider: 'YouTube' });
+    expect(baseProps.onSelect).not.toHaveBeenCalled();
+    expect(baseProps.onClose).toHaveBeenCalledOnce();
+    expect(container.querySelectorAll('img, iframe, video')).toHaveLength(0);
+  });
+
+  it('uses saved labels and searches video IDs without fetching thumbnails', async () => {
+    listClientMedia.mockResolvedValue([{ ...video, title: 'CT inspection v2' }]); listMedia.mockResolvedValue([]);
+    render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Choose video link: CT inspection v2' });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search media' }), { target: { value: 'missing' } });
+    expect(screen.queryByRole('button', { name: /Choose video link/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/No matching media/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'ABCDEFGHIJK' } });
+    expect(screen.getByRole('button', { name: 'Choose video link: CT inspection v2' })).toBeInTheDocument();
+  });
+
+  it('hides stale client rows immediately and ignores an old A→B→A response', async () => {
+    const oldA = deferred(), freshA = deferred();
+    listMedia.mockResolvedValue([]);
+    listClientMedia.mockReturnValueOnce(oldA.promise).mockResolvedValueOnce([]).mockReturnValueOnce(freshA.promise);
+    const { rerender } = render(<MediaPicker {...baseProps} clientKey="a" />);
+    rerender(<MediaPicker {...baseProps} clientKey="b" />);
+    rerender(<MediaPicker {...baseProps} clientKey="a" />);
+    await act(async () => oldA.resolve([video]));
+    expect(screen.queryByRole('button', { name: /Choose video link/ })).not.toBeInTheDocument();
+    await act(async () => freshA.resolve([{ ...video, title: 'Fresh A' }]));
+    expect(screen.getByRole('button', { name: 'Choose video link: Fresh A' })).toBeInTheDocument();
+  });
+
+  it('does not dispatch a selection after synchronous authority changes without rerendering', async () => {
+    let current = true;
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue([video]);
+    const onSelectVideo = vi.fn();
+    render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={onSelectVideo} isSessionCurrent={() => current} />);
+    const choose = await screen.findByRole('button', { name: /Choose video link/ });
+    current = false; fireEvent.click(choose);
+    expect(onSelectVideo).not.toHaveBeenCalled(); expect(baseProps.onClose).not.toHaveBeenCalled();
+  });
+
+  it('retires an import immediately on Close even before parent unmount', async () => {
+    const imported = deferred();
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue([]);
+    fetchContentIndex.mockResolvedValue({ images: [{ url: 'https://acme.example/team.jpg', alt: 'Team' }] });
+    importSiteImage.mockReturnValue(imported.promise);
+    render(<MediaPicker {...baseProps} clientKey="acme" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Use image: Team' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await act(async () => imported.resolve('/media/team.jpg'));
+    expect(baseProps.onSelect).not.toHaveBeenCalled(); expect(baseProps.onClose).toHaveBeenCalledOnce();
+  });
+
+  it('ignores an import and old read after the account changes', async () => {
+    const imported = deferred();
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue([]);
+    fetchContentIndex.mockResolvedValue({ images: [{ url: 'https://acme.example/team.jpg', alt: 'Team' }] });
+    importSiteImage.mockReturnValue(imported.promise);
+    const { rerender } = render(<MediaPicker {...baseProps} clientKey="acme" sessionKey="one" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Use image: Team' }));
+    rerender(<MediaPicker {...baseProps} clientKey="acme" sessionKey="two" />);
+    await act(async () => imported.resolve('/media/team.jpg'));
+    expect(baseProps.onSelect).not.toHaveBeenCalled(); expect(baseProps.onClose).not.toHaveBeenCalled();
+  });
+
+  it('blocks other image/video picks while importing', async () => {
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue([video, { key: 'image', type: 'image', url: '/media/cover.jpg' }]);
+    fetchContentIndex.mockResolvedValue({ images: [{ url: 'https://acme.example/team.jpg', alt: 'Team' }] });
+    importSiteImage.mockReturnValue(new Promise(() => {}));
+    const onSelectVideo = vi.fn();
+    render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={onSelectVideo} />);
+    await screen.findByRole('button', { name: /Choose video link/ });
+    fireEvent.click(screen.getByRole('button', { name: 'Use image: Team' }));
+    fireEvent.click(screen.getByRole('button', { name: /Choose video link/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use this image' }));
+    expect(onSelectVideo).not.toHaveBeenCalled(); expect(baseProps.onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /Choose video link/ })).toBeDisabled();
+  });
+
+  it('contains every Tab and captures Escape before the editor listener', async () => {
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue([]);
+    const parentEscape = vi.fn(); const parentKeys = event => { if (event.key === 'Escape') parentEscape(); }; window.addEventListener('keydown', parentKeys);
+    const { unmount } = render(<MediaPicker {...baseProps} />);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' }); expect(screen.getByRole('searchbox')).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' }); expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Close' }), { key: 'Escape' });
+    expect(parentEscape).toHaveBeenCalledTimes(0); expect(baseProps.onClose).toHaveBeenCalledOnce();
+    unmount(); window.removeEventListener('keydown', parentKeys);
+  });
+
+  it('keeps a failed client read distinct from an empty library and allows one deliberate retry', async () => {
+    listMedia.mockResolvedValue([]); listClientMedia.mockRejectedValueOnce(new Error('secret raw provider error')).mockResolvedValueOnce([video]);
+    render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={vi.fn()} />);
+    await screen.findByText('Client library could not load. Try again.');
+    expect(screen.queryByText(/No media in this client/)).not.toBeInTheDocument();
+    expect(screen.queryByText('secret raw provider error')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry client library' }));
+    expect(await screen.findByRole('button', { name: /Choose video link/ })).toBeInTheDocument();
+  });
+
+  it('refuses malformed read results rather than showing unknown items as selectable', async () => {
+    listMedia.mockResolvedValue([]); listClientMedia.mockResolvedValue({ media: [video] });
+    render(<MediaPicker {...baseProps} clientKey="acme" onSelectVideo={vi.fn()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Client library could not load');
+    expect(screen.queryByRole('button', { name: /Choose video link/ })).not.toBeInTheDocument();
   });
 });

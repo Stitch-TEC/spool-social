@@ -6,7 +6,14 @@ const STORE = 'intents';
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ID = /^[a-zA-Z0-9_-]{20,80}$/;
 const PAYLOAD_FIELDS = [...EDITOR_WORK_FIELDS, 'slug', 'uid', 'clientId', 'approvalStatus', 'feedback', 'reviewStage', 'createdAt', 'updatedAt'];
-const validPayloadTypes = p => p && PAYLOAD_FIELDS.every(k => k === 'tags' ? Array.isArray(p[k]) && p[k].every(t => typeof t === 'string') : typeof p[k] === (k === 'isTemplate' ? 'boolean' : 'string'));
+// Editor work uses a datetime-local string; the storage boundary deliberately
+// represents an unscheduled post as null. No other nullable payload field is
+// accepted, and a frozen null schedule remains part of exact acknowledgement.
+const validPayloadTypes = p => p && PAYLOAD_FIELDS.every(k => k === 'tags'
+  ? Array.isArray(p[k]) && p[k].every(t => typeof t === 'string')
+  : k === 'scheduledDate' && p[k] === null
+    ? true
+    : typeof p[k] === (k === 'isTemplate' ? 'boolean' : 'string'));
 export const workCopy = form => Object.fromEntries(EDITOR_WORK_FIELDS.map(k => [k, form[k] ?? (k === 'tags' ? [] : k === 'isTemplate' ? false : '')]));
 export const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -23,6 +30,38 @@ export function validWork(work) {
     : typeof work[key] === (key === 'isTemplate' ? 'boolean' : 'string'));
 }
 
+// An empty device-only slot may continue under its SAME reserved ID. This is
+// not adoption of authored work, retirement/deletion, or permission to replace
+// an uncertain save. Even tags and accessibility text are meaningful work.
+export function isEmptyDraftIntent(record) {
+  return record?.state === 'draft' && record.payload === null && record.submittedWork === null
+    && validWork(record.work)
+    && record.work.status === 'draft' && record.work.isTemplate === (record.scope?.flow === 'template')
+    && ['content', 'title', 'altText', 'metaDescription', 'imageUrl'].every(key => record.work[key] === '')
+    && record.work.tags.length === 0;
+}
+
+const validCreatePayload = (p, scope) => !!p && !!scope
+  && !Object.keys(p).some(k => !PAYLOAD_FIELDS.includes(k)) && validPayloadTypes(p)
+  && p.clientId === scope.clientId && p.uid === OPERATOR_UID
+  && ['draft', 'scheduled', 'posted', 'archived'].includes(p.status)
+  && ['pending', 'approved', 'changes_requested'].includes(p.approvalStatus)
+  && ['private', 'in_review'].includes(p.reviewStage)
+  && Number.isFinite(Date.parse(p.createdAt)) && p.updatedAt === p.createdAt
+  && !!p.content.trim() && !!p.isTemplate === (scope.flow === 'template');
+
+// Check a prospective form before a journal operation. A correctable input
+// error must not poison the still-unsent recovery record or its Discard action.
+export function validateCreatePayload(payload, scope) {
+  if (payload?.scheduledDate !== null && typeof payload?.scheduledDate !== 'string') {
+    throw new Error('Choose a valid schedule date or leave Schedule empty. No request was sent.');
+  }
+  if (!validCreatePayload(payload, scope)) {
+    throw new Error('This new thread could not be prepared. Review its fields and try Save again. No request was sent.');
+  }
+  return payload;
+}
+
 export function validateIntent(record, scope) {
   if (!record || !scope || !sameValue(record.scope, scope) || !ID.test(record.id || '')
     || !Number.isSafeInteger(record.revision) || record.revision < 1
@@ -30,15 +69,7 @@ export function validateIntent(record, scope) {
     || !validWork(record.work)) throw new Error('This device’s previous save record could not be verified. Copy your text and ask the operator to review it.');
   if (['draft', 'discarded'].includes(record.state) && record.payload === null && record.submittedWork === null) return record;
   const p = record.payload;
-  if (!validWork(record.submittedWork) || !p || Object.keys(p).some(k => !PAYLOAD_FIELDS.includes(k))
-    || !validPayloadTypes(p)
-    || p.clientId !== scope.clientId || p.uid !== OPERATOR_UID
-    || !['draft', 'scheduled', 'posted', 'archived'].includes(p.status)
-    || !['pending', 'approved', 'changes_requested'].includes(p.approvalStatus)
-    || !['private', 'in_review'].includes(p.reviewStage)
-    || typeof p.createdAt !== 'string' || !Number.isFinite(Date.parse(p.createdAt)) || p.updatedAt !== p.createdAt
-    || typeof p.content !== 'string' || !p.content.trim() || typeof p.client !== 'string'
-    || !!p.isTemplate !== (scope.flow === 'template')) throw new Error('This device’s previous save identity could not be verified. No request was sent.');
+  if (!validWork(record.submittedWork) || !validCreatePayload(p, scope)) throw new Error('This device’s previous save identity could not be verified. No request was sent.');
   if (['confirmed', 'complete'].includes(record.state) && (!validWork(record.baselineWork) || !validPayloadTypes(record.baseline)
     || record.baseline?.id !== record.id || record.baseline?.clientId !== scope.clientId
     || record.baseline?.uid !== p.uid || record.baseline?.createdAt !== p.createdAt)) throw new Error('This device’s saved-thread identity could not be verified. Keep this copy for review.');

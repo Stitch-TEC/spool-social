@@ -226,13 +226,16 @@ export async function saveExistingPostAtomically({
   baselineStatus,
   baselineClientId,
   baselineClient,
+  assertAdmission,
 }) {
   let outcome = { approvalReset: false, tenantReset: false };
 
   await runTransaction(db, async (transaction) => {
+    assertAdmission?.();
     const snapshot = await transaction.get(postRef);
     if (!snapshot.exists()) throw new Error('Thread no longer exists');
     const live = snapshot.data();
+    assertAdmission?.(live);
     // usePosts renders legacy media through canonical v2 references and derives
     // legacy publication slugs. Do not persist those representation-only
     // changes through the member rules path: rules stay strict for genuine
@@ -332,6 +335,7 @@ export async function saveExistingPostAtomically({
     // Firestore retry and stay strictly after live review/creation timestamps.
     patch.updatedAt = nextSaveUpdatedAt(live);
 
+    assertAdmission?.(live);
     transaction.update(postRef, patch);
     // Returned only after the transaction commits. A retained editor must use
     // the actual stored tenant/status/media baseline, not a stale listener row.
@@ -358,13 +362,16 @@ export async function saveExistingPostWithImageAtomically({
   forClient,
   hostImage,
   onImageDropped,
+  assertAdmission,
 }) {
+  assertAdmission?.();
   const prepared = await preparePostImageForSave({
     submittedImageUrl,
     forClient,
     hostImage,
     onImageDropped,
   });
+  assertAdmission?.();
   const outcome = await saveExistingPostAtomically({
     db,
     postRef,
@@ -382,6 +389,7 @@ export async function saveExistingPostWithImageAtomically({
     baselineStatus,
     baselineClientId,
     baselineClient,
+    assertAdmission,
   });
   return { ...outcome, ...prepared };
 }

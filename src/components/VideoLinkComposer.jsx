@@ -3,9 +3,9 @@ import { hasVideoReference, parseVideoReference } from '../utils/videoReferences
 
 // Convenience for the existing draft text field only. No upload, external request,
 // attachment record, save or review action belongs to this component.
-export default function VideoLinkComposer({ content = '', onInsert, disabled = false }) {
+export default function VideoLinkComposer({ content = '', onInsert, disabled = false, initialUrl = '', selectedLabel = '' }) {
   const id = useId();
-  const [url, setUrl] = useState('');
+  const [url, setUrl] = useState(initialUrl);
   const [message, setMessage] = useState(null);
   const insert = () => {
     if (disabled) return;
@@ -32,11 +32,12 @@ export default function VideoLinkComposer({ content = '', onInsert, disabled = f
     setMessage({ text: 'Link added to draft text. Save to keep this change.' });
   };
   return (
-    <details className="min-w-0 rounded-xl border border-slate-300 bg-slate-50 [overflow-wrap:anywhere]">
+    <details open={initialUrl ? true : undefined} className="min-w-0 rounded-xl border border-slate-300 bg-slate-50 [overflow-wrap:anywhere]">
       <summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-semibold text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
         Add video link to draft text
       </summary>
       <div className="min-w-0 space-y-3 px-3 pb-3">
+        {selectedLabel && <p className="text-sm font-semibold text-slate-800">Selected: {selectedLabel}</p>}
         <p id={`${id}-help`} className="text-sm text-slate-700">
           Paste a Google Drive, OneDrive, SharePoint, Dropbox, YouTube, Vimeo, or direct video-file link.
           {' '}The URL becomes part of the caption or body and is included when that text is copied, published, or used by draft AI tools. It is not a private attachment.

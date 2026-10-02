@@ -1,10 +1,16 @@
 import { validateIntent, sameValue } from './createJournal';
 
-const encodeValue = value => typeof value === 'string' ? { stringValue: value }
+const encodeValue = value => value === null ? { nullValue: null }
+  : typeof value === 'string' ? { stringValue: value }
   : typeof value === 'boolean' ? { booleanValue: value }
     : Array.isArray(value) ? { arrayValue: { values: value.map(encodeValue) } }
       : (() => { throw new Error('Unsupported new-thread field'); })();
-const decodeValue = value => 'stringValue' in value ? value.stringValue
+const decodeValue = value => 'nullValue' in value
+  ? (() => {
+    if (value.nullValue !== null || Object.keys(value).length !== 1) throw new Error('Spool has not confirmed this save. The saved response contained an invalid field. Keep this copy for review.');
+    return null;
+  })()
+  : 'stringValue' in value ? value.stringValue
   : 'booleanValue' in value ? value.booleanValue
     : 'arrayValue' in value ? (value.arrayValue.values || []).map(decodeValue)
       : undefined;

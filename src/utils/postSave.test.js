@@ -20,6 +20,35 @@ const snapshot = (data) => ({ exists: () => true, data: () => data });
 describe('saveExistingPostAtomically', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('rejects retired admission before any image hosting', async () => {
+    const hostImage = vi.fn();
+    await expect(saveExistingPostWithImageAtomically({
+      db: {}, postRef: { id: 'p' }, postData: {}, submittedImageUrl: '', hostImage,
+      assertAdmission: () => { throw new Error('Session changed'); },
+    })).rejects.toThrow('Session changed');
+    expect(hostImage).not.toHaveBeenCalled();
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rechecks admission after hosting and on every retry before writes', async () => {
+    const update = vi.fn();
+    const live = { clientId: 'acme', status: 'draft' };
+    const assertAdmission = vi.fn(value => {
+      if (value?.status === 'posted') throw new Error('Read-only now');
+    });
+    runTransaction.mockImplementation(async (_db, callback) => {
+      await callback({ get: async () => snapshot(live), update });
+      await callback({ get: async () => snapshot({ ...live, status: 'posted' }), update });
+    });
+    await expect(saveExistingPostWithImageAtomically({
+      db: {}, postRef: { id: 'p' }, postData: { content: 'Copy' }, submittedImageUrl: '',
+      hostImage: vi.fn().mockResolvedValue(''), assertAdmission,
+    })).rejects.toThrow('Read-only now');
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(assertAdmission).toHaveBeenCalledWith(live);
+    expect(assertAdmission).toHaveBeenCalledWith({ ...live, status: 'posted' });
+  });
+
   it('runs the real existing-post preparation/transaction path without a TDZ and preserves an identical rehost', async () => {
     const submittedImage = 'data:image/png;base64,iVBORw0KGgo=';
     const update = vi.fn();

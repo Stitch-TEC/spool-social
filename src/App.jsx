@@ -44,6 +44,8 @@ import ReviewModal from './components/ReviewModal';
 import HelpDialog from './components/HelpDialog';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
+import { defaultPlatformForClient, validatedTags } from './utils/editorInputs';
+import { postEditingAccess } from './utils/postEditingAccess';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
@@ -230,11 +232,26 @@ const App = () => {
     return () => clearInterval(id);
   }, []);
 
-  // 🛡️ SECURITY: Sync postsRef for guest authorization checks in callbacks.
+  // Synchronous committed-render admission for async editor callbacks. An old
+  // callback cannot retain the previous role/client/read after a render, even
+  // when the Firebase user object itself remains unchanged.
   const postsRef = useRef([]);
-  useEffect(() => {
+  const editorAdmissionRef = useRef(null);
+  const admissionPost = editingPost?.id ? posts.find(post => post.id === editingPost.id) : editingPost;
+  const admissionEditable = (!editingPost?.id || (!!admissionPost && !postsError && !postsLoading))
+    && postEditingAccess(admissionPost, { isReadOnly, isOperator, isClientMember, clientId: myClientId }).canEdit;
+  const priorAdmission = editorAdmissionRef.current;
+  const admissionChanged = !priorAdmission || priorAdmission.identity !== editorIdentity
+    || priorAdmission.user !== user || priorAdmission.authLoading !== authLoading
+    || priorAdmission.postsLoading !== postsLoading || priorAdmission.hasPostsError !== !!postsError
+    || priorAdmission.editable !== admissionEditable;
+  const admissionEpoch = (priorAdmission?.epoch || 0) + (admissionChanged ? 1 : 0);
+  const mediaSessionKey = JSON.stringify([editorIdentity, admissionEpoch]);
+  useLayoutEffect(() => {
     postsRef.current = posts;
-  }, [posts]);
+    editorAdmissionRef.current = { identity: editorIdentity, user, postsError, postsLoading,
+      authLoading, hasPostsError: !!postsError, editable: admissionEditable, epoch: admissionEpoch };
+  }, [posts, editorIdentity, user, postsError, postsLoading, authLoading, admissionEditable, admissionEpoch]);
 
   // --- Client identity (declared before the CRUD handlers that depend on it) ---
   // Stable display-name → clientId map (clientId is the immutable tenant key,
@@ -350,6 +367,14 @@ const App = () => {
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData, saveContext = {}) => {
     if (isReadOnly) return false;
+    const initiatingUser = user;
+    const initiatingAdmissionEpoch = editorAdmissionRef.current?.epoch;
+    const actorIsCurrent = () => !!initiatingUser
+      && getRecoveryUser() === initiatingUser
+      && editorAdmissionRef.current?.user === initiatingUser
+      && editorAdmissionRef.current?.identity === editorIdentity
+      && editorAdmissionRef.current?.epoch === initiatingAdmissionEpoch;
+    if (!actorIsCurrent() || (saveContext.isCurrentSession && !saveContext.isCurrentSession())) return false;
 
     // 🔒 SECURITY: Input Validation & Sanitization. A client member can only
     // write to their OWN client (pinned); the operator picks the client. On a
@@ -357,10 +382,28 @@ const App = () => {
     // resource.data.client (the posts update rule requires that field unchanged,
     // and the branding display name may differ from the stored value).
     const existingPost = formData.id
-      ? (saveContext.savedPost?.id === formData.id
+      ? (!editingPost?.id && saveContext.savedPost?.id === formData.id
         ? saveContext.savedPost
         : postsRef.current.find(p => p.id === formData.id))
       : null;
+    // A just-acknowledged create can legitimately precede its listener row.
+    // Existing editor selections cannot substitute a stale returned baseline
+    // for a row that disappeared. Every transaction still reads its real ID.
+    const assertAdmission = live => {
+      if (!actorIsCurrent() || (saveContext.isCurrentSession && !saveContext.isCurrentSession())) {
+        throw new Error('The editor or sign-in changed. Reopen this thread before saving.');
+      }
+      if (formData.id && (editorAdmissionRef.current.postsError || editorAdmissionRef.current.postsLoading)) {
+        throw new Error('The client list needs checking before this thread can be saved. Return to the list and retry its load.');
+      }
+      const current = live || (formData.id ? postsRef.current.find(p => p.id === formData.id) : null)
+        || (!editingPost?.id ? existingPost : null);
+      if (formData.id && !current) throw new Error('This thread is no longer available. Return to the list to check it.');
+      const access = postEditingAccess(current, { isReadOnly, isOperator, isClientMember, clientId: myClientId });
+      if (!access.canEdit) throw new Error(access.reason);
+    };
+    try { assertAdmission(existingPost); }
+    catch (error) { if (actorIsCurrent()) showToast(error.message, 'error'); return false; }
     const client = isClientMember
       ? (existingPost ? existingPost.client : (myClientName || myClientId))
       : (formData.client || "").trim().replace(/\//g, '').slice(0, 50);
@@ -368,16 +411,19 @@ const App = () => {
     const platformId = formData.platform || 'gmb';
     const platform = PLATFORMS[platformId] || PLATFORMS.gmb;
 
-    // Sanitize tags: max 10 tags, 20 chars each
-    const tags = (formData.tags || [])
-      .slice(0, 10)
-      .map(tag => String(tag).trim().slice(0, 20))
-      .filter(Boolean);
+    let tags;
+    try { tags = validatedTags(formData.tags); }
+    catch (error) { showToast(error.message, 'error'); return false; }
 
     // Return the committed identity/baseline only after a real write. The Editor
     // owns navigation; a slow save must not close a different/newer editor.
     if (!client) { showToast("Client name is required", "error"); return false; }
     if (!content) { showToast("Content cannot be empty", "error"); return false; }
+    if (!Object.prototype.hasOwnProperty.call(PLATFORMS, platformId)) { showToast('Choose a supported platform before saving.', 'error'); return false; }
+    if (isClientMember && formData.id && !MEMBER_STATUS_OPTIONS.includes(formData.status)) {
+      showToast('Workspace editors can use Draft or Scheduled. Ask Stitch TEC to change other statuses.', 'error');
+      return false;
+    }
     // X/Twitter enforces its WEIGHTED count (URLs = 23, emoji/CJK = 2) — the
     // same measure the Editor's counter shows — not the raw string length.
     const effectiveLength = platformId === 'twitter' ? twitterLength(content) : content.length;
@@ -409,10 +455,12 @@ const App = () => {
         : (Object.values(STATUS).includes(formData.status) ? formData.status : STATUS.DRAFT);
       const title = (formData.title || "").trim().slice(0, 200);
       const submittedImageUrl = formData.imageUrl || '';
-      const notifyImageDropped = () => showToast(
-        "Image couldn't be uploaded and is too large to store offline — saved without it",
-        "error"
-      );
+      const notifyImageDropped = () => {
+        if (actorIsCurrent() && (!saveContext.isCurrentSession || saveContext.isCurrentSession())) showToast(
+          "Image couldn't be uploaded and is too large to keep offline. This save will omit it.",
+          "error"
+        );
+      };
 
       // Saving a parked suggestion must NOT silently promote it: stamping a clientId is
       // exactly what makes a post client-visible, so keep it empty — promotion is the
@@ -528,16 +576,19 @@ const App = () => {
           forClient: imageClientId,
           hostImage: ensureHostedImage,
           onImageDropped: notifyImageDropped,
+          assertAdmission,
         });
         // Never silent: losing an approval is exactly the kind of thing an operator
         // must be told about the moment it happens, not discover at the publish gate.
         savedPost = result.savedPost;
+        if (!actorIsCurrent() || (saveContext.isCurrentSession && !saveContext.isCurrentSession())) return false;
         showToast(result.tenantReset
           ? `Thread moved to ${client} staging — prior client review cleared`
           : result.approvalReset
             ? "Thread updated — approval cleared, the content changed since the client signed off"
             : "Thread updated");
       } else {
+        assertAdmission();
         if (saveContext.createPost && (!saveContext.isCurrentSession?.() || !saveContext.createClientId || saveContext.createClientId !== resolvedClientId)) throw new Error('Sign-in or client identity is not ready. No thread was created; keep your text and reopen the client.');
         const { imageUrl } = await preparePostImageForSave({
           submittedImageUrl,
@@ -545,6 +596,7 @@ const App = () => {
           hostImage: ensureHostedImage,
           onImageDropped: notifyImageDropped,
         });
+        assertAdmission();
         if (saveContext.createPost && !saveContext.isCurrentSession?.()) throw new Error('The editor or sign-in changed while preparing the image. No thread was created.');
         const approvalStatus = isClientMember
           ? APPROVAL_STATUS.PENDING
@@ -563,23 +615,25 @@ const App = () => {
           updatedAt: createdAt
         };
         if (saveContext.createPost && !isSuggestion) {
-          const result = await saveContext.createPost(createdPost);
+          const result = await saveContext.createPost(createdPost, assertAdmission);
           savedPost = result.post;
           submitted = result.submitted;
         } else {
+          assertAdmission();
           const createdRef = await addDoc(collection(db, 'posts'), createdPost);
           savedPost = { ...createdPost, id: createdRef.id };
         }
+        if (!actorIsCurrent() || (saveContext.isCurrentSession && !saveContext.isCurrentSession())) return false;
         showToast("New thread created!");
       }
 
       return { ok: true, post: savedPost, ...(submitted ? { submitted } : {}) };
     } catch (error) {
       console.error("Save Error:", error);
-      showToast(`${saveContext.createPost ? 'Save needs checking' : 'Save failed'}: ${error.message}`, "error");
+      if (actorIsCurrent()) showToast(`${saveContext.createPost ? 'Save needs checking' : 'Save failed'}: ${error.message}`, "error");
       return false;
     }
-  }, [isReadOnly, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName, clientMap, rosterSlugByName, rosterSlugs]);
+  }, [isReadOnly, isOperator, user, getRecoveryUser, editorIdentity, editingPost, showToast, isClientMember, myClientName, myClientId, clientIdFor, clientIdByName, clientMap, rosterSlugByName, rosterSlugs]);
 
   // Delete immediately with an Undo toast (less friction than a confirm modal,
   // but still recoverable). Undo re-creates the doc with explicit field mapping.
@@ -1785,6 +1839,25 @@ const App = () => {
   // Account/role/tenant changes (including sign-out in another tab) cannot
   // mount the previous account's editingPost under the new identity.
   if (view === 'editor' && editingIdentity === editorIdentity) {
+    const currentEditingPost = editingPost?.id ? posts.find(post => post.id === editingPost.id) : editingPost;
+    const editorAccess = editingPost?.id && (!currentEditingPost || postsError || postsLoading)
+      ? { canEdit: false, reason: 'This thread needs checking. Return to the client list and retry its load.' }
+      : postEditingAccess(currentEditingPost, { isReadOnly, isOperator, isClientMember, clientId: myClientId });
+    const editorReadOnly = isReadOnly || !editorAccess.canEdit;
+    const capturedEditorUser = user;
+    const capturedEditorEpoch = admissionEpoch;
+    const isEditorSessionCurrent = () => {
+      if (!capturedEditorUser || getRecoveryUser() !== capturedEditorUser
+        || editorAdmissionRef.current?.user !== capturedEditorUser
+        || editorAdmissionRef.current?.identity !== editorIdentity
+        || editorAdmissionRef.current?.epoch !== capturedEditorEpoch) return false;
+      if (editingPost?.id) {
+        const current = postsRef.current.find(post => post.id === editingPost.id);
+        if (!current || editorAdmissionRef.current.postsError || editorAdmissionRef.current.postsLoading) return false;
+        return postEditingAccess(current, { isReadOnly, isOperator, isClientMember, clientId: myClientId }).canEdit;
+      }
+      return postEditingAccess(editingPost, { isReadOnly, isOperator, isClientMember, clientId: myClientId }).canEdit;
+    };
     return (
       <ErrorBoundary>
         {/* ⚡ Lazy-loaded Editor keeps the initial dashboard bundle small. */}
@@ -1797,12 +1870,15 @@ const App = () => {
           <Editor
             key={editorIdentity}
             post={editingPost}
-            recoveryPrincipalId={!authLoading && user && !user.isAnonymous && !isReadOnly ? user.uid : ''}
+            recoveryPrincipalId={!authLoading && user && !user.isAnonymous && !editorReadOnly ? user.uid : ''}
             recoveryClientIdFor={recoveryClientIdFor}
             createRecoveryEnabled={true}
             recoveryProjectId={db.app?.options?.projectId || ''}
             getRecoveryUser={getRecoveryUser}
-            isReadOnly={isReadOnly}
+            isReadOnly={editorReadOnly}
+            readOnlyReason={editorAccess.reason}
+            mediaSessionKey={mediaSessionKey}
+            isSessionCurrent={isEditorSessionCurrent}
             clientMap={clientMap}
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
             clientIdByName={isOperator ? clientIdByName : (myClientName ? { [myClientName]: myClientId } : {})}
@@ -1816,6 +1892,7 @@ const App = () => {
             /* New posts inherit the caller's client context (active filter, or a
                member's own client) so the media picker works before first save. */
             initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
+            initialPlatform={defaultPlatformForClient(posts, isClientMember ? myClientId : recoveryClientIdFor(filterClient || ''))}
             clientLocked={isClientMember}
             canPreviewEmail={isOperator}
             onHelp={help.open}
@@ -2217,6 +2294,12 @@ const App = () => {
       {isMediaOpen && (isOperator || isClientMember) && (
         <Suspense fallback={<ModalFallback />}>
           <MediaLibrary
+            key={editorIdentity}
+            sessionKey={mediaSessionKey}
+            isSessionCurrent={() => !!user && getRecoveryUser() === user
+              && editorAdmissionRef.current?.user === user
+              && editorAdmissionRef.current?.identity === editorIdentity
+              && editorAdmissionRef.current?.epoch === admissionEpoch}
             onClose={() => setIsMediaOpen(false)}
             /* Client members get the library too, pinned to their own client (the
                worker enforces the same tenant boundary server-side). */
