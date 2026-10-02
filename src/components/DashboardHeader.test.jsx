@@ -30,6 +30,19 @@ describe('DashboardHeader identity chip', () => {
 });
 
 describe('DashboardHeader controls and responsive contract', () => {
+  it.each([false, true])('offers a help entry without editing actions for guest=%s', isReadOnly => {
+    const onHelp = vi.fn();
+    render(<DashboardHeader {...base} isReadOnly={isReadOnly} onHelp={onHelp} />);
+    const help = screen.getByRole('button', { name: 'Help & guides' });
+    expect(help).toHaveClass('min-h-11', 'min-w-11'); fireEvent.click(help); expect(onHelp).toHaveBeenCalledOnce();
+  });
+  it.each(['help', 'other dialog'])('does not let slash move focus behind %s', kind => {
+    render(<DashboardHeader {...base} helpOpen={kind === 'help'} />);
+    const modal = document.createElement('div');
+    if (kind === 'other dialog') modal.setAttribute('role', 'dialog');
+    const focus = document.createElement('button'); modal.append(focus); document.body.append(modal); focus.focus();
+    fireEvent.keyDown(focus, { key: '/' }); expect(focus).toHaveFocus(); modal.remove();
+  });
   it('retains each operator action and exposes the selected view', () => {
     const actions = {
       onViewChange: vi.fn(), onToggleSidebar: vi.fn(), onShare: vi.fn(),

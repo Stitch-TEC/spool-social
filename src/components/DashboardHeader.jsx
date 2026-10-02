@@ -1,7 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import {
   Menu, Search, X, Grid, Calendar as CalendarIcon,
-  Share2, Plus, LogOut
+  Share2, Plus, LogOut, CircleHelp
 } from 'lucide-react';
 import ToolSwitcher from './ToolSwitcher';
 
@@ -22,6 +22,8 @@ const DashboardHeader = ({
   filterClient,
   onNew,
   onSignOut,
+  onHelp,
+  helpOpen = false,
   userEmail = '',
   role = null
 }) => {
@@ -32,7 +34,7 @@ const DashboardHeader = ({
   // "/" focuses search (unless already typing in a field).
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || helpOpen || document.querySelector('[role="dialog"], dialog[open]')) return;
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
       e.preventDefault();
@@ -40,7 +42,7 @@ const DashboardHeader = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [helpOpen]);
 
   return (
     // The header grows with its controls/text, including enlarged desktop text.
@@ -138,6 +140,8 @@ const DashboardHeader = ({
             </div>
           </div>
         )}
+
+        {onHelp && <button type="button" onClick={onHelp} aria-label="Help & guides" title="Help & guides" className="min-h-11 min-w-11 flex items-center justify-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"><CircleHelp size={20} aria-hidden="true" /><span>Help</span></button>}
 
         <button
           onClick={onSignOut}

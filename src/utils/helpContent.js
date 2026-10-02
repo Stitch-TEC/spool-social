@@ -1,0 +1,146 @@
+// Bundled instructions only: no account, client, draft, URL or provider data.
+export const HELP_SEARCH_LIMIT = 120;
+const WRITERS = ['operator', 'member'];
+const EVERYONE = ['operator', 'member', 'guest'];
+
+export const HELP_GUIDES = [
+  {
+    id: 'find-threads', title: 'Find a thread', category: 'Getting around', audiences: EVERYONE,
+    summary: 'Search and narrow the threads already available to you.',
+    keywords: 'navigation search filters missing threads review approval',
+    steps: [
+      'Use Search threads to find words in the content or client name.',
+      'Choose a review filter, such as Awaiting client, Changes or Approved.',
+      'Clear the search and any active filters if a thread seems missing.',
+    ],
+    note: 'Filters do not grant access or bring private drafts into a client view.',
+  },
+  {
+    id: 'create-operator', title: 'Create and save a draft', category: 'Drafting', audiences: ['operator'],
+    summary: 'Start a private draft, then decide when to share it.',
+    keywords: 'new thread save editor content client AI recovery',
+    steps: [
+      'Choose a client, then select New. Confirm Client Name in the editor.',
+      'Choose Platform and write the content. AI draft is optional; review its output before using it.',
+      'Add an image when needed. On a phone, use Preview to check the draft and Edit to return.',
+      'Select Save and wait for confirmation. Close Editor returns to the threads.',
+      'When ready, use Send for review on the saved thread.',
+    ],
+    warning: 'Saving your new draft does not share it with the client or publish it.',
+  },
+  {
+    id: 'create-member', title: 'Work on your client’s drafts', category: 'Drafting', audiences: ['member'],
+    summary: 'Create or edit a thread within your own client workspace.',
+    keywords: 'new thread save editor content approval review client AI recovery',
+    steps: [
+      'Select New or open an existing thread. Client Name stays with your workspace.',
+      'Choose Platform and write or adjust the content. AI draft is optional.',
+      'Check the preview, then select Save and wait for confirmation.',
+      'For approval or feedback, open the review link supplied by your team; the signed-in editor is a different view.',
+    ],
+    warning: 'Your saved new threads are available for client review. Saving an edit is not an approval; changes to approved content need another review.',
+  },
+  {
+    id: 'send-review', title: 'Share a draft for review', category: 'Review', audiences: ['operator'],
+    summary: 'Move a private draft into review and share the client’s link.',
+    keywords: 'approval share staging private not sent awaiting client review link email',
+    steps: [
+      'Open Not sent and read the saved draft. Resolve any readiness blockers.',
+      'Select Send for review. The thread becomes available on the client’s review link.',
+      'Open Share, confirm the client, then create or copy a review link and send it yourself.',
+      'If changes are requested, edit and save the thread, then select Back for review.',
+      'Use Move to staging to hide a thread from the client again without erasing its review history.',
+    ],
+    warning: 'Anyone with a review link can review that client’s shared content. Send for review does not send an email.',
+  },
+  {
+    id: 'guest-review', title: 'Approve or request changes', category: 'Review', audiences: ['guest'],
+    summary: 'Review the whole thread before recording your decision.',
+    keywords: 'approval review approve feedback request changes video',
+    steps: [
+      'Open a thread and read its content, image and any other preview fields.',
+      'Open video links separately when present. Ask your team for access if the file will not open.',
+      'Select Approve Thread when it is ready, or Request Changes to leave feedback.',
+      'For changes, enter a note or select a reason, then choose Submit Feedback.',
+      'If Spool says the thread changed, reopen it and review the current version before deciding again.',
+    ],
+    warning: 'Approval is not publication. A linked file can change outside Spool; approval does not preserve a copy of that video.',
+  },
+  {
+    id: 'video-links', title: 'Add a video link', category: 'Drafting', audiences: WRITERS,
+    summary: 'Include a sharing link alongside the draft for review.',
+    keywords: 'video drive onedrive sharepoint dropbox youtube vimeo storage file screenshot',
+    steps: [
+      'Keep the video in its source service and give your reviewers permission to open it.',
+      'In the editor, open Add video link to draft text.',
+      'Paste a supported HTTPS sharing link and choose Insert link into draft text.',
+      'Review the text and select Save. Use the displayed video link to check the destination yourself.',
+    ],
+    warning: 'The URL is part of the draft text, not a private attachment. It travels with copied or published text and draft AI requests. Spool does not upload, store or check the video.',
+    note: 'Google Drive, OneDrive, SharePoint, Dropbox, YouTube, Vimeo and supported direct video-file links are accepted. A local file path is not a sharing link.',
+  },
+  {
+    id: 'workflow', title: 'Understand review and scheduling', category: 'Review', audiences: EVERYONE,
+    summary: 'Review decisions and publishing progress are separate.',
+    keywords: 'review approval status scheduled calendar draft posted not sent changes staging',
+    steps: [
+      'Use Not sent, Awaiting client, Changes and Approved to understand the review stage or decision.',
+      'Read Draft, Scheduled and Posted as workflow labels, not proof of client approval.',
+      'Treat a schedule date as a plan. Confirm publication in the destination before treating content as live.',
+    ],
+    note: 'Moving a thread back to staging does not erase a previous review decision. Only the operator can see private staged drafts.',
+  },
+  {
+    id: 'handoff', title: 'Reuse content in other apps', category: 'Publishing', audiences: ['operator'],
+    summary: 'Reuse a template or hand approved content to Sender or POM.',
+    keywords: 'template use as draft publish website site POM Sender email copy',
+    steps: [
+      'In Templates, choose Use as draft to create a separate draft to edit and save.',
+      'On an eligible template or approved blog thread, Push to Sender creates or updates the email template there.',
+      'Open Sender to review that copy. A push does not send an email campaign.',
+      'For an approved blog thread, Publish to site stages a POM ticket. Continue in POM to dispatch and review the proposed website change.',
+    ],
+    warning: 'Publishing to the site is not immediate. Replacing a changed Sender copy requires your confirmation; check its existing edits first.',
+  },
+  {
+    id: 'save-recovery', title: 'Check an uncertain save', category: 'Troubleshooting', audiences: WRITERS,
+    summary: 'Keep your work while checking what actually saved.',
+    keywords: 'save recovery unsaved restore copy offline interrupted error missing duplicate',
+    steps: [
+      'Keep the editor open and use Copy text when available to preserve your current wording.',
+      'If offered, choose Restore previous work before continuing the original new draft.',
+      'For an unconfirmed new-draft save, use Check previous save when the connection returns.',
+      'If it remains unconfirmed, open Help with this save and share the save reference privately with Stitch TEC.',
+    ],
+    warning: 'Do not create another copy or clear browser storage to fix an uncertain save. Copy text does not include images or settings, and a device recovery copy is not proof of a server save.',
+  },
+  {
+    id: 'access', title: 'Check missing access or content', category: 'Troubleshooting', audiences: [...EVERYONE, 'unknown'],
+    summary: 'Check the account, link and connection without changing access.',
+    keywords: 'access sign in login account client missing navigation connection permission review link',
+    steps: [
+      'For a signed-in workspace, check that you used the intended Google account. For a review link, use the latest link from your team.',
+      'Clear search and filters before deciding a thread is missing. A private draft will not appear in a client view.',
+      'If live updates have stopped, preserve any unsaved text before reloading.',
+      'If access is still unavailable, ask Stitch TEC to check your account or review link. Share the error message, not passwords or sign-in codes.',
+    ],
+    note: 'POM, Spool and Sender check access separately. A link from another app does not grant access.',
+  },
+];
+
+export function guidesForAudience(audience) {
+  const role = ['operator', 'member', 'guest'].includes(audience) ? audience : 'unknown';
+  return HELP_GUIDES.filter(guide => guide.audiences.includes(role));
+}
+
+export function findHelpGuide(id, audience) {
+  return guidesForAudience(audience).find(guide => guide.id === id) || null;
+}
+
+export function searchHelpGuides(query, audience) {
+  const terms = (typeof query === 'string' ? query : '').slice(0, HELP_SEARCH_LIMIT).trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return guidesForAudience(audience).filter(guide => {
+    const text = [guide.title, guide.category, guide.summary, guide.keywords, ...guide.steps, guide.warning || '', guide.note || ''].join(' ').toLowerCase();
+    return terms.every(term => text.includes(term));
+  });
+}

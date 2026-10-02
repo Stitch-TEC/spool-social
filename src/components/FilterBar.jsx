@@ -3,6 +3,7 @@ import { Lightbulb, CheckSquare, Image as ImageIcon, AlertTriangle, FilterX } fr
 import { STATUS, REVIEW_STATE, MEDIA_FILTER, NEEDS_FILTER } from '../constants';
 import PostControls, { Chevron } from './PostControls';
 import DensityToggle from './DensityToggle';
+import HelpDisclosure from './HelpDisclosure';
 import { activeSelectClass } from '../utils/facetStyles';
 
 // The parked-suggestions lane rides the same control as the review states but is
@@ -141,6 +142,12 @@ const FilterBar = memo(({
           );
         })}
       </div>
+
+      <HelpDisclosure label="Review states">
+        <p>Not sent means private staging. Awaiting client, Changes and Approved describe review—not publication.</p>
+        <p>Draft, Scheduled and Posted are separate workflow labels. A schedule is a plan, not automatic publishing.</p>
+        <p>A previous review decision can remain after a thread moves back to staging.</p>
+      </HelpDisclosure>
 
       <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Sort and filter posts">
         {showFacets && (
