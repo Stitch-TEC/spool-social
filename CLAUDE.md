@@ -33,7 +33,8 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   October 1 source also scopes patched gRPC/proto-loader to the existing Firestore 4.9.3
   parent; this is an application-owned compatibility repair, not a published Firebase fix.
   See `docs/FIREBASE-TRANSPORT-SECURITY-2026-10-01.md` for actual SDK/TLS/browser-graph gates
-  and override removal criteria. Zero local audits do not resolve the separate rules gate.
+  and override removal criteria. The separate strict rules preparation now passes
+  75/75, but live rules impact/activation remains unverified and separately gated.
 - `main` uses active release ruleset `21514076`: PR, one approving review and the
   `build`, `audit`, `analyze` and `dependency-review` checks (verified September 27).
   Do not push straight to `main` or assume a POM-only override covers Spool.
@@ -71,7 +72,9 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   exact observed Firestore updateTime. Unrelated fields survive grants. Lost or malformed
   acknowledgements are unconfirmed, never automatically retried. No new status endpoint,
   browser re-sync, SSO or production grant is implied. See `docs/PEOPLE-SYNC-SAFETY-2026-10-01.md`;
-  source preparation is not release proof, and current dependency audit failures remain blockers.
+  source preparation is not release proof. The combined candidate resolves the
+  inherited dependency findings without weakening audits; final integrated tests,
+  independent review and hosted release checks remain required.
 - `usePosts` RE-SUBSCRIBES on a retryable Firestore error (capped backoff) and reports
   `isStalled` when it can't — Firestore terminates a listener on error and never re-attaches,
   so the old "Retrying automatically…" banner was a lie. It also waits for `user` before

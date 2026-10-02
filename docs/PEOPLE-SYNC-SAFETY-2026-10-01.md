@@ -1,7 +1,9 @@
 # Spool client-access sync guards
 
-Status: source preparation only. This document is not deployment proof. The existing
-dependency audit is currently red; no gate is weakened or bypassed by this change.
+Status: source preparation only. This document is not deployment proof. The standalone
+receiver PR inherited a failing dependency audit; its reviewed repair is now combined
+in one release candidate with strict rules/tests and concise help. Both integrated
+raw audits are zero. No gate is weakened or bypassed by this change.
 
 ## Scope
 
@@ -83,9 +85,14 @@ field preservation, wrong tenants, privileged/malformed records, create/update/d
 races, missing/revoked state, rejected conditions, lost acknowledgements after commit,
 bounded/malformed responses, no blind retries and unchanged request/auth/rate gates.
 No production account is a test fixture.
-The separate eight-case native test exercises the same Commit body/precondition contract
-against an installed local emulator; actual helper/router integration uses the synthetic
-transport. Neither substitutes for meaningful rules acceptance or production evidence.
+The initial eight-case native test exercises the same Commit body/precondition contract
+against an installed local emulator. A subsequent 23-case run bundles the exact
+unchanged router/helper and exercises it against that emulator, with only signing/OAuth
+stubbed. It covers actual conditional mutations, tenant/role races and lost acknowledgements
+after commit; the source-input hashes and acceptance are archived in the suite.
+The final combined candidate requires a fresh exact-source run, not inherited acceptance.
+Admin REST bypasses rules, so these tests do not prove application-rule behavior,
+production IAM, browser login or actual account recovery. No real account is a fixture.
 
 Before release, require full tests, lint/build, actual rules emulator, dependency audits,
 independent review, normal protected PR gates and exact deployment/source verification.

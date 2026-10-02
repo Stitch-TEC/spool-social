@@ -1,9 +1,12 @@
 # Spool transport security — October 1, 2026
 
-Status: reviewed-source preparation, not merged or deployed. This follows the retained
-Wrangler/Undici preparation in PR #134. It does not include the separate access receiver
-or change Firestore rules. Both raw dependency audits now report zero findings locally;
-that does not resolve the separate rules evaluator-exhaustion acceptance problem.
+Status: reviewed-source preparation, not merged or deployed. The dependency slice
+described below is PR #134. It is being assembled with the separately reviewed
+access receiver, strict rules/tests and concise help into one release candidate,
+so main does not deploy three intermediate combinations. Both raw dependency
+audits report zero findings locally; strict application-rules preparation now
+passes 75/75. Neither result authorizes live rules activation. See
+`RULES-VERIFICATION-2026-10-01.md` for that distinct impact/approval boundary.
 
 ## Why this repair is scoped to the existing parent
 
@@ -66,9 +69,10 @@ those imports from Firestore's own installed location and confirm **1.14.5 / 0.8
 including the loader resolved by gRPC. The SDK's embedded version/header strings are
 not evidence of the loaded transport version.
 
-The actual production Vite graph contains **444 modules** and uses Firestore's browser
+The dependency-only production Vite graph contains **444 modules** and uses Firestore's browser
 ESM entry. None of the seven changed lock packages, gRPC, proto-loader, or protobuf code
-appears in that graph. This is build reachability evidence, not a deployed-byte or live
+appears in that graph. The combined help candidate requires its own fresh graph
+and asset record rather than inheriting that module count. This is build reachability evidence, not a deployed-byte or live
 authentication claim. `npm audit --omit=dev` still audits the installed production tree,
 including Node-only SDK dependencies; both that audit and the full audit are retained.
 The Worker accesses Firestore through its existing REST helper; no Worker/app source is
@@ -76,6 +80,8 @@ changed by this preparation.
 
 ## Verification and limitations
 
+- Dependency-only acceptance below is retained historical preparation evidence;
+  final integrated-source gates are recorded separately in the suite archive.
 - Clean locked install on Node 22.19.0; full and omit-dev raw audits report zero findings.
 - Nine focused dependency/native tests; **1,302** full ordinary tests pass. The **34**
   emulator-dependent rules tests are skipped in that ordinary run, not counted as passed.

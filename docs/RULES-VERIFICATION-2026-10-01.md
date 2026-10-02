@@ -90,7 +90,9 @@ own account; operator and super-admin directory permissions are preserved.
 as `{ client: true }` could satisfy role membership. Such malformed grants are now
 rejected; valid client/client-admin and mixed role lists retain their behavior.
 Before any later live activation, inspect real role shapes read-only and assess
-impact. No such inventory, role repair or live access change occurred here.
+impact. One bounded read-only inventory attempt matched the operator account but
+stopped because Google required reauthentication before any Firestore read. Counts
+remain unavailable, not zero; no role repair or live access change occurred.
 
 ## Recorded verification and limits
 
@@ -129,4 +131,5 @@ separate until the integrated candidate passes its release checks. The users-lis
 issue is resolved with equivalent query behavior, without splitting get/list policy. Obtain owner
 approval before any live permission/policy change or protected release override;
 perform any necessary inventory read-only with existing authorized access and
-minimum data. No real inventory is claimed here.
+minimum data. The stopped attempt is in the follow-through archive's
+`ROLE-SHAPE-INVENTORY.json`; no real role-shape inventory is claimed here.
