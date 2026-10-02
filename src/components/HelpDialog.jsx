@@ -55,8 +55,12 @@ export default function HelpDialog({ audience, onClose, returnFocus }) {
         const adjacent = controls.filter(element => active?.compareDocumentPosition(element) & direction);
         const destination = event.shiftKey ? adjacent[adjacent.length - 1] || last : adjacent[0] || first;
         event.preventDefault(); destination?.focus();
-      } else if (event.shiftKey && active === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && active === last) { event.preventDefault(); first?.focus(); }
+      } else {
+        // Safari can skip ordinary buttons under its default keyboard setting.
+        // Route every Tab, not only boundary tabs, through these visible controls.
+        const next = (controls.indexOf(active) + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+        event.preventDefault(); controls[next]?.focus();
+      }
     };
     document.addEventListener('focusin', containFocus);
     document.addEventListener('keydown', keys, true);

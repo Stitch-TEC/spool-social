@@ -33,6 +33,17 @@ describe('Help dialog and task navigation', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Close help' }), { key: 'Escape' });
     expect(otherEscape).not.toHaveBeenCalled(); window.removeEventListener('keydown', otherEscape);
   });
+  it('routes interior Tab explicitly so Safari cannot skip guide buttons', async () => {
+    render(<Fixture />); fireEvent.click(screen.getByRole('button', { name: 'Open help' }));
+    const search = await screen.findByRole('searchbox');
+    const dialog = screen.getByRole('dialog');
+    const close = screen.getByRole('button', { name: 'Close help' });
+    const firstGuide = within(dialog).getAllByRole('button')[1];
+    fireEvent.keyDown(close, { key: 'Tab' }); expect(search).toHaveFocus();
+    fireEvent.keyDown(search, { key: 'Tab' }); expect(firstGuide).toHaveFocus();
+    fireEvent.keyDown(firstGuide, { key: 'Tab', shiftKey: true }); expect(search).toHaveFocus();
+    fireEvent.keyDown(search, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
+  });
   it('routes Tab logically from article and index headings without escaping the dialog', async () => {
     render(<Fixture />); fireEvent.click(screen.getByRole('button', { name: 'Open help' }));
     fireEvent.click(await screen.findByRole('button', { name: /Add a video link/ }));
