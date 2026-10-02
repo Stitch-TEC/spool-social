@@ -14,6 +14,7 @@ dist-ssr
 
 # Wrangler local dev state / cache
 .wrangler
+.rules-test/
 
 # Editor directories and files
 .vscode/*
