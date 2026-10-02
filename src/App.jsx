@@ -26,6 +26,7 @@ import { parseClientHandoff } from './utils/clientHandoff';
 import ClientHandoffNotice from './components/ClientHandoffNotice';
 import usePosts from './hooks/usePosts';
 import useReviewSelection from './hooks/useReviewSelection';
+import useHelpSession from './hooks/useHelpSession';
 import useToast from './hooks/useToast';
 import ErrorBoundary from './components/ErrorBoundary';
 import LoginScreen from './components/LoginScreen';
@@ -40,6 +41,7 @@ import Toast from './components/Toast';
 import FeedbackWidget from './components/FeedbackWidget';
 import ConfirmModal from './components/ConfirmModal';
 import ReviewModal from './components/ReviewModal';
+import HelpDialog from './components/HelpDialog';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
 import { useClients } from './hooks/useClients';
@@ -104,6 +106,9 @@ const App = () => {
   // --- Session & data ---
   const { toast, showToast, hideToast } = useToast();
   const { user, authRevision, getAuthRevision, authLoading, sharedUid, shareClient, shareClientId, isReadOnly, shareError, authzError, role, clientId: myClientId, isOperator, isClientMember, signIn, signOutAndExit } = useAuth(showToast);
+  const getHelpUser = useCallback(() => auth.currentUser, []);
+  const help = useHelpSession({ user, authRevision, getAuthRevision, authLoading, role, clientId: myClientId,
+    sharedUid, shareClientId, isReadOnly, isOperator, isClientMember, getCurrentUser: getHelpUser });
   const getRecoveryUser = useCallback(() => {
     if (authLoading || isReadOnly || (getAuthRevision && getAuthRevision() !== authRevision)) return null;
     return auth.currentUser === user ? user : null;
@@ -1813,10 +1818,12 @@ const App = () => {
             initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
             clientLocked={isClientMember}
             canPreviewEmail={isOperator}
+            onHelp={help.open}
             onCancel={() => { setView('grid'); setEditingPost(null); }}
           />
         </Suspense>
         {toast && <Toast message={toast.message} type={toast.type} action={toast.action} onClose={hideToast}/>}
+        {help.selection && <HelpDialog key={help.selection.identity} audience={help.selection.audience} onClose={help.close} returnFocus={help.selection.trigger} />}
         {user && !isReadOnly && (
           <FeedbackWidget user={user} role={role} clientId={myClientId} view={view} showToast={showToast} />
         )}
@@ -1873,6 +1880,8 @@ const App = () => {
             onSignOut={signOutAndExit}
             userEmail={user?.email || ''}
             role={role}
+            onHelp={help.open}
+            helpOpen={Boolean(help.selection)}
           />
 
           {/* Two DIFFERENT situations, and the banner used to claim the recoverable one
@@ -2257,6 +2266,7 @@ const App = () => {
           />
         </Suspense>
       )}
+      {help.selection && <HelpDialog key={help.selection.identity} audience={help.selection.audience} onClose={help.close} returnFocus={help.selection.trigger} />}
     </ErrorBoundary>
   );
 };

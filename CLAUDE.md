@@ -55,6 +55,17 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   and due-automation draft generation (`*/15 * * * *`).
 
 ## Gotchas that bite
+- **Help & guides (October 1 source):** dashboard/editor Help opens a local, role-specific
+  manual without replacing the editor, consuming a POM handoff or changing the URL. Static
+  task copy lives in `src/utils/helpContent.js`; operator, signed-in client member and review-link
+  guest are distinct audiences. Unknown roles get troubleshooting only. `useHelpSession` retires
+  help on account/role/client/auth-revision changes. Keep new entries outside existing modals:
+  their broadcast Escape hooks and focus handlers are not a shared modal stack. The help shell
+  contains lazy-content failures and retains Close while loading. Keep important video, sharing,
+  recovery and overwrite consequences beside actions; optional help must not hide them. In copy,
+  Send for review is not email, scheduling is not approval/publication, and Publish to site stages
+  a POM dispatch ticket. Signed-in members edit; approval controls are on review-link views.
+  `WALKTHROUGH.md` is a historical feature tour, not the current role-specific UI manual.
 - **Node 25 here** → prefix wrangler: `NODE_OPTIONS=--dns-result-order=ipv4first wrangler ...`
 - ~~This env's main shell cannot reach api.cloudflare.com~~ — **FALSE (corrected 2026-07-14):**
   with the `NODE_OPTIONS` prefix, wrangler works from the main shell. Verify prod state directly.
