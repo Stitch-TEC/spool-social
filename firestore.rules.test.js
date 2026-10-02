@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { URL as NodeURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
-  assertFails,
+  assertFails as sdkAssertFails,
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
@@ -10,6 +11,7 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -21,13 +23,26 @@ import {
 import { approvalSafeStoragePatch } from './src/utils/review';
 import { createScope, workCopy } from './src/utils/createJournal';
 import { intentRequest } from './src/utils/createTransport';
+import { rulesEvaluationFailures } from './scripts/rulesTestEvidence.mjs';
+
+async function assertFails(operation) {
+  const error = await sdkAssertFails(operation);
+  expect(rulesEvaluationFailures(String(error))).toEqual([]);
+  return error;
+}
 
 const emulatorIsRunning = !!globalThis.process?.env?.FIRESTORE_EMULATOR_HOST;
 const OWNER_UID = 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
-const PROJECT_ID = 'spool-rules-test';
+const PROJECT_ID = 'demo-spool-rules';
 const POST_ID = 'review-post';
 const TOKEN = 'review-token';
 const NOW = '2026-08-24T20:00:00.000Z';
+
+if (globalThis.process?.env?.SPOOL_RULES_REQUIRED === '1'
+  && (!emulatorIsRunning || globalThis.process.env.SPOOL_RULES_PROJECT !== PROJECT_ID
+    || !/^(localhost|127\.0\.0\.1):\d+$/.test(globalThis.process.env.FIRESTORE_EMULATOR_HOST))) {
+  throw new Error('Rules acceptance requires the owned loopback demo emulator');
+}
 
 describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
   let testEnv;
@@ -40,7 +55,7 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     testEnv = await initializeTestEnvironment({
       projectId: PROJECT_ID,
       firestore: {
-        rules: readFileSync('firestore.rules', 'utf8'),
+        rules: readFileSync(new NodeURL('./firestore.rules', import.meta.url), 'utf8'),
       },
     });
     guestDb = testEnv.authenticatedContext('guest-user', {
@@ -269,10 +284,11 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
   });
 
   it('rejects a token bound to the wrong owner/client and a revoked share', async () => {
+    const review = { approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW };
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await updateDoc(doc(context.firestore(), 'posts', POST_ID), { uid: 'different-owner' });
     });
-    await assertFails(updateDoc(postRef(), { approvalStatus: 'approved', updatedAt: NOW }));
+    await assertFails(updateDoc(postRef(), review));
 
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await updateDoc(doc(context.firestore(), 'posts', POST_ID), {
@@ -280,13 +296,13 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
         clientId: 'different-client',
       });
     });
-    await assertFails(updateDoc(postRef(), { approvalStatus: 'approved', updatedAt: NOW }));
+    await assertFails(updateDoc(postRef(), review));
 
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await updateDoc(doc(context.firestore(), 'posts', POST_ID), { clientId: 'acme' });
       await updateDoc(doc(context.firestore(), 'shares', TOKEN), { revoked: true });
     });
-    await assertFails(updateDoc(postRef(), { approvalStatus: 'approved', updatedAt: NOW }));
+    await assertFails(updateDoc(postRef(), review));
   });
 
   it('makes private and legacy-missing stage unreadable and immutable to guests and members', async () => {
@@ -697,5 +713,164 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
       reviewedAt: 'not-an-iso-time',
       updatedAt: 'not-an-iso-time',
     }));
+  });
+
+  it.each(['guest', 'member'])('accepts maximum feedback and 200th entry, rejects one-over without changing history: %s', async actor => {
+    const db = actor === 'guest' ? guestDb : memberDb;
+    const ref = doc(db, 'posts', POST_ID);
+    const prior = Array.from({ length: 199 }, (_, index) => ({ text: `Prior ${index}`, by: 'client', at: '2026-08-24T18:00:00.000Z' }));
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'posts', POST_ID), {
+      approvalStatus: 'changes_requested', feedback: 'Prior 198', feedbackThread: prior,
+    }));
+    const patch = (text, at = NOW) => ({ approvalStatus: 'changes_requested', feedback: text,
+      feedbackThread: arrayUnion({ text, by: 'client', at }), reviewedBy: 'client', reviewedAt: at, updatedAt: at });
+    await assertFails(updateDoc(ref, patch('x'.repeat(501))));
+    expect((await getDoc(ref)).data().feedbackThread).toEqual(prior);
+    await assertSucceeds(updateDoc(ref, patch('x'.repeat(500))));
+    const accepted = (await getDoc(ref)).data();
+    expect(accepted.feedbackThread).toEqual([...prior, { text: 'x'.repeat(500), by: 'client', at: NOW }]);
+    await assertFails(updateDoc(ref, patch('One more', '2026-08-24T20:00:01.000Z')));
+    expect((await getDoc(ref)).data()).toEqual(accepted);
+  });
+
+  it('preserves all maximum member editorial bounds and denies individual one-over values', async () => {
+    const ref = doc(memberDb, 'posts', POST_ID);
+    const maximum = { content: 'x'.repeat(100000), title: 'x'.repeat(200), altText: 'x'.repeat(300),
+      metaDescription: 'x'.repeat(200), slug: 'x'.repeat(80), imageUrl: 'x'.repeat(500000),
+      tags: Array.from({ length: 10 }, (_, i) => `${i}`.padEnd(20, 'x')), scheduledDate: 'x'.repeat(40), updatedAt: NOW };
+    await assertSucceeds(updateDoc(ref, maximum));
+    const saved = (await getDoc(ref)).data();
+    for (const field of ['content', 'title', 'altText', 'metaDescription', 'slug', 'imageUrl', 'scheduledDate']) {
+      await assertFails(updateDoc(ref, { [field]: maximum[field] + 'x', updatedAt: '2026-08-24T20:00:01.000Z' }));
+    }
+    await assertFails(updateDoc(ref, { tags: [...maximum.tags, 'extra'], updatedAt: '2026-08-24T20:00:01.000Z' }));
+    await assertFails(updateDoc(ref, { tags: ['x'.repeat(21)], updatedAt: '2026-08-24T20:00:01.000Z' }));
+    expect((await getDoc(ref)).data()).toEqual(saved);
+  });
+
+  it.each(['guest', 'member'])('rejects malformed review fields through explicit false, not evaluator errors: %s', async actor => {
+    const ref = doc(actor === 'guest' ? guestDb : memberDb, 'posts', POST_ID);
+    const saved = (await getDoc(ref)).data();
+    const review = { approvalStatus: 'changes_requested', feedback: 'Review', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW };
+    for (const feedbackThread of [null, {}, [], [null], ['bad'], [{}], [{ text: 'Review', by: 'client' }]]) {
+      await assertFails(updateDoc(ref, { ...review, feedbackThread }));
+    }
+    for (const malformed of [{ approvalStatus: deleteField() }, { reviewedBy: deleteField() },
+      { reviewedAt: deleteField() }, { feedback: null }, { updatedAt: deleteField() }]) {
+      await assertFails(updateDoc(ref, { ...review, feedbackThread: [{ text: 'Review', by: 'client', at: NOW }], ...malformed }));
+    }
+    expect((await getDoc(ref)).data()).toEqual(saved);
+  });
+
+  it.each([null, 'client', { client: true }, { super_admin: true }, [], ['unknown'], 1].map(roles => [roles]))('rejects malformed/ungranted role containers without errors: %j', async roles => {
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'users', 'member@example.com'), { roles }));
+    await assertFails(getDoc(doc(memberDb, 'posts', POST_ID)));
+    await assertFails(updateDoc(doc(memberDb, 'posts', POST_ID), { content: 'Not allowed', updatedAt: NOW }));
+  });
+
+  it('keeps the union of valid member and guest grants when either other branch denies', async () => {
+    const mixed = testEnv.authenticatedContext('member-user', { email: 'member@example.com',
+      share: true, shareOwner: OWNER_UID, shareClientId: 'foreign', shareToken: 'absent' }).firestore();
+    await assertSucceeds(updateDoc(doc(mixed, 'posts', POST_ID), { content: 'Member-owned editorial path', updatedAt: NOW }));
+    const guestWithUnknownEmail = testEnv.authenticatedContext('guest-other', { email: 'unknown@example.test',
+      share: true, shareOwner: OWNER_UID, shareClientId: 'acme', shareToken: TOKEN }).firestore();
+    await assertSucceeds(updateDoc(doc(guestWithUnknownEmail, 'posts', POST_ID), {
+      approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: '2026-08-24T20:00:01.000Z', updatedAt: '2026-08-24T20:00:01.000Z',
+    }));
+  });
+
+  it.each([{}, { email: null }, { email: 7 }, { share: true }, { share: true, shareOwner: OWNER_UID, shareClientId: 'acme', shareToken: [] }])('denies incomplete identity claims without evaluator errors: %j', async claims => {
+    const db = testEnv.authenticatedContext('unknown-user', claims).firestore();
+    await assertFails(getDoc(doc(db, 'posts', POST_ID)));
+    await assertFails(updateDoc(doc(db, 'posts', POST_ID), { content: 'Denied', updatedAt: NOW }));
+  });
+
+  it.each(['owner', 'super_admin'])('keeps operator private CRUD and protected grant rules: %s', async kind => {
+    const email = `${kind}@example.test`, uid = kind === 'owner' ? OWNER_UID : 'different-super-admin';
+    if (kind === 'super_admin') await testEnv.withSecurityRulesDisabled(context => setDoc(doc(context.firestore(), 'users', email), { roles: ['super_admin'] }));
+    const db = testEnv.authenticatedContext(uid, { email }).firestore();
+    const ref = doc(db, 'posts', `operator-${kind}`);
+    await assertSucceeds(setDoc(ref, { uid: OWNER_UID, clientId: 'acme', reviewStage: 'private', content: 'Operator private' }));
+    await assertSucceeds(getDoc(ref));
+    await assertSucceeds(updateDoc(ref, { content: 'Changed privately' }));
+    await assertSucceeds(getDocs(collection(db, 'users')));
+    await assertSucceeds(setDoc(doc(db, 'users', 'other@example.test'), { roles: ['client'], clientId: 'acme' }));
+    await assertFails(setDoc(doc(db, 'users', email), { roles: ['client'], clientId: 'acme' }));
+    await assertSucceeds(deleteDoc(ref));
+  });
+
+  it('denies member self-grants, foreign grants, user listing and protected collections', async () => {
+    await assertSucceeds(getDoc(doc(memberDb, 'users', 'member@example.com')));
+    await assertFails(setDoc(doc(memberDb, 'users', 'member@example.com'), { roles: ['super_admin'] }));
+    await assertFails(setDoc(doc(memberDb, 'users', 'other@example.test'), { roles: ['client'], clientId: 'acme' }));
+    await assertFails(getDocs(collection(memberDb, 'users')));
+    for (const name of ['shares', 'automations']) {
+      await assertFails(getDoc(doc(memberDb, name, 'anything')));
+      await assertFails(setDoc(doc(memberDb, name, 'anything'), { clientId: 'acme' }));
+    }
+  });
+
+  it.each(['guest', 'member'])('allows legacy missing-feedback approval without introducing a new requirement: %s', async actor => {
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'posts', POST_ID), { feedback: deleteField() }));
+    await assertSucceeds(updateDoc(doc(actor === 'guest' ? guestDb : memberDb, 'posts', POST_ID), {
+      approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW,
+    }));
+  });
+
+  it('keeps an email-less legacy owner unable to write user grants', async () => {
+    const db = testEnv.authenticatedContext(OWNER_UID, {}).firestore();
+    await assertSucceeds(getDoc(doc(db, 'posts', POST_ID)));
+    await assertFails(setDoc(doc(db, 'users', 'target@example.test'), { roles: ['client'], clientId: 'acme' }));
+  });
+
+  it('keeps member action selectors exclusive without excluding valid review, editorial or resubmit', async () => {
+    const ref = doc(memberDb, 'posts', POST_ID);
+    const saved = (await getDoc(ref)).data();
+    const review = { approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW };
+    await assertFails(updateDoc(ref, { ...review, sentForReviewAt: NOW }));
+    await assertFails(updateDoc(ref, { ...review, content: 'Mixed editorial/review' }));
+    expect((await getDoc(ref)).data()).toEqual(saved);
+    await assertSucceeds(updateDoc(ref, review));
+    await assertSucceeds(updateDoc(ref, { content: 'New editorial revision', approvalStatus: 'pending', updatedAt: '2026-08-24T20:00:01.000Z' }));
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'posts', POST_ID), { approvalStatus: 'changes_requested', feedback: 'Revise' }));
+    const beforeResubmit = (await getDoc(ref)).data();
+    const resubmit = { approvalStatus: 'pending', feedback: '', sentForReviewAt: '2026-08-24T20:00:02.000Z', updatedAt: '2026-08-24T20:00:02.000Z' };
+    await assertFails(updateDoc(ref, { ...resubmit, reviewedAt: '2026-08-24T20:00:02.000Z' }));
+    await assertFails(updateDoc(ref, { ...resubmit, content: 'Mixed editorial/resubmit' }));
+    expect((await getDoc(ref)).data()).toEqual(beforeResubmit);
+    await assertSucceeds(updateDoc(ref, resubmit));
+  });
+
+  it('retains valid cross-tenant guest authority alongside a different member grant', async () => {
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'users', 'member@example.com'), { clientId: 'different-member-client' }));
+    const db = testEnv.authenticatedContext('member-user', { email: 'member@example.com',
+      share: true, shareOwner: OWNER_UID, shareClientId: 'acme', shareToken: TOKEN }).firestore();
+    await assertSucceeds(getDoc(doc(db, 'posts', POST_ID)));
+    await assertSucceeds(updateDoc(doc(db, 'posts', POST_ID), {
+      approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW,
+    }));
+  });
+
+  it('retains member authority with malformed guest claims', async () => {
+    const db = testEnv.authenticatedContext('member-user', { email: 'member@example.com',
+      share: true, shareOwner: OWNER_UID, shareClientId: 'acme', shareToken: [] }).firestore();
+    await assertSucceeds(updateDoc(doc(db, 'posts', POST_ID), { content: 'Valid member edit', updatedAt: NOW }));
+  });
+
+  it('denies foreign-member access to an existing row with otherwise valid payloads', async () => {
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'users', 'member@example.com'), { clientId: 'foreign' }));
+    const ref = doc(memberDb, 'posts', POST_ID);
+    await assertFails(getDoc(ref));
+    await assertFails(updateDoc(ref, { content: 'Foreign edit', updatedAt: NOW }));
+    await assertFails(updateDoc(ref, { approvalStatus: 'approved', reviewedBy: 'client', reviewedAt: NOW, updatedAt: NOW }));
+    await assertFails(deleteDoc(ref));
+    await testEnv.withSecurityRulesDisabled(async context => {
+      expect((await getDoc(doc(context.firestore(), 'posts', POST_ID))).data().content).toBe('Approved payload');
+    });
+  });
+
+  it.each([['client_admin'], ['unknown', 'client'], ['unknown', 'client_admin']].map(roles => [roles]))('retains valid member roles in lists: %j', async roles => {
+    await testEnv.withSecurityRulesDisabled(context => updateDoc(doc(context.firestore(), 'users', 'member@example.com'), { roles }));
+    await assertSucceeds(updateDoc(doc(memberDb, 'posts', POST_ID), { content: 'Valid role list', updatedAt: NOW }));
   });
 });

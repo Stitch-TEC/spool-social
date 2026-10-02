@@ -17,6 +17,9 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - `npm run worker:dev` — `wrangler dev` (run alongside `npm run dev` for the API)
 - `npm run lint` — `eslint .` (lints the WHOLE tree — **run before pushing**)
 - `npm run test` — `vitest run` (jsdom) · `npm run test:watch` to watch
+- `npm run test:rules` — owned loopback-only `demo-spool-rules` emulator; checks both
+  assertions and evaluator diagnostics. Requires Node 22 + Java 21. Ordinary `npm test`
+  skips emulator tests and is not a rules acceptance gate. See `docs/RULES-VERIFICATION-2026-10-01.md`.
 - `npm run build` — `vite build` → `dist/`
 - `npm run deploy` — `npm run build && wrangler deploy` (manual fallback only)
 
@@ -32,6 +35,11 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   Do not push straight to `main` or assume a POM-only override covers Spool.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
+  **This branch's October 1 rules preparation is HELD, not deployment-approved:** the
+  strict native run is 64/65, failing on a concrete null diagnostic for an ordinary
+  member's unconstrained users-list denial. No rules were deployed. Its deliberate
+  rejection of malformed map-shaped role grants also needs a read-only role-shape
+  inventory before any separately approved activation. Do not waive the strict gate.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
   `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
   (the POM context/ideas seam — must match feedback-worker's). Never commit values.

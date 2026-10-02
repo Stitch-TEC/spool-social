@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:action-pins": "node scripts/check-action-pins.mjs",
-    "test:rules": "npx --yes firebase-tools@15.22.3 emulators:exec --only firestore \"vitest run firestore.rules.test.js\"",
+    "test:rules": "node scripts/run-rules-tests.mjs",
     "test:watch": "vitest",
     "preview": "vite preview",
     "worker:dev": "wrangler dev",
