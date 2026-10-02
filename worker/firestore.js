@@ -8,6 +8,8 @@
 
 import { transformMediaDestinations } from '../src/utils/mediaMarkup.js';
 import { DRAFT_PUBLIC_FIELD_PATHS } from './draftUpdate.js';
+import { readJsonBounded } from './httpBody.js';
+import { admitPeopleSyncRecord, parsePeopleSyncIntent, PeopleSyncError } from './peopleSync.js';
 
 let tokenCache = { exp: 0, token: null };
 
@@ -928,33 +930,100 @@ export async function getUserRecord(env, email) {
   return fromFields(data.fields);
 }
 
-// Upsert a users/{email} RBAC doc (the POM people-sync propagation path). PATCH with an
-// updateMask creates-or-merges, so unmanaged fields on an existing doc are never clobbered.
-export async function setUserRecord(env, email, record) {
-  const token = await getAccessToken(env);
-  const mask = Object.keys(record).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
-  const res = await fetch(`${FS_BASE(env)}/users/${encodeURIComponent(email)}?${mask}`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fields: toFields(record) })
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `User upsert failed (${res.status})`);
-  return fromFields(data.fields);
+const PEOPLE_SYNC_MAX_BYTES = 64 * 1024;
+const PEOPLE_SYNC_WAIT_MS = 6000;
+const peopleSyncTimestamp = value => typeof value === 'string' && value.length <= 40
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value)
+  && Number.isFinite(Date.parse(value));
+
+function peopleSyncDocument(data, expectedName) {
+  if (!isPlainObject(data) || data.name !== expectedName || !peopleSyncTimestamp(data.updateTime)
+    || Object.keys(data).some(key => !['name', 'fields', 'createTime', 'updateTime'].includes(key))
+    || (data.createTime !== undefined && !peopleSyncTimestamp(data.createTime))) {
+    throw new PeopleSyncError('access_record_unverifiable', 502);
+  }
+  try { validateFirestoreFields(data.fields, 'People access'); }
+  catch { throw new PeopleSyncError('access_record_unverifiable', 502); }
+  return { record: fromFields(data.fields), updateTime: data.updateTime };
 }
 
-// Delete a users/{email} RBAC doc (people-sync revoke). 404 = already gone (idempotent).
-export async function deleteUserRecord(env, email) {
-  const token = await getAccessToken(env);
-  const res = await fetch(`${FS_BASE(env)}/users/${encodeURIComponent(email)}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!res.ok && res.status !== 404) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || `User delete failed (${res.status})`);
+/** The people-sync route's only writer. One fresh read, at most one conditional mutation.
+ * No retry: a lost/invalid acknowledgement can follow a committed change. Firestore's exact
+ * updateTime makes a racing grant, reassignment or privileged-role promotion reject atomically.
+ * Keep getUserRecord's separate login contract untouched. */
+export async function syncClientUserAccess(env, body) {
+  const intent = parsePeopleSyncIntent(body);
+  if (typeof env.FIREBASE_PROJECT_ID !== 'string' || !/^[a-z0-9-]+$/.test(env.FIREBASE_PROJECT_ID)) {
+    throw new PeopleSyncError('access_store_unavailable', 503);
   }
-  return true;
+  const name = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${intent.email}`;
+  const url = `${FS_BASE(env)}/users/${encodeURIComponent(intent.email)}`;
+  let token, live;
+  try {
+    token = await getAccessToken(env);
+    const read = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(PEOPLE_SYNC_WAIT_MS),
+    });
+    if (read.status === 404) live = null;
+    else {
+      if (!read.ok) throw new PeopleSyncError('access_read_unavailable', 502);
+      live = peopleSyncDocument(await readJsonBounded(read, PEOPLE_SYNC_MAX_BYTES), name);
+    }
+  } catch (error) {
+    if (error instanceof PeopleSyncError) throw error;
+    throw new PeopleSyncError('access_read_unavailable', 502);
+  }
+  admitPeopleSyncRecord(intent, live?.record ?? null);
+  const result = { ok: true, status: intent.action === 'grant' ? 'granted' : 'revoked', ...intent };
+  if (intent.action === 'revoke' && live === null) return result;
+
+  // A single-write Commit carries the revision as a typed JSON precondition,
+  // avoiding Timestamp query parsing differences in the native REST emulator.
+  const currentDocument = live ? { updateTime: live.updateTime } : { exists: false };
+  const patch = {
+    roles: ['client'], email: intent.email, clientId: intent.clientId,
+    updatedAt: new Date().toISOString(), source: 'people-sync',
+  };
+  const write = intent.action === 'grant'
+    ? { update: { name, fields: toFields(patch) }, updateMask: { fieldPaths: Object.keys(patch) }, currentDocument }
+    : { delete: name, currentDocument };
+  let response, data;
+  try {
+    response = await fetch(`${FS_BASE(env)}:commit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ writes: [write] }),
+      redirect: 'error', signal: AbortSignal.timeout(PEOPLE_SYNC_WAIT_MS),
+    });
+    data = await readJsonBounded(response, PEOPLE_SYNC_MAX_BYTES);
+  } catch { throw new PeopleSyncError('sync_outcome_unknown', 502); }
+  if (!response.ok) {
+    // A provider precondition failure proves this attempt did not apply. Other outcomes
+    // may be ambiguous; neither path may automatically rebase and retry a stale intent.
+    if (([404, 409, 412].includes(response.status)
+      && ['NOT_FOUND', 'ALREADY_EXISTS', 'ABORTED', 'FAILED_PRECONDITION'].includes(data?.error?.status))
+      || (response.status === 400 && data?.error?.status === 'FAILED_PRECONDITION')) {
+      throw new PeopleSyncError('access_changed');
+    }
+    throw new PeopleSyncError('sync_outcome_unknown', 502);
+  }
+  try {
+    if (!isPlainObject(data) || Object.keys(data).some(key => !['writeResults', 'commitTime'].includes(key))
+      || !peopleSyncTimestamp(data.commitTime) || !Array.isArray(data.writeResults) || data.writeResults.length !== 1) {
+      throw new Error('unexpected commit acknowledgement');
+    }
+    const saved = data.writeResults[0];
+    // Results are positional, not document readback. No transforms were submitted.
+    // An unchanged update may retain its old updateTime; delete has no updateTime.
+    if (!isPlainObject(saved) || Object.keys(saved).some(key => !['updateTime', 'transformResults'].includes(key))
+      || (saved.transformResults !== undefined && (!Array.isArray(saved.transformResults) || saved.transformResults.length))) {
+      throw new Error('unexpected write acknowledgement');
+    }
+    if (intent.action === 'grant' ? !peopleSyncTimestamp(saved.updateTime) : saved.updateTime !== undefined) {
+      throw new Error('unexpected write revision');
+    }
+  } catch { throw new PeopleSyncError('sync_outcome_unknown', 502); }
+  return result;
 }
 
 export async function updatePost(env, id, patch) {
