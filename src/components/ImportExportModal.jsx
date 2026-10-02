@@ -11,6 +11,7 @@ import {
   repinPostsToClient,
 } from '../utils/csv';
 import useEscapeKey from '../hooks/useEscapeKey';
+import { hasReviewDetailsFields } from '../utils/reviewDetails';
 
 const EXPORT_SCOPES = [
   { id: 'active', label: 'Active threads' },
@@ -149,6 +150,10 @@ const ExportPane = ({ posts, uniqueClients, isOperator, showToast, onDone }) => 
 
   const handleExport = () => {
     if (exportPosts.length === 0) { showToast?.('Nothing to export in this scope', 'error'); return; }
+    if (format === 'csv' && exportPosts.some(hasReviewDetailsFields)) {
+      showToast?.('CSV cannot preserve review details yet. Use a JSON backup; restoring these details is not enabled yet.', 'error');
+      return;
+    }
     const date = new Date().toISOString().split('T')[0];
     if (format === 'json') {
       downloadFile(postsToJSON(exportPosts), `spool-backup-${date}.json`, 'application/json');

@@ -1,5 +1,6 @@
 import { runTransaction } from 'firebase/firestore';
 import { APPROVAL_STATUS, REVIEW_STAGE, STATUS } from '../constants';
+import { assertLegacyReviewWriter } from './reviewDetails';
 import {
   approvedPayloadIdentity,
   approvalSafeStoragePatch,
@@ -85,6 +86,7 @@ export async function applyReviewActionAtomically({
     const snapshot = await transaction.get(postRef);
     if (!snapshot.exists()) throw reviewConflict('Thread no longer exists');
     const live = snapshot.data();
+    assertLegacyReviewWriter(live);
     if (
       live.source === 'suggestion'
       || live.clientId !== expected.clientId
@@ -228,6 +230,7 @@ export async function saveExistingPostAtomically({
   baselineClient,
   assertAdmission,
 }) {
+  assertLegacyReviewWriter(postData);
   let outcome = { approvalReset: false, tenantReset: false };
 
   await runTransaction(db, async (transaction) => {
@@ -235,6 +238,7 @@ export async function saveExistingPostAtomically({
     const snapshot = await transaction.get(postRef);
     if (!snapshot.exists()) throw new Error('Thread no longer exists');
     const live = snapshot.data();
+    assertLegacyReviewWriter(live);
     assertAdmission?.(live);
     // usePosts renders legacy media through canonical v2 references and derives
     // legacy publication slugs. Do not persist those representation-only
@@ -414,6 +418,7 @@ export async function promoteSuggestionAtomically({
       throw error;
     }
     const live = snapshot.data();
+    assertLegacyReviewWriter(live);
     if (live.uid !== ownerUid) {
       const error = new Error('Suggestion owner changed');
       error.code = 'suggestion_not_found';

@@ -7,6 +7,7 @@ import { DATE_FORMATTERS } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { publicationSlugOf } from '../utils/review';
 import { reviewFeedbackState } from '../utils/reviewFeedback';
+import { hasReviewDetailsFields } from '../utils/reviewDetails';
 
 const fmtDate = (iso) => {
   try { return DATE_FORMATTERS.full.format(new Date(iso)); } catch { return ''; }
@@ -76,6 +77,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
 
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
   const isArchived = post.status === 'archived';
+  const detailsUnavailable = hasReviewDetailsFields(post);
   const publicationSlug = publicationSlugOf(post);
   const composedFeedback = reviewFeedbackState(activeTags, feedback);
 
@@ -84,7 +86,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
   };
 
   const handleSubmit = () => {
-    if (!composedFeedback.valid) return;
+    if (!composedFeedback.valid || detailsUnavailable) return;
     onRequestChanges(composedFeedback.text);
   };
   
@@ -221,13 +223,14 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
             </div>
           </div>
           <div className="md:col-start-2 md:row-start-3 min-w-0 p-4 sm:p-6 border-t border-slate-100 bg-slate-50/50">
+            {detailsUnavailable && <p role="status" className="mb-3 text-sm text-slate-700">This thread has additional review details. Direct review is not enabled in this Spool version.</p>}
             {isArchived && (
               <p className="mb-3 text-sm text-slate-600 text-center">This thread is archived and can’t be approved or sent back for changes.</p>
             )}
             {mode === 'view' ? (
               <div className="flex flex-col sm:flex-row gap-3">
-                <button disabled={isArchived} onClick={() => setMode('reject')} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"><ThumbsDown size={18}/> Request Changes</button>
-                <button disabled={isArchived} onClick={onApprove} className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle size={18}/> Approve Thread</button>
+                <button disabled={isArchived || detailsUnavailable} onClick={() => setMode('reject')} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"><ThumbsDown size={18}/> Request Changes</button>
+                <button disabled={isArchived || detailsUnavailable} onClick={onApprove} className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle size={18}/> Approve Thread</button>
               </div>
             ) : (
               <div className="flex flex-col sm:flex-row gap-3">

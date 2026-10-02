@@ -46,6 +46,8 @@ import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
 import { defaultPlatformForClient, validatedTags } from './utils/editorInputs';
 import { postEditingAccess } from './utils/postEditingAccess';
+import { hasReviewDetailsFields } from './utils/reviewDetails';
+import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
@@ -367,6 +369,10 @@ const App = () => {
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData, saveContext = {}) => {
     if (isReadOnly) return false;
+    if (hasReviewDetailsFields(formData)) {
+      showToast('Editing review media and first comments is not enabled yet.', 'error');
+      return false;
+    }
     const initiatingUser = user;
     const initiatingAdmissionEpoch = editorAdmissionRef.current?.epoch;
     const actorIsCurrent = () => !!initiatingUser
@@ -641,6 +647,7 @@ const App = () => {
     if (isReadOnly || !user) return;
     const post = postsRef.current.find(p => p.id === postId);
     if (!post) return;
+    if (hasReviewDetailsFields(post)) return showToast('This thread’s review details must be preserved. Deletion is not enabled in this version.', 'error');
 
     try {
       await deleteDoc(doc(db, 'posts', postId));
@@ -819,6 +826,10 @@ const App = () => {
   // file can never land content in another tenant.
   const handleImportRows = useCallback(async (rows) => {
     if (isReadOnly || !user || !rows?.length) return false;
+    if (rows.some(hasReviewDetailsFields)) {
+      showToast('Importing review media and first comments is not enabled yet. No rows were imported.', 'error');
+      return false;
+    }
 
     const now = new Date().toISOString();
     // Firestore caps a commit at 500 OPS *and* ~10 MiB. Chunking on ops alone was
@@ -1141,6 +1152,7 @@ const App = () => {
   }, [clientsHash]);
 
   const handleCloneToAll = useCallback((post) => {
+    if (hasReviewDetailsFields(post)) return showToast('Review details cannot be copied to other clients.', 'error');
     if (isReadOnly || !isOperator) return;
     // Blast writes LIVE drafts into every tenant's queue — unvetted suggestion content must
     // go through the explicit Promote first (the card hides the button too; this keeps the
@@ -1155,6 +1167,7 @@ const App = () => {
       message: `This will create a draft of this thread for ${targetClients.length} other clients.`,
       onConfirm: async () => {
         try {
+          assertLegacyReviewSelection(postsRef.current, [post.id]);
           const batch = writeBatch(db);
           targetClients.forEach(clientName => {
             const newDocRef = doc(collection(db, 'posts'));
@@ -1187,7 +1200,10 @@ const App = () => {
           setConfirmModal(null);
         } catch (error) {
           console.error("Clone Error:", error);
-          showToast("Cloning failed", "error");
+          showToast(error.code === 'review_details_authoring_disabled'
+            ? 'Nothing cloned — this thread now has review details. Check it before continuing.'
+            : 'Cloning failed. Check the source thread and client list.', 'error');
+          setConfirmModal(null);
         }
       }
     });
@@ -1487,6 +1503,9 @@ const App = () => {
     else exportPosts = posts;
 
     if (exportPosts.length === 0) return showToast("Nothing to export", "error");
+    if (format !== 'json' && exportPosts.some(hasReviewDetailsFields)) {
+      return showToast('CSV cannot preserve review details yet. Use a JSON backup; restoring these details is not enabled yet.', 'error');
+    }
 
     const date = new Date().toISOString().split('T')[0];
     if (format === 'json') {
@@ -1518,6 +1537,9 @@ const App = () => {
   const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false, emptyMsg } = {}) => {
     if (isReadOnly || !user) return;
     const byId = new Map(postsRef.current.map(p => [p.id, p]));
+    if ([...selectedIds].some(id => hasReviewDetailsFields(byId.get(id)))) {
+      return showToast('Bulk changes to threads with review details are not enabled yet. No changes were submitted.', 'error');
+    }
     const now = new Date().toISOString();
     const updates = [];
     selectedIds.forEach(id => {
@@ -1665,23 +1687,32 @@ const App = () => {
   const handleBulkDelete = useCallback(() => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
+    if (ids.some(id => hasReviewDetailsFields(postsRef.current.find(post => post.id === id)))) {
+      return showToast('Deletion of threads with review details is not enabled in this version.', 'error');
+    }
     setConfirmModal({
       title: `Delete ${ids.length} thread${ids.length === 1 ? '' : 's'}?`,
       message: "This permanently removes the selected threads. This can't be undone.",
       type: 'danger',
       onConfirm: async () => {
+        let deleted = 0;
         try {
+          assertLegacyReviewSelection(postsRef.current, ids);
           const CHUNK = 450;
           for (let i = 0; i < ids.length; i += CHUNK) {
+            assertLegacyReviewSelection(postsRef.current, ids.slice(i));
             const batch = writeBatch(db);
             ids.slice(i, i + CHUNK).forEach(id => batch.delete(doc(db, 'posts', id)));
             await batch.commit();
+            deleted += Math.min(CHUNK, ids.length - i);
           }
           showToast(`Deleted ${ids.length} thread${ids.length === 1 ? '' : 's'}`);
           clearSelection();
         } catch (err) {
           console.error("Bulk delete error:", err);
-          showToast("Bulk delete failed", "error");
+          showToast(err.code === 'review_details_authoring_disabled'
+            ? `Deletion stopped${deleted ? ` after deleting ${deleted} threads` : ' before starting'} — a remaining thread now has review details.`
+            : 'Deletion needs checking. Some selected threads may have been deleted; reload the list before retrying.', 'error');
         } finally {
           setConfirmModal(null);
         }
@@ -1698,6 +1729,9 @@ const App = () => {
     if (!from || !to || from === to) return showToast("Pick a different target name", "error");
 
     const affected = postsRef.current.filter(p => p.client === from);
+    if (affected.some(hasReviewDetailsFields)) {
+      return showToast('Client changes involving review details are not enabled yet.', 'error');
+    }
     // RENAME and MERGE are different operations and must not share a tenant-key policy.
     //
     // A MERGE folds one client's threads into ANOTHER, existing client — re-stamping clientId to
