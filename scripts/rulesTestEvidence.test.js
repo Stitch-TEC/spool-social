@@ -35,6 +35,28 @@ describe('Firestore rules verification evidence', () => {
   it('requires a nonempty emulator log', () => {
     expect(verifyRulesEvidence({ ...evidence, log: '' }).ok).toBe(false);
   });
+  it('recognizes native mixed-ID query denial with leading false clauses', () => {
+    const benign = "false for 'list' @ L501, evaluation error at L501:26 for 'list' @ L501, false for 'list' @ L501";
+    expect(verifyRulesEvidence({ ...evidence, log: benign }).ok).toBe(true);
+    expect(verifyRulesEvidence({ ...evidence, log: benign }).expectedDenialDiagnostics).toEqual([benign]);
+    expect(rulesEvaluationFailures(`false for 'get' @ L10, ${benign}`)).toEqual([]);
+  });
+  it.each([
+    "false for 'list' @ L501, evaluation error at L501:26 for 'list' @ L501",
+    "true for 'list' @ L501, evaluation error at L501:26 for 'list' @ L501, false for 'list' @ L501",
+    "false for 'list' @ L501, evaluation error: unexpected detail, false for 'list' @ L501",
+    "false for 'list' @ L501, evaluation error at L501:26 for 'list' @ L501, false for 'list' @ L501 unknown suffix",
+  ])('keeps the mixed-query diagnostic exemption bounded: %s', log => {
+    expect(verifyRulesEvidence({ ...evidence, log }).ok).toBe(false);
+  });
+  it('rejects concrete errors beside native mixed-query false clauses', () => {
+    const benign = "false for 'list' @ L501, evaluation error at L501:26 for 'list' @ L501, false for 'list' @ L501";
+    for (const separator of [', ', '\n']) for (const fault of ['Null value error.',
+      'Function not found error: Name: [in].', 'java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0',
+      'maximum of 1000 expressions has been reached']) {
+      expect(verifyRulesEvidence({ ...evidence, log: benign + separator + fault }).ok).toBe(false);
+    }
+  });
   it('does not let a benign diagnostic hide a concrete same-line or later exception', () => {
     const benign = "evaluation error at L1:501 for 'get' @ L1, false for 'get' @ L1";
     for (const separator of [', ', '\n']) expect(verifyRulesEvidence({ ...evidence,

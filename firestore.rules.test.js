@@ -13,6 +13,7 @@ import {
   deleteDoc,
   deleteField,
   doc,
+  documentId,
   getDoc,
   getDocs,
   query,
@@ -799,15 +800,51 @@ describe.skipIf(!emulatorIsRunning)('guest review Firestore rules', () => {
     await assertSucceeds(deleteDoc(ref));
   });
 
-  it('denies member self-grants, foreign grants, user listing and protected collections', async () => {
+  it('denies member self-grants and foreign grants', async () => {
     await assertSucceeds(getDoc(doc(memberDb, 'users', 'member@example.com')));
     await assertFails(setDoc(doc(memberDb, 'users', 'member@example.com'), { roles: ['super_admin'] }));
     await assertFails(setDoc(doc(memberDb, 'users', 'other@example.test'), { roles: ['client'], clientId: 'acme' }));
+  });
+
+  it('denies member unconstrained users listing without an evaluator fault', async () => {
     await assertFails(getDocs(collection(memberDb, 'users')));
-    for (const name of ['shares', 'automations']) {
-      await assertFails(getDoc(doc(memberDb, name, 'anything')));
-      await assertFails(setDoc(doc(memberDb, name, 'anything'), { clientId: 'acme' }));
-    }
+  });
+
+  it.each(['shares', 'automations'])('denies member access to protected %s independently', async name => {
+    await assertFails(getDoc(doc(memberDb, name, 'anything')));
+    await assertFails(setDoc(doc(memberDb, name, 'anything'), { clientId: 'acme' }));
+  });
+
+  it.each(['member', 'client_admin', 'unregistered', 'owner', 'super_admin', 'email_less', 'anonymous'])('preserves exact own-user document/query access without granting a directory: %s', async actor => {
+    const email = actor === 'unregistered' ? 'unknown@example.test' : 'member@example.com';
+    const operator = actor === 'owner' || actor === 'super_admin';
+    const ownReader = operator || ['member', 'client_admin', 'unregistered'].includes(actor);
+    await testEnv.withSecurityRulesDisabled(async context => {
+      // The field intentionally disagrees with the ID: authorization must use
+      // the document path, never user-authored profile metadata.
+      await setDoc(doc(context.firestore(), 'users', 'foreign@example.test'), { roles: ['client'], clientId: 'foreign', email });
+      if (actor === 'client_admin' || actor === 'super_admin') {
+        await updateDoc(doc(context.firestore(), 'users', email), { roles: [actor] });
+      }
+    });
+    const context = actor === 'anonymous' ? testEnv.unauthenticatedContext()
+      : testEnv.authenticatedContext(actor === 'owner' ? OWNER_UID : `user-${actor}`,
+        actor === 'email_less' || actor === 'owner' ? {} : { email: email.toUpperCase() });
+    const db = context.firestore(), users = collection(db, 'users');
+    const ownChecks = [
+      () => getDoc(doc(db, 'users', email)),
+      () => getDocs(query(users, where(documentId(), '==', email))),
+      () => getDocs(query(users, where(documentId(), 'in', [email]))),
+    ];
+    for (const check of ownChecks) await (ownReader ? assertSucceeds(check()) : assertFails(check()));
+    const directoryChecks = [
+      () => getDoc(doc(db, 'users', 'foreign@example.test')),
+      () => getDocs(users),
+      () => getDocs(query(users, where(documentId(), '==', 'foreign@example.test'))),
+      () => getDocs(query(users, where(documentId(), 'in', [email, 'foreign@example.test']))),
+      () => getDocs(query(users, where('email', '==', email))),
+    ];
+    for (const check of directoryChecks) await (operator ? assertSucceeds(check()) : assertFails(check()));
   });
 
   it.each(['guest', 'member'])('allows legacy missing-feedback approval without introducing a new requirement: %s', async actor => {

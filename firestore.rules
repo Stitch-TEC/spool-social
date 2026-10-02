@@ -497,10 +497,13 @@ service cloud.firestore {
       // super_admin OR the legacy ownerUid() (kept per the header's "every
       // operation, even without a users doc" promise) — may read/LIST all user
       // docs, which the Manage Users modal needs (getDocs(collection('users'))).
-      // A client/client_admin still can't list (their branch only matches own-id).
-      allow read: if (email is string && hasEmail() && getUserEmail() == email)
-        || isSuperAdmin()
-        || isOwner(ownerUid());
+      // Own-document ID-constrained queries remain allowed, not a client directory.
+      // Compare the complete request path: an unconstrained query leaves this
+      // wildcard unresolved and string comparison can raise a null diagnostic.
+      allow read: if isSuperAdmin()
+        || isOwner(ownerUid())
+        || (hasEmail()
+          && request.path == /databases/$(database)/documents/users/$(getUserEmail()));
       // Grants/revokes: the operator (super_admin OR ownerUid()) writes any doc
       // BUT NEVER their own — the self-write lockout stops self-demotion and
       // stops any client from self-promoting (clients hit neither branch).

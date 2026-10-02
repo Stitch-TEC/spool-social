@@ -35,11 +35,12 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   Do not push straight to `main` or assume a POM-only override covers Spool.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
-  **This branch's October 1 rules preparation is HELD, not deployment-approved:** the
-  strict native run is 64/65, failing on a concrete null diagnostic for an ordinary
-  member's unconstrained users-list denial. No rules were deployed. Its deliberate
-  rejection of malformed map-shaped role grants also needs a read-only role-shape
-  inventory before any separately approved activation. Do not waive the strict gate.
+  **October 1 rules preparation now passes all 75 strict native cases.** Exact
+  request-path ownership preserves document-ID queries and avoids the users-list
+  null diagnostic. Source preparation remains separate from deployed rules; release
+  needs the reviewed integrated dependency/access candidate. Malformed map-shaped
+  role grants deliberately lose authority, so assess real role shapes read-only
+  before any separately approved rules activation. Do not waive evaluator failures.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
   `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
   (the POM context/ideas seam — must match feedback-worker's). Never commit values.

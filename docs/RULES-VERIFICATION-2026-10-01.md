@@ -4,15 +4,14 @@ Owner: Stitch TEC operator / reviewed engineering change
 Frequency: before proposing a rules release; as needed after rules or emulator changes
 Last updated / last native run: October 1, 2026 (America/Phoenix)
 
-## Current decision: held
+## Current decision: rules tests pass; release preparation continues
 
-This is local preparation, **not deployed rules or accepted release evidence**.
-The final native run has **64 passing cases and one failing case out of 65**.
-The failure is an ordinary member's unconstrained `users` collection listing:
-the operation is denied, but the emulator reports `Null value error` at the users
-read rule. A wrong reason for denial is not a passing security assertion. This
-run did not demonstrate an unauthorized grant from that remaining diagnostic.
-Do not merge, activate rules or exempt the diagnostic to make this gate green.
+The strict native suite now passes **75/75**. Own-account access compares the exact
+affected request path instead of an unresolved wildcard string. This preserves
+own-document reads and document-ID filtered queries while denying broad or foreign
+queries without the earlier null-value error. The protected-collection checks run
+independently. This is local rules evidence; release still needs the combined
+dependency/access candidate and review. Live rules activation is a separate step.
 
 The earlier 34-case suite passed while emulator output contained 1000-expression
 exhaustion and other evaluator faults. `assertFails` alone accepted those denials.
@@ -52,10 +51,14 @@ index errors and `EvaluationException` traces even when the message also says
 `false`. It rejects malformed, missing, inconsistent or skipped test reports.
 
 One precisely parsed diagnostic form is reported separately, not treated as a
-concrete fault: location-only `evaluation error at L… for '…' @ L…` clauses followed
-only by `false for '…' @ L…` clauses. Native constant-false, null-safe-false,
+concrete fault: optional leading location-only `false` clauses, location-only
+`evaluation error at L… for '…' @ L…` clauses, then only final `false` clauses.
+Native constant-false, null-safe-false,
 RBAC-false and undefined-property controls establish that emulator 1.21.0 emits
-this form for an ordinary RBAC predicate that returns false. Additional text,
+this form for an ordinary RBAC predicate that returns false. A 240-case native
+users-query control matrix also verifies the leading-false form for mixed-ID
+queries and identical permission/results between the old and new ownership checks.
+Additional text,
 unknown grammar or a concrete exception on any line still fails. This is not a
 blanket exemption for errors and is not a claim of zero diagnostic lines.
 
@@ -79,8 +82,9 @@ Missing claims and malformed review structures are checked before dereferencing;
 empty review threads are not indexed. Legacy approval without a feedback field
 remains allowed. Owner fallback and super-admin operations remain; email-less
 owners still cannot write user grants. Maximum feedback/history and editorial
-limits are unchanged. The last run contains no expression-exhaustion, undefined
-property or index diagnostic, but the one users-list null diagnostic keeps it held.
+limits are unchanged. The final 75-case run contains no concrete expression,
+null, undefined-property, function or index error. Users still read only their
+own account; operator and super-admin directory permissions are preserved.
 
 **Deliberate tightening:** role containers must be lists. Previously, map keys such
 as `{ client: true }` could satisfy role membership. Such malformed grants are now
@@ -90,25 +94,28 @@ impact. No such inventory, role repair or live access change occurred here.
 
 ## Recorded verification and limits
 
-- Ordinary suite: 1,324 passed, 65 emulator cases skipped; includes 27 classifier tests.
+- Ordinary suite: 1,330 passed, 75 emulator cases skipped; includes 33 classifier tests.
 - Lint and production build: passed. No dependency or lockfile changes.
-- Native final: 64/65; strict exit 1. No further native optimization runs after this result.
+- Native final: 75/75; strict exit 0 and `verification.ok: true`.
 - Review, mixed-role/claim, tenant denial, selector, 500-character/200-entry boundary,
   maximum editorial, legacy approval and operator cases passed.
-- Protected `shares`/`automations` assertions later in the failing users-list test
-  were **not reached**. Do not claim this run verified those later assertions.
+- Protected `shares`/`automations` checks now run in independent cases and pass.
 - Five independent synthetic process-group signal cases passed, including repeated
   SIGINT, repeated SIGTERM and mixed signals; this tests local runner ownership,
   not real account/session behavior.
-- Helper classification was strengthened after the native run for two concrete
-  baseline diagnostic forms; re-reading the captured final evidence still rejects
-  the same null diagnostic. No new native run is implied by this offline check.
+- Classifier changes are included in the final native run. The previous 64/65
+  failure and all-green 34/34 false-positive report remain retained as historical
+  evidence; both still fail strict acceptance.
 
 Suite evidence is under `_archive-2026-10/spool-security-rules-20261001/rules/`:
 `baseline-34/`, `baseline-extended/`, `CONTROL-*`, `final-held/` and
 `independent-runner/`. Base source is `eabffb8c4220abb76d10a41fa73a05632dae31d4`.
-Final rules SHA-256: `61f96820bfab9a09feb71b591de9e1cf9b08d079d76c32673492d2d188460fec`.
-Final native tests SHA-256: `53b89845810324126f877dd6a42d0b35025e3e39ea4abb70ddf8e2a35ac6aec5`.
+New control/final evidence is in the adjacent suite archive
+`_archive-2026-10/spool-security-rules-followthrough-20261001/` (`CONTROL-*` and
+`full-native-final/`). Final rules SHA-256:
+`2ac25d7b8522913eec2c2eca9c4e16dabfd1b926235670e7d7292dcbcd4f489b`.
+Final native tests SHA-256:
+`36967eddc69225d8adcdc9d81d788352926a49f3a14116e55b124d7bc1d5d003`.
 
 ## Troubleshooting, recovery and escalation
 
@@ -118,9 +125,8 @@ fails, identify only the runner's captured process group and ask for review—ne
 kill arbitrary Java/Node processes. Preserve failure evidence before cleanup.
 
 There is no production rollback: nothing was deployed. Keep proposed rules source
-separate and held; the runner may be reviewed independently. The next decision is
-a separately scoped investigation of the users-list diagnostic with explicit
-query/authorization acceptance, not a quiet get/list policy split. Obtain owner
+separate until the integrated candidate passes its release checks. The users-list
+issue is resolved with equivalent query behavior, without splitting get/list policy. Obtain owner
 approval before any live permission/policy change or protected release override;
 perform any necessary inventory read-only with existing authorized access and
 minimum data. No real inventory is claimed here.
