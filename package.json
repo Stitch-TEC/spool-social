@@ -52,6 +52,10 @@
     "yaml": "2.9.0"
   },
   "overrides": {
+    "@firebase/firestore@4.9.3": {
+      "@grpc/grpc-js": "1.14.5",
+      "@grpc/proto-loader": "0.8.1"
+    },
     "esbuild": "^0.28.1",
     "undici": "^7.30.0"
   }

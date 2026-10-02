@@ -27,6 +27,10 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   Wrangler is exactly `4.143.1`, and invokes that local binary directly. This reviewed
   toolchain uses Miniflare `5.20260926.1-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
   See `docs/TOOLCHAIN-SECURITY-2026-09-21.md`; source verification is not live acceptance.
+  October 1 source also scopes patched gRPC/proto-loader to the existing Firestore 4.9.3
+  parent; this is an application-owned compatibility repair, not a published Firebase fix.
+  See `docs/FIREBASE-TRANSPORT-SECURITY-2026-10-01.md` for actual SDK/TLS/browser-graph gates
+  and override removal criteria. Zero local audits do not resolve the separate rules gate.
 - `main` uses active release ruleset `21514076`: PR, one approving review and the
   `build`, `audit`, `analyze` and `dependency-review` checks (verified September 27).
   Do not push straight to `main` or assume a POM-only override covers Spool.

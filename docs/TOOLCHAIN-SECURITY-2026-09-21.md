@@ -1,5 +1,15 @@
 # Spool development-tool security — September 21, 2026
 
+## October 1 narrow transport/brace follow-up (prepared, not deployed)
+
+The retained September 30 source now also scopes gRPC 1.14.5/proto-loader 0.8.1 to
+the existing Firestore 4.9.3 parent and locks brace-expansion 1.1.21. Both local raw
+audits are zero, but application-rules acceptance remains separate and unresolved.
+The actual Node CJS/ESM SDK, TLS and browser-graph evidence, exact lock delta and
+temporary override removal criteria are in
+[`FIREBASE-TRANSPORT-SECURITY-2026-10-01.md`](FIREBASE-TRANSPORT-SECURITY-2026-10-01.md).
+The older zero-audit/test counts below describe their dated release, not this candidate.
+
 ## September 30 dependency-update follow-up (source preparation)
 
 The dependency update to Wrangler **4.143.1** and the existing Undici override's
