@@ -56,6 +56,13 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   text) is truthfully unavailable until ai-worker accepts normalized image content; manual alt text
   remains available and existing draft fields are preserved.
 - Auth **fails CLOSED**: anonymous/guest tokens are always rejected for generation + drafts.
+- **People-sync conditional access guards (October 1 source):** `/api/people-sync` remains
+  internal-key-only and ordinary-client-only. It refuses foreign-tenant, privileged and
+  malformed records; creation requires absence and existing grant/revoke requires the
+  exact observed Firestore updateTime. Unrelated fields survive grants. Lost or malformed
+  acknowledgements are unconfirmed, never automatically retried. No new status endpoint,
+  browser re-sync, SSO or production grant is implied. See `docs/PEOPLE-SYNC-SAFETY-2026-10-01.md`;
+  source preparation is not release proof, and current dependency audit failures remain blockers.
 - `usePosts` RE-SUBSCRIBES on a retryable Firestore error (capped backoff) and reports
   `isStalled` when it can't — Firestore terminates a listener on error and never re-attaches,
   so the old "Retrying automatically…" banner was a lie. It also waits for `user` before

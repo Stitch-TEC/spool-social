@@ -10,6 +10,7 @@
 //   *                                          -> static assets (the Vite SPA)
 
 import { authenticate } from './auth.js';
+import { PeopleSyncError } from './peopleSync.js';
 import { exposedGenerationError, generateText, generateImage } from './aiGateway.js';
 import { checkRateLimit } from './ratelimit.js';
 import {
@@ -23,8 +24,7 @@ import {
   deletePost,
   listAllImageUrls,
   getUserRecord,
-  setUserRecord,
-  deleteUserRecord,
+  syncClientUserAccess,
   getDocRaw,
   mutatePostAtomically,
   requireAutoId,
@@ -1034,35 +1034,13 @@ export default {
 
       let body;
       try { body = await parseJson(request); } catch (err) { return jsonBodyError(err, cors, true); }
-      const email = String(body?.email || '').trim().toLowerCase();
-      const action = body?.action === 'revoke' ? 'revoke' : body?.action === 'grant' ? 'grant' : '';
-      // Lowercase the slug (Sender's receiver already does) so a mixed-case clientId can't produce a
-      // users doc Spool's login lookup — which lowercases — then fails to match. Slugs are lowercase by
-      // convention; this is a fail-safe backstop.
-      const clientId = String(body?.clientId || '').trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'valid email required' }, 400, cors);
-      if (!action) return json({ ok: false, error: "action must be 'grant' or 'revoke'" }, 400, cors);
-
       try {
-        const existing = await getUserRecord(env, email);
-        const existingRoles = Array.isArray(existing?.roles) ? existing.roles : [];
-        if (existingRoles.includes('super_admin') || existingRoles.includes('client_admin')) {
-          return json({ ok: false, error: 'privileged account — hand-managed, not propagated' }, 409, cors);
-        }
-        if (action === 'grant') {
-          if (!clientId) return json({ ok: false, error: 'clientId required for grant' }, 400, cors);
-          await setUserRecord(env, email, {
-            roles: ['client'], email, clientId,
-            updatedAt: new Date().toISOString(), source: 'people-sync',
-          });
-          return json({ ok: true, status: 'granted' }, 200, cors);
-        }
-        // revoke: delete the doc (absent = idempotent success)
-        await deleteUserRecord(env, email);
-        return json({ ok: true, status: 'revoked' }, 200, cors);
+        return json(await syncClientUserAccess(env, body), 200, { ...cors, 'Cache-Control': 'no-store' });
       } catch (err) {
-        console.error('people-sync failed:', err?.message || err);
-        return json({ ok: false, error: 'sync failed' }, 502, cors);
+        const known = err instanceof PeopleSyncError;
+        const code = known ? err.code : 'sync_outcome_unknown';
+        console.error('people-sync failed:', code);
+        return json({ ok: false, error: code }, known ? err.status : 502, { ...cors, 'Cache-Control': 'no-store' });
       }
     }
 
