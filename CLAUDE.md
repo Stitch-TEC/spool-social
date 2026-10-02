@@ -17,6 +17,9 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - `npm run worker:dev` — `wrangler dev` (run alongside `npm run dev` for the API)
 - `npm run lint` — `eslint .` (lints the WHOLE tree — **run before pushing**)
 - `npm run test` — `vitest run` (jsdom) · `npm run test:watch` to watch
+- `npm run test:rules` — owned loopback-only `demo-spool-rules` emulator; checks both
+  assertions and evaluator diagnostics. Requires Node 22 + Java 21. Ordinary `npm test`
+  skips emulator tests and is not a rules acceptance gate. See `docs/RULES-VERIFICATION-2026-10-01.md`.
 - `npm run build` — `vite build` → `dist/`
 - `npm run deploy` — `npm run build && wrangler deploy` (manual fallback only)
 
@@ -24,14 +27,25 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
 - **App auto-deploys** to Cloudflare Workers on push to `main` (`.github/workflows/deploy.yml`,
   auth via `CLOUDFLARE_API_TOKEN` repo secret; `VITE_FIREBASE_*` injected from Actions vars).
   The release job uses exact Node `22.19.0`, runs `npm ci`, verifies the lockfile-installed
-  Wrangler is exactly `4.131.0`, and invokes that local binary directly. This reviewed
-  toolchain uses Miniflare `5.20260910.0-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
+  Wrangler is exactly `4.143.1`, and invokes that local binary directly. This reviewed
+  toolchain uses Miniflare `5.20260926.1-alpha` / Sharp `0.35.4`; Vitest is `4.1.11`.
   See `docs/TOOLCHAIN-SECURITY-2026-09-21.md`; source verification is not live acceptance.
+  October 1 source also scopes patched gRPC/proto-loader to the existing Firestore 4.9.3
+  parent; this is an application-owned compatibility repair, not a published Firebase fix.
+  See `docs/FIREBASE-TRANSPORT-SECURITY-2026-10-01.md` for actual SDK/TLS/browser-graph gates
+  and override removal criteria. The separate strict rules preparation now passes
+  75/75, but live rules impact/activation remains unverified and separately gated.
 - `main` uses active release ruleset `21514076`: PR, one approving review and the
   `build`, `audit`, `analyze` and `dependency-review` checks (verified September 27).
   Do not push straight to `main` or assume a POM-only override covers Spool.
 - **Firestore rules deploy MANUALLY** (CI does NOT ship them): `firebase deploy --only firestore:rules`
   (project `spool-social`). Source: `firestore.rules`.
+  **October 1 rules preparation now passes all 75 strict native cases.** Exact
+  request-path ownership preserves document-ID queries and avoids the users-list
+  null diagnostic. Source preparation remains separate from deployed rules; release
+  needs the reviewed integrated dependency/access candidate. Malformed map-shaped
+  role grants deliberately lose authority, so assess real role shapes read-only
+  before any separately approved rules activation. Do not waive evaluator failures.
 - Worker **secrets stay server-side** (set via `wrangler secret put`, persist across deploys):
   `INTERNAL_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `STITCH_AI_KEY`, `CONTEXT_KEY`
   (the POM context/ideas seam — must match feedback-worker's). Never commit values.
@@ -41,6 +55,17 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   and due-automation draft generation (`*/15 * * * *`).
 
 ## Gotchas that bite
+- **Help & guides (October 1 source):** dashboard/editor Help opens a local, role-specific
+  manual without replacing the editor, consuming a POM handoff or changing the URL. Static
+  task copy lives in `src/utils/helpContent.js`; operator, signed-in client member and review-link
+  guest are distinct audiences. Unknown roles get troubleshooting only. `useHelpSession` retires
+  help on account/role/client/auth-revision changes. Keep new entries outside existing modals:
+  their broadcast Escape hooks and focus handlers are not a shared modal stack. The help shell
+  contains lazy-content failures and retains Close while loading. Keep important video, sharing,
+  recovery and overwrite consequences beside actions; optional help must not hide them. In copy,
+  Send for review is not email, scheduling is not approval/publication, and Publish to site stages
+  a POM dispatch ticket. Signed-in members edit; approval controls are on review-link views.
+  `WALKTHROUGH.md` is a historical feature tour, not the current role-specific UI manual.
 - **Node 25 here** → prefix wrangler: `NODE_OPTIONS=--dns-result-order=ipv4first wrangler ...`
 - ~~This env's main shell cannot reach api.cloudflare.com~~ — **FALSE (corrected 2026-07-14):**
   with the `NODE_OPTIONS` prefix, wrangler works from the main shell. Verify prod state directly.
@@ -52,6 +77,15 @@ Cloudflare Worker + R2 (`spool-media`) + KV (`RATE_LIMIT`) · service binding `A
   text) is truthfully unavailable until ai-worker accepts normalized image content; manual alt text
   remains available and existing draft fields are preserved.
 - Auth **fails CLOSED**: anonymous/guest tokens are always rejected for generation + drafts.
+- **People-sync conditional access guards (October 1 source):** `/api/people-sync` remains
+  internal-key-only and ordinary-client-only. It refuses foreign-tenant, privileged and
+  malformed records; creation requires absence and existing grant/revoke requires the
+  exact observed Firestore updateTime. Unrelated fields survive grants. Lost or malformed
+  acknowledgements are unconfirmed, never automatically retried. No new status endpoint,
+  browser re-sync, SSO or production grant is implied. See `docs/PEOPLE-SYNC-SAFETY-2026-10-01.md`;
+  source preparation is not release proof. The combined candidate resolves the
+  inherited dependency findings without weakening audits; final integrated tests,
+  independent review and hosted release checks remain required.
 - `usePosts` RE-SUBSCRIBES on a retryable Firestore error (capped backoff) and reports
   `isStalled` when it can't — Firestore terminates a listener on error and never re-attaches,
   so the old "Retrying automatically…" banner was a lie. It also waits for `user` before

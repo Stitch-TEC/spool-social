@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:action-pins": "node scripts/check-action-pins.mjs",
-    "test:rules": "npx --yes firebase-tools@15.22.3 emulators:exec --only firestore \"vitest run firestore.rules.test.js\"",
+    "test:rules": "node scripts/run-rules-tests.mjs",
     "test:watch": "vitest",
     "preview": "vite preview",
     "worker:dev": "wrangler dev",
@@ -48,11 +48,15 @@
     "tailwindcss": "^4.1.18",
     "vite": "^7.2.4",
     "vitest": "4.1.11",
-    "wrangler": "4.131.0",
+    "wrangler": "4.143.1",
     "yaml": "2.9.0"
   },
   "overrides": {
+    "@firebase/firestore@4.9.3": {
+      "@grpc/grpc-js": "1.14.5",
+      "@grpc/proto-loader": "0.8.1"
+    },
     "esbuild": "^0.28.1",
-    "undici": "^7.29.0"
+    "undici": "^7.30.0"
   }
 }

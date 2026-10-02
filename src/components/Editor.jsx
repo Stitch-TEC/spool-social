@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useDeferredValue } from 'react';
 import {
   X, Save, Wand2, Smartphone, Image as ImageIcon, Eye, Sparkles,
-  Trash2, UploadCloud, Calendar as CalendarIcon, Loader2, History
+  Trash2, UploadCloud, Calendar as CalendarIcon, Loader2, History, CircleHelp
 } from 'lucide-react';
 import PlatformIcon from './PlatformIcon';
 import MobilePreview from './MobilePreview';
@@ -51,7 +51,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser }) => {
+const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -706,7 +706,8 @@ const Editor = ({ post, onSave, onCancel, clientMap, uniqueClients, clientIdByNa
                </span>
              )}
           </div>
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {onHelp && <button type="button" onClick={onHelp} aria-label="Help & guides" title="Help & guides" className="min-h-11 min-w-11 flex items-center justify-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"><CircleHelp size={20} aria-hidden="true" /><span>Help</span></button>}
             <button
               type="button"
               onClick={() => setPreviewMode(p => !p)}
