@@ -21,7 +21,7 @@ export const HELP_GUIDES = [
     keywords: 'new thread save editor content client AI recovery',
     steps: [
       'Choose a client, then select New. Confirm Client Name in the editor.',
-      'Choose Platform and write the content. AI draft is optional; review its output before using it.',
+      'Choose Platform and write the content. Schedule starts empty; tags allow 10 entries of 20 characters. AI draft is optional; review it before use.',
       'Add an image when needed. On a phone, use Preview to check the draft and Edit to return.',
       'Select Save and wait for confirmation. Close Editor returns to the threads.',
       'When ready, use Send for review on the saved thread.',
@@ -35,6 +35,7 @@ export const HELP_GUIDES = [
     steps: [
       'Select New or open an existing thread. Client Name stays with your workspace.',
       'Choose Platform and write or adjust the content. AI draft is optional.',
+      'Schedule is optional. Published, archived or incompatible older threads open read-only; ask Stitch TEC for changes.',
       'Check the preview, then select Save and wait for confirmation.',
       'For approval or feedback, open the review link supplied by your team; the signed-in editor is a different view.',
     ],
@@ -74,6 +75,7 @@ export const HELP_GUIDES = [
       'Keep the video in its source service and give your reviewers permission to open it.',
       'In the editor, open Add video link to draft text.',
       'Paste a supported HTTPS sharing link and choose Insert link into draft text.',
+      'Choose from library also lists video links. Selecting a video fills the link tool; confirm Insert to put that URL in the caption.',
       'Review the text and select Save. Use the displayed video link to check the destination yourself.',
     ],
     warning: 'The URL is part of the draft text, not a private attachment. It travels with copied or published text and draft AI requests. Spool does not upload, store or check the video.',
@@ -87,6 +89,7 @@ export const HELP_GUIDES = [
       'Use Not sent, Awaiting client, Changes and Approved to understand the review stage or decision.',
       'Read Draft, Scheduled and Posted as workflow labels, not proof of client approval.',
       'Treat a schedule date as a plan. Confirm publication in the destination before treating content as live.',
+      'An empty Schedule means Not scheduled. Opening or saving an undated thread does not add a date.',
     ],
     note: 'Moving a thread back to staging does not erase a previous review decision. Only the operator can see private staged drafts.',
   },
@@ -109,6 +112,7 @@ export const HELP_GUIDES = [
     steps: [
       'Keep the editor open and use Copy text when available to preserve your current wording.',
       'If offered, choose Restore previous work before continuing the original new draft.',
+      'An empty, never-prepared recovery copy continues under the same save reference without blocking new text. Authored or uncertain copies still need deliberate review.',
       'For an unconfirmed new-draft save, use Check previous save when the connection returns.',
       'If it remains unconfirmed, open Help with this save and share the save reference privately with Stitch TEC.',
     ],

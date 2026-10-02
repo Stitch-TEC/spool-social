@@ -30,16 +30,17 @@ describe('Editor', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     window.localStorage.clear();
   });
 
-  it('defaults the schedule input to local time, not UTC', () => {
+  it('defaults new threads to no schedule', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-12T09:30:00'));
     try {
       const { container } = render(<Editor {...baseProps} />);
       const input = container.querySelector('input[type="datetime-local"]');
-      expect(input.value).toBe(toLocalISOString(new Date()));
+      expect(input.value).toBe('');
     } finally {
       vi.useRealTimers();
     }
@@ -52,6 +53,91 @@ describe('Editor', () => {
 
     render(<Editor {...baseProps} post={{ id: 'p1', content: 'hi', client: 'Acme' }} />);
     expect(screen.getByText('Edit Thread')).toBeInTheDocument();
+  });
+
+  it.each([null, undefined, '', 'invalid date'])('keeps an undated/invalid legacy schedule empty (%s)', value => {
+    render(<Editor {...baseProps} post={{ id: 'undated', client: 'Acme', content: 'Keep this date empty', scheduledDate: value }} />);
+    expect(screen.getByLabelText('Schedule (optional)')).toHaveValue('');
+  });
+
+  it('keeps a real stored date in local time instead of clearing or redating it', () => {
+    const date = new Date('2026-10-08T15:30:00.000Z');
+    render(<Editor {...baseProps} post={{ id: 'dated', client: 'Acme', content: 'Keep this real date', scheduledDate: date.toISOString() }} />);
+    expect(screen.getByLabelText('Schedule (optional)')).toHaveValue(toLocalISOString(date));
+  });
+
+  it('shows read-only reasons, disables editing and removes Save without disabling Close', () => {
+    const onSave = vi.fn();
+    render(<Editor {...baseProps} onSave={onSave} isReadOnly readOnlyReason="Ask Stitch TEC to update this older thread." post={{ id: 'old', content: 'Old thread', client: 'Acme' }} />);
+    expect(screen.getByRole('heading', { name: 'View Thread' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save', exact: true })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Schedule (optional)')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Close Editor' })).toBeEnabled();
+    fireEvent.keyDown(document.querySelector('textarea'), { key: 'Enter', ctrlKey: true });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('retains overlong and duplicate tags and explains the limit rather than truncating', () => {
+    render(<Editor {...baseProps} post={{ id: 'tags', client: 'Acme', content: 'Copy', tags: ['one'] }} />);
+    const input = screen.getByLabelText('New tag');
+    fireEvent.change(input, { target: { value: 'a'.repeat(21) } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue('a'.repeat(21));
+    expect(screen.getByText(/Each tag must contain 1–20/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'one' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue('one');
+    expect(screen.getByText(/Remove duplicate tags/)).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'a'.repeat(20) } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue('');
+    expect(screen.getByText(`#${'a'.repeat(20)}`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  });
+
+  it('uses the caller’s observed platform preference only on initial creation', () => {
+    const { rerender } = render(<Editor {...baseProps} initialPlatform="linkedin" />);
+    expect(document.querySelector('textarea')).toHaveAttribute('placeholder', 'Share a professional insight or milestone...');
+    rerender(<Editor {...baseProps} initialPlatform="facebook" />);
+    expect(document.querySelector('textarea')).toHaveAttribute('placeholder', 'Share a professional insight or milestone...');
+  });
+
+  it('does not silently discard typed work when a thread becomes read-only before its recovery debounce', () => {
+    const onCancel = vi.fn();
+    const post = { id: 'retires', content: 'Original copy', client: 'Acme', clientId: 'acme' };
+    const { rerender } = render(<Editor {...baseProps} post={post} onCancel={onCancel} />);
+    fireEvent.change(screen.getByDisplayValue('Original copy'), { target: { value: 'Unsaved current work' } });
+    rerender(<Editor {...baseProps} post={post} onCancel={onCancel} isReadOnly recoveryPrincipalId="" readOnlyReason="This thread needs checking." />);
+    expect(screen.queryByRole('button', { name: 'Save', exact: true })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close Editor' }));
+    expect(screen.getByRole('dialog', { name: 'Discard unsaved changes?' })).toBeInTheDocument();
+    expect(screen.getByText(/Your edits are not saved to Spool/)).toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }));
+    expect(screen.getByDisplayValue('Unsaved current work')).toBeInTheDocument();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('offers selectable raw text when clipboard is unavailable after a read-only transition', async () => {
+    const actor = { uid: 'editor-test', isAnonymous: false };
+    const getRecoveryUser = () => actor;
+    const writeText = vi.fn().mockRejectedValue(new Error('Clipboard denied'));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const post = { id: 'copy-fallback', content: 'Original copy', client: 'Acme', clientId: 'acme' };
+    const { rerender } = render(<Editor {...baseProps} post={post} getRecoveryUser={getRecoveryUser} />);
+    fireEvent.change(screen.getByDisplayValue('Original copy'), { target: { value: '**Unsaved raw Markdown**' } });
+    rerender(<Editor {...baseProps} post={post} getRecoveryUser={getRecoveryUser} isReadOnly recoveryPrincipalId="" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy text', exact: true }));
+    const recoveryText = await screen.findByRole('textbox', { name: 'Recovery text — select and copy' });
+    expect(writeText).toHaveBeenCalledWith('**Unsaved raw Markdown**');
+    expect(recoveryText).not.toBeDisabled();
+    expect(recoveryText).toHaveAttribute('readonly');
+    expect(recoveryText).toHaveValue('**Unsaved raw Markdown**');
+    expect(recoveryText).toHaveFocus();
+    expect(recoveryText.selectionStart).toBe(0);
+    expect(recoveryText.selectionEnd).toBe('**Unsaved raw Markdown**'.length);
+    expect(baseProps.onSave).not.toHaveBeenCalled();
   });
 
   it('toggles the mobile preview overlay open and closed', () => {

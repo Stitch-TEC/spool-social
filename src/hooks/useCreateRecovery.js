@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { createJournal, sameValue, workCopy } from '../utils/createJournal';
+import { createJournal, isEmptyDraftIntent, sameValue, validateCreatePayload, workCopy } from '../utils/createJournal';
 import { intentRequest } from '../utils/createTransport';
 
 // One editor owns one revision. Never adopt another tab's revision merely to
@@ -7,10 +7,10 @@ import { intentRequest } from '../utils/createTransport';
 export default function useCreateRecovery({ enabled, scope, getUser, getWork, isAlive }) {
   const journal = useRef(createJournal());
   const session = useRef({ key: null, record: null, loaded: false, restored: true, failed: false, queue: Promise.resolve() });
-  const [view, setView] = useState({ loading: enabled, record: null, restored: true, error: '' });
+  const [view, setView] = useState({ loading: enabled, record: null, restored: true, failed: false, error: '' });
   const mounted = useRef(false);
   const publish = (s, error = '') => {
-    if (mounted.current && session.current === s) setView({ loading: !s.loaded, record: s.record, restored: s.restored, error });
+    if (mounted.current && session.current === s) setView({ loading: !s.loaded, record: s.record, restored: s.restored, failed: s.failed, error });
   };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -20,7 +20,10 @@ export default function useCreateRecovery({ enabled, scope, getUser, getWork, is
     publish(s);
     journal.current.read(scope).then(record => {
       s.record = ['complete', 'discarded'].includes(record?.state) ? null : record;
-      s.restored = !s.record;
+      // Empty, never-prepared work has nothing to restore. Preserve this exact
+      // ID/revision so later editing still conflicts with another tab, rather
+      // than deleting the slot or creating an unrelated identity.
+      s.restored = !s.record || isEmptyDraftIntent(s.record);
       s.loaded = true;
       publish(s);
     }).catch(error => { s.loaded = true; s.failed = true; publish(s, error.message); });
@@ -28,10 +31,17 @@ export default function useCreateRecovery({ enabled, scope, getUser, getWork, is
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, scope?.key]);
 
-  const enqueue = (s, action) => {
+  const enqueue = (s, action, admissionError = null) => {
     const pending = s.queue.then(action);
     s.queue = pending.catch(() => {});
-    return pending.catch(error => { s.failed = true; publish(s, error.message); throw error; });
+    return pending.catch(error => {
+      // A captured admission lifetime can retire while a queued action waits.
+      // That is not failed device storage: retain the exact draft/prepared/
+      // submitted record without permitting a journal error to use this path.
+      if (error !== admissionError) s.failed = true;
+      publish(s, error.message);
+      throw error;
+    });
   };
   const persist = (work) => {
     const s = session.current;
@@ -66,23 +76,39 @@ export default function useCreateRecovery({ enabled, scope, getUser, getWork, is
       publish(s);
     });
   };
-  const submit = async (payload, submittedWork, initiatingUser) => {
+  const submit = async (payload, submittedWork, initiatingUser, assertAdmission) => {
     const s = ready();
-    const maySend = () => !!initiatingUser && isAlive() && session.current === s && getUser() === initiatingUser;
-    if (!maySend()) throw new Error('The editor or sign-in changed. No new thread was sent.');
+    const admissionError = new Error('The editor, sign-in or workspace changed. No new request was sent. Keep this recovery copy for review.');
+    // Keep this submission's caller admission, never a newer render's callback.
+    // App's captured epoch detects A→B→A even when the same user object returns.
+    const maySend = () => {
+      if (!initiatingUser || !isAlive() || session.current !== s || getUser() !== initiatingUser) return false;
+      try { return assertAdmission?.() !== false; } catch { return false; }
+    };
+    const requireAdmission = () => { if (!maySend()) throw admissionError; };
+    requireAdmission();
     if (payload.clientId !== scope.clientId || !!payload.isTemplate !== (scope.flow === 'template')) throw new Error('The original client or draft type changed. Reopen the original recovery copy before saving.');
+    validateCreatePayload(payload, scope);
     await enqueue(s, async () => {
+      requireAdmission();
       if (!s.record) s.record = await journal.current.begin(scope, submittedWork);
+      requireAdmission();
       if (s.record.state === 'draft') s.record = await journal.current.prepare(s.record, payload, submittedWork);
+      requireAdmission();
       if (s.record.state !== 'prepared') throw new Error('Spool has not confirmed this save. Use Check previous save; do not create another copy.');
       publish(s);
-    });
+    }, admissionError);
     // Includes typing/AI/image completions while App was preparing the image.
     await persist(getWork());
     if (s.failed || !maySend()) throw new Error('Device recovery or your session changed. No new request was sent.');
     try {
       const post = await intentRequest({ record: s.record, getUser, maySend, create: true,
-        beforeCreate: () => enqueue(s, async () => { s.record = await journal.current.claim(s.record); publish(s); }),
+        beforeCreate: () => enqueue(s, async () => {
+          requireAdmission();
+          s.record = await journal.current.claim(s.record);
+          requireAdmission();
+          publish(s);
+        }, admissionError),
       });
       await acknowledge(post);
       return { post, submitted: s.record.submittedWork };
@@ -116,5 +142,14 @@ export default function useCreateRecovery({ enabled, scope, getUser, getWork, is
     });
   };
   const stored = (work) => view.record && view.restored && !view.error && sameValue(view.record.work, workCopy(work));
-  return { ...view, persist, restore, submit, check, acknowledge, complete, discard, stored };
+  const saveBlockReason = (hasSavedId = false) => {
+    if (!enabled) return '';
+    if (!scope) return 'Select a known client before saving.';
+    if (view.loading) return 'Checking this device for previous work.';
+    if (view.failed) return view.error || 'Device recovery needs checking before saving.';
+    if (!view.restored) return 'Restore or discard the previous unsent work first.';
+    if (!hasSavedId && ['submitted', 'confirmed'].includes(view.record?.state)) return 'Check the previous save before saving newer edits.';
+    return '';
+  };
+  return { ...view, persist, restore, submit, check, acknowledge, complete, discard, stored, saveBlockReason };
 }

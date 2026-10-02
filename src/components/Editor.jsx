@@ -28,6 +28,7 @@ import useAsyncRequest from '../hooks/useAsyncRequest';
 import useCreateRecovery from '../hooks/useCreateRecovery';
 import { createScope } from '../utils/createJournal';
 import { hasVideoReference, parseVideoReference } from '../utils/videoReferences';
+import { validatedTags, TAG_LIMIT, TAG_LENGTH_LIMIT } from '../utils/editorInputs';
 
 // Converts a Date to a `datetime-local` input value in the user's local timezone.
 // (Plain toISOString() is UTC, which shifts the default time by the tz offset.)
@@ -51,7 +52,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, onCreateDrafts, postImagesByClient = {}, initialClient = '', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser }) => {
+const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, readOnlyReason = '', onCreateDrafts, postImagesByClient = {}, initialClient = '', initialPlatform = 'gmb', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser, mediaSessionKey = '', isSessionCurrent }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -71,7 +72,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   );
 
   const [formData, setFormDataState] = useState({
-    platform: 'gmb',
+    platform: Object.prototype.hasOwnProperty.call(PLATFORMS, initialPlatform) ? initialPlatform : 'gmb',
     content: '',
     title: '',
     altText: '',
@@ -81,7 +82,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     // work immediately — previously they only appeared when editing an existing post.
     client: initialClient,
     imageUrl: '',
-    scheduledDate: toLocalISOString(new Date()),
+    scheduledDate: '',
     status: STATUS.DRAFT,
     tags: [],
     isTemplate: false
@@ -92,6 +93,14 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   const [previewTab, setPreviewTab] = useState('channel');
   const [isSparkOpen, setIsSparkOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [pendingTag, setPendingTag] = useState('');
+  const [tagError, setTagError] = useState('');
+  const [copyFallback, setCopyFallback] = useState(null);
+  const permissionRef = useRef(isReadOnly);
+  permissionRef.current = isReadOnly;
+  const currentSessionRef = useRef(isSessionCurrent);
+  currentSessionRef.current = isSessionCurrent;
   // What the media picker fills: the cover image slot, or an inline markdown
   // image at the captured cursor position (toolbar image button, long-form).
   const [pickerMode, setPickerMode] = useState('cover');
@@ -190,9 +199,11 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     // never finish). A completed browser transaction is not eviction immunity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData, newCreateSession, createRecovery.loading, createRecovery.restored]);
-  const requestContext = JSON.stringify([recoveryPrincipalId, genClientId(formData.client), formData.platform]);
+  const requestContext = JSON.stringify([recoveryPrincipalId, genClientId(formData.client), formData.platform, isReadOnly, mediaSessionKey]);
+  const childSessionKey = JSON.stringify([recoveryPrincipalId, isReadOnly, mediaSessionKey]);
   const requests = useAsyncRequest(requestContext);
   useEffect(() => { setAltLoading(false); setMetaLoading(false); }, [requestContext]);
+  useEffect(() => { setSelectedVideo(null); setPickerOpen(false); }, [requestContext]);
   // Bumped by clearAutosave so an in-flight debounced write can't resurrect a
   // snapshot that a successful save just removed.
   const autosaveGenRef = useRef(0);
@@ -265,18 +276,24 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   // hosted /media URL in the background (content-addressed, so the same photo
   // reused across posts keeps ONE URL). Falls back to the data URL on failure.
   const attachImageFile = async (file) => {
+    if (permissionRef.current || currentSessionRef.current?.() === false) return;
+    const token = requests.begin('image-file');
+    if (!token) return;
+    const selectedClient = formDataRef.current.client;
     try {
       const processedImage = await processImageFile(file);
+      if (!requests.current(token) || !editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false || formDataRef.current.client !== selectedClient) return;
       setFormData(prev => ({ ...prev, imageUrl: processedImage }));
       // Tag the pooled upload with the post's client so it stays scoped to that client in the picker.
-      const hosted = await ensureHostedImage(processedImage, genClientId(formData.client));
+      const hosted = await ensureHostedImage(processedImage, genClientId(selectedClient));
+      if (!requests.current(token) || !editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false || formDataRef.current.client !== selectedClient) return;
       if (hosted !== processedImage) {
         // Only swap if the user hasn't replaced/removed the image meanwhile.
         setFormData(prev => (prev.imageUrl === processedImage ? { ...prev, imageUrl: hosted } : prev));
       }
     } catch {
-      showToast("Error processing image", "error");
-    }
+      if (requests.current(token) && !permissionRef.current && currentSessionRef.current?.() !== false) showToast("Error processing image", "error");
+    } finally { requests.finish(token); }
   };
 
   const handleDrop = async (e) => {
@@ -293,7 +310,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     if (initializedForm.current) return;
     initializedForm.current = true;
     if (post) {
-      let safeDateString = toLocalISOString(new Date()); // Default to now (local time)
+      let safeDateString = ''; // Unscheduled stays unscheduled, including older/null dates.
       
       if (post.scheduledDate) {
         // If it's a Date object
@@ -347,7 +364,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   // the localStorage budget, and omitting means a restore leaves whatever image
   // the post currently has untouched.
   const writeAutosaveNow = () => {
-    if (!editorAliveRef.current || isReadOnly || !isDirtyRef.current) return null;
+    if (!editorAliveRef.current || permissionRef.current || !isDirtyRef.current) return null;
     if (newCreateSession) {
       createRecoveryRef.current.persist(formDataRef.current).catch(() => {});
       // Do not promise a newly queued asynchronous write has already committed.
@@ -475,6 +492,14 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   // both directions there. Everywhere else the raw length is the real limit.
   const charCount = formData.platform === 'twitter' ? twitterLength(formData.content) : formData.content.length;
   const isOverLimit = charCount > currentPlatform.maxChars;
+  let savedTagsError = '';
+  try { validatedTags(formData.tags); } catch (error) { savedTagsError = error.message; }
+  const saveBlockReason = isReadOnly ? (readOnlyReason || 'This thread is read-only.')
+    : isSaving ? 'Saving…'
+    : isOverLimit ? `Shorten the text to ${currentPlatform.maxChars} characters.`
+    : !formData.content.trim() ? 'Add some text to save.'
+    : pendingTag.trim() ? 'Press Enter to add the tag, or clear it.'
+    : savedTagsError || (newCreateSession ? createRecovery.saveBlockReason(!!formData.id) : '');
 
   // ⚡ The live preview re-renders at DEFERRED priority: typing stays responsive
   // even while react-markdown re-parses a long blog post, and MobilePreview's memo
@@ -486,11 +511,15 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   );
 
   const handleSaveWrapper = async () => {
-    if (isReadOnly || isOverLimit || !formData.content.trim() || savingRef.current) return;
+    if (saveBlockReason || permissionRef.current || savingRef.current) return;
+    if (currentSessionRef.current?.() === false || (getRecoveryUser && !getRecoveryUser())) {
+      showToast?.('Sign-in or workspace changed. Keep your text; no save was submitted.', 'error');
+      return;
+    }
     savingRef.current = true;
     setIsSaving(true);
     const submittedScope = scopeRef.current;
-    const initiatingUser = newCreateSession ? getRecoveryUser?.() : null;
+    const initiatingUser = getRecoveryUser?.();
     let remoteConfirmed = false;
     try {
       // Keep the exact submitted snapshot while newer typing/AI/image work may
@@ -501,10 +530,12 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
       // status concurrently while this editor was open.
       const result = await onSave(formData, {
         ...(newCreateSession && !formData.id ? {
-          createPost: payload => createRecovery.submit(payload, formData, initiatingUser),
-          isCurrentSession: () => !!initiatingUser && editorAliveRef.current && getRecoveryUser?.() === initiatingUser,
+          createPost: (payload, assertAdmission) => createRecovery.submit(payload, formData, initiatingUser, assertAdmission),
           createClientId: newScope?.clientId,
         } : {}),
+        isCurrentSession: () => editorAliveRef.current && !permissionRef.current
+          && currentSessionRef.current?.() !== false
+          && (!getRecoveryUser || (!!initiatingUser && getRecoveryUser() === initiatingUser)),
         ...(lastSavedPost.current ? { savedPost: lastSavedPost.current } : {}),
         baselineStatus: pristineRef.current?.status,
         // Tenant intent needs the editor-open baseline just like workflow
@@ -600,7 +631,10 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
       await navigator.clipboard.writeText(text);
       if (current()) showToast?.('Text copied. Images and settings are not included.', 'success');
     } catch {
-      if (current()) showToast?.('Copy is unavailable here. Select the text in the editor and copy it manually.', 'error');
+      if (current()) {
+        setCopyFallback({ user, key });
+        showToast?.('Copy is unavailable here. Select and copy the recovery text manually.', 'error');
+      }
     }
   };
 
@@ -610,13 +644,14 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   // outlive this editor (close right after replacing) — say so instead of
   // silently no-oping a setState on an unmounted component.
   const replaceContent = (txt) => {
+    if (!editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false) return;
     const prevContent = contentRef.current;
     setFormData(prev => ({ ...prev, content: txt }));
     if (prevContent.trim() && prevContent.trim() !== String(txt || '').trim()) {
       showToast?.('Content replaced', 'success', {
         label: 'Restore previous',
         onClick: () => {
-          if (!editorAliveRef.current) {
+          if (!editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false) {
             showToast?.('The editor was closed — reopen the draft to restore', 'error');
             return;
           }
@@ -627,7 +662,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   };
 
   const requestCancel = () => {
-    if (isDirty && !isReadOnly) {
+    if (isDirty) {
       // Check storage before describing recovery. Safari can deny it, and a
       // data-URL image is deliberately too large to put in the local snapshot.
       setDiscardRecovery(writeAutosaveNow());
@@ -698,8 +733,8 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
       <div className={`flex-1 min-w-0 flex flex-col h-full border-r border-slate-200 ${previewMode ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-100 flex flex-wrap gap-3 justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex flex-wrap items-center gap-2 min-w-0">
-             <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
-             <h2 className="font-bold text-slate-800 text-lg">{formData.id ? 'Edit Thread' : 'New Thread'}</h2>
+             <button onClick={requestCancel} title="Close Editor" aria-label="Close Editor" className="min-h-11 min-w-11 flex items-center justify-center p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
+             <h2 className="font-bold text-slate-800 text-lg">{isReadOnly ? 'View Thread' : formData.id ? 'Edit Thread' : 'New Thread'}</h2>
              {isDirty && !isReadOnly && (
                <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 uppercase tracking-wider" title="You have unsaved changes">
                  Unsaved
@@ -707,26 +742,37 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
              )}
           </div>
           <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {isReadOnly && isDirty && <button type="button" onClick={copyRecoveryText} className="min-h-11 rounded-lg border border-slate-400 px-3 text-sm font-semibold text-slate-700">Copy text</button>}
             {onHelp && <button type="button" onClick={onHelp} aria-label="Help & guides" title="Help & guides" className="min-h-11 min-w-11 flex items-center justify-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"><CircleHelp size={20} aria-hidden="true" /><span>Help</span></button>}
             <button
               type="button"
               onClick={() => setPreviewMode(p => !p)}
-              className="md:hidden flex items-center gap-1 text-xs font-bold text-slate-600 border border-slate-200 rounded-full px-3 py-2 hover:bg-slate-50"
+              className="min-h-11 md:hidden flex items-center gap-1 text-xs font-bold text-slate-600 border border-slate-200 rounded-full px-3 py-2 hover:bg-slate-50"
             >
               <Eye size={14} /> {previewMode ? 'Edit' : 'Preview'}
             </button>
-            <button
+            {!isReadOnly && <button
               onClick={handleSaveWrapper}
-              disabled={isOverLimit || !formData.content.trim() || isReadOnly || isSaving || (newCreateSession && (createRecovery.loading || !createRecovery.restored || (!formData.id && ['submitted', 'confirmed'].includes(createRecovery.record?.state))))}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
+              disabled={!!saveBlockReason}
+              aria-describedby={saveBlockReason ? 'editor-save-reason' : undefined}
+              className="min-h-11 flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg min-w-[100px] justify-center"
             >
                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
                <span>{isCheckingPreviousSave ? 'Checking…' : isSaving ? 'Saving...' : 'Save'}</span>
-            </button>
+            </button>}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
+        {saveBlockReason && <p id="editor-save-reason" role="status" className="px-4 py-2 text-sm text-slate-700 bg-slate-50 border-b border-slate-200">{saveBlockReason}</p>}
+        {copyFallback && getRecoveryUser?.() === copyFallback.user && scopeRef.current?.key === copyFallback.key && (
+          <div className="shrink-0 px-4 py-2 border-b border-slate-200 bg-slate-50">
+            <label htmlFor="editor-copy-fallback" className="block text-sm font-semibold text-slate-700">Recovery text — select and copy</label>
+            <textarea id="editor-copy-fallback" readOnly autoFocus rows={3} value={formData.content}
+              onFocus={event => event.currentTarget.select()}
+              className="w-full max-h-32 mt-1 rounded-lg border border-slate-400 p-2 text-sm text-slate-900" />
+          </div>
+        )}
+        <fieldset disabled={isReadOnly} className="min-w-0 min-h-0 flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
           {newCreateSession && !isReadOnly && (!newScope || createRecovery.error || createRecovery.record || createRecovery.loading) && (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2" aria-live="polite">
               <p className="text-sm font-bold text-amber-800">{createRecovery.loading ? 'Checking this device for previous work…' : !createRecovery.restored ? 'Previous work is available on this device' : createRecovery.record?.state === 'submitted' ? 'Spool has not confirmed this save' : createRecovery.record?.state === 'confirmed' ? 'Previous save confirmed' : 'New-draft recovery'}</p>
@@ -826,6 +872,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
             {!isReadOnly && (
               <div className="mb-2">
                 <AIGenerate
+                  key={`${childSessionKey}:text`}
                   kind="text"
                   platform={formData.platform}
                   clientName={formData.client}
@@ -834,13 +881,14 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
                   currentText={formData.content}
                   showToast={showToast}
                   onResult={replaceContent}
-                  onAppend={(tags) => setFormData(prev => ({ ...prev, content: (prev.content.trim() + '\n\n' + tags).trim() }))}
+                  onAppend={(tags) => { if (editorAliveRef.current && !permissionRef.current && currentSessionRef.current?.() !== false) setFormData(prev => ({ ...prev, content: (prev.content.trim() + '\n\n' + tags).trim() })); }}
                 />
               </div>
             )}
             {isLongForm && !isReadOnly && (
               <div className="mb-2">
                 <RepurposeBlog
+                  key={`${childSessionKey}:repurpose`}
                   platform={formData.platform}
                   title={formData.title}
                   content={formData.content}
@@ -912,11 +960,13 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
 
           <div className="mb-5 min-w-0 space-y-3">
             {!isReadOnly && <VideoLinkComposer
-              key={JSON.stringify([recoveryPrincipalId, post?.id || '', genClientId(formData.client), formData.client])}
+              key={JSON.stringify([recoveryPrincipalId, post?.id || '', genClientId(formData.client), formData.client, selectedVideo?.selection])}
+              initialUrl={selectedVideo?.client === formData.client ? selectedVideo.url : ''}
+              selectedLabel={selectedVideo?.client === formData.client ? selectedVideo.label : ''}
               content={formData.content}
               disabled={isSaving || isCheckingPreviousSave}
               onInsert={url => {
-                if (isReadOnly || savingRef.current || !editorAliveRef.current || !parseVideoReference(url)) return 'unavailable';
+                if (permissionRef.current || currentSessionRef.current?.() === false || savingRef.current || !editorAliveRef.current || !parseVideoReference(url)) return 'unavailable';
                 if (hasVideoReference(formDataRef.current.content, url)) return 'duplicate';
                 setFormData(previous => {
                   if (hasVideoReference(previous.content, url)) return previous;
@@ -955,7 +1005,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Schedule</label>
                 <div className="relative">
                    <CalendarIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                   <input type="datetime-local" value={formData.scheduledDate} onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
+                   <input aria-label="Schedule (optional)" type="datetime-local" value={formData.scheduledDate} onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })} className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all" />
                 </div>
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mt-4 mb-2">Status</label>
                 <select
@@ -965,7 +1015,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
                 >
                   <option value={STATUS.DRAFT}>Draft</option>
                   <option value={STATUS.SCHEDULED}>Scheduled</option>
-                  <option value={STATUS.POSTED}>Posted</option>
+                  {(!clientLocked || formData.status === STATUS.POSTED) && <option value={STATUS.POSTED}>Posted</option>}
                   {formData.status === STATUS.ARCHIVED && <option value={STATUS.ARCHIVED}>Archived</option>}
                 </select>
              </div>
@@ -988,7 +1038,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
                         #{tag}
                         <button
                           onClick={() => setFormData(prev => ({...prev, tags: prev.tags.filter((_, index) => index !== i)}))}
-                          className="hover:text-rose-500 p-0.5 rounded-full hover:bg-rose-100 transition-colors"
+                          className="min-h-11 min-w-11 flex items-center justify-center hover:text-rose-500 rounded-full hover:bg-rose-100 transition-colors"
                           title={`Remove tag #${tag}`}
                           aria-label={`Remove tag #${tag}`}
                         >
@@ -1000,21 +1050,27 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
                 <input 
                   type="text" 
                   placeholder={formData.tags?.length >= 10 ? "Limit reached (10 tags)" : "Type a tag and press Enter..."}
-                  disabled={formData.tags?.length >= 10 || isReadOnly}
+                  aria-label="New tag"
+                  aria-describedby="editor-tag-limits"
+                  aria-invalid={!!tagError}
+                  value={pendingTag}
+                  onChange={e => { setPendingTag(e.target.value); setTagError(''); }}
+                  disabled={isReadOnly}
                   onKeyDown={(e) => {
-                     if (e.key === 'Enter') {
+                     if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                         e.preventDefault();
-                        if (formData.tags?.length >= 10) return;
-
-                        const val = e.target.value.trim().replace(/^#/, '').slice(0, 20);
-                        if (val && !formData.tags?.includes(val)) {
-                           setFormData(prev => ({...prev, tags: [...(prev.tags || []), val]}));
-                        }
-                        e.target.value = '';
+                        const val = pendingTag.trim().replace(/^#/, '');
+                        if (!val) { setPendingTag(''); return; }
+                        try {
+                          const tags = validatedTags([...(formData.tags || []), val]);
+                          setFormData(prev => ({ ...prev, tags }));
+                          setPendingTag(''); setTagError('');
+                        } catch (error) { setTagError(error.message); }
                      }
                   }} 
                   className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:border-indigo-500 focus:ring-0 transition-all disabled:opacity-50"
                 />
+                <p id="editor-tag-limits" className="mt-2 text-sm text-slate-700" aria-live="polite">{formData.tags?.length || 0}/{TAG_LIMIT} tags · {pendingTag.trim().replace(/^#/, '').length}/{TAG_LENGTH_LIMIT} characters{tagError ? ` — ${tagError}` : ''}</p>
              </div>
           </div>
 
@@ -1024,18 +1080,19 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
             {!isReadOnly && (
               <div className="mb-3 space-y-2">
                 <AIGenerate
+                  key={`${childSessionKey}:image`}
                   kind="image"
                   platform={formData.platform}
                   clientName={formData.client}
                   clientSettings={clientMap?.[formData.client]}
                   clientId={genClientId(formData.client)}
                   showToast={showToast}
-                  onResult={(url) => setFormData(prev => ({ ...prev, imageUrl: url }))}
+                  onResult={(url) => { if (!permissionRef.current && currentSessionRef.current?.() !== false && editorAliveRef.current) setFormData(prev => ({ ...prev, imageUrl: url })); }}
                 />
                 <button
                   type="button"
                   onClick={() => setPickerOpen(true)}
-                  className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline"
+                  className="min-h-11 flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline"
                 >
                   <ImageIcon size={12} /> Choose from library
                 </button>
@@ -1079,7 +1136,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
               </div>
             )}
           </div>
-        </div>
+        </fieldset>
       </div>
 
       {/* Drag handle to resize the preview (desktop only) */}
@@ -1188,10 +1245,17 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
         />
       )}
 
-      {pickerOpen && (
+      {pickerOpen && !isReadOnly && (
         <MediaPicker
+          sessionKey={mediaSessionKey}
+          isSessionCurrent={() => editorAliveRef.current && !permissionRef.current && currentSessionRef.current?.() !== false}
+          onSelectVideo={video => {
+            if (!editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false || savingRef.current) return;
+            setSelectedVideo({ ...video, client: formDataRef.current.client, selection: `${Date.now()}-${Math.random()}` });
+          }}
           onClose={() => { setPickerOpen(false); setPickerMode('cover'); }}
           onSelect={(url) => {
+            if (!editorAliveRef.current || permissionRef.current || currentSessionRef.current?.() === false || savingRef.current) return;
             if (pickerMode === 'inline') {
               // Insert a markdown image at the cursor position captured when the
               // picker opened; caret lands in the alt-text brackets. Deferred a
@@ -1199,7 +1263,11 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
               const ta = textareaRef.current;
               const r = inlineRangeRef.current;
               if (ta && r) {
-                requestAnimationFrame(() => replaceRange(ta, r.start, r.end, `![](${url})`, r.start + 2, r.start + 2));
+                const token = requests.begin('inline-media');
+                if (token) requestAnimationFrame(() => {
+                  if (requests.current(token) && editorAliveRef.current && !permissionRef.current && currentSessionRef.current?.() !== false) replaceRange(ta, r.start, r.end, `![](${url})`, r.start + 2, r.start + 2);
+                  requests.finish(token);
+                });
               } else {
                 setFormData(prev => ({ ...prev, content: `${prev.content.replace(/\n+$/, '')}\n\n![](${url})` }));
               }
@@ -1230,13 +1298,15 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
         } catch (error) { if (editorAliveRef.current) showToast?.(error.message, 'error'); }
       }} />}
 
-      {/* Discard confirm — the only way an in-app close loses dirty edits is
-          through this explicit choice (the autosave still keeps a local copy). */}
+      {/* Discard confirm — dirty edits require an explicit choice. Read-only
+          transitions may retain edits only in memory, not a device autosave. */}
       {showDiscardConfirm && (
         <ConfirmModal
           type="danger"
           title="Discard unsaved changes?"
-          message={discardRecovery
+          message={isReadOnly
+            ? 'Your edits are not saved to Spool. Cancel and copy your text before closing, or choose Discard to lose these changes. Copy text does not include images or settings.'
+            : discardRecovery
             ? discardRecovery.imageOmitted
               ? "Your text and settings have a recovery copy on this device, but the new image is not included. Cancel and save the thread to keep every change."
               : "These changes are not saved to Spool. A recovery copy was stored on this device and can be restored when you reopen the editor."
