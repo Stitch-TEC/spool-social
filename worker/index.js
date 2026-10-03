@@ -69,6 +69,8 @@ import {
   assertReviewDetailsAuthoringDisabled,
   assertReviewDetailsHandoffSupported,
   assertStoredReviewDetails,
+  assertLegacyMaintenancePost,
+  REVIEW_DETAILS_PROTECTED_FIELDS,
   reviewDetailsError,
 } from './reviewDetails.js';
 import { applySecurityHeaders, forceMediaDownload, withSecurityHeaders } from './security.js';
@@ -185,7 +187,8 @@ function apiError(error, message, status, cors, extra) {
 
 function reviewDetailsErrorResponse(err, cors) {
   if (!['review_details_invalid', 'review_details_required',
-    'review_details_authoring_disabled', 'review_details_handoff_unsupported'].includes(err?.code)) return null;
+    'review_details_authoring_disabled', 'review_details_handoff_unsupported',
+    'review_details_maintenance_unsupported'].includes(err?.code)) return null;
   const safe = reviewDetailsError(err.code);
   return apiError(safe.code, safe.message, safe.status, cors);
 }
@@ -421,24 +424,44 @@ async function lifecycleStep(results, store, fn) {
 // qualify; a promoted post carries clientId and is handled by the clientId pass, so nothing is
 // counted or touched twice.
 function ownedBy(docs, field, clientId) {
-  return docs.filter(d => (field === 'forClientId' ? !d.fields.clientId : d.fields.clientId === clientId));
+  return docs.filter(d => (field === 'forClientId'
+    ? d.fields.forClientId === clientId && !d.fields.clientId : d.fields.clientId === clientId));
 }
 
 // Relabel every owned doc in `collection` whose display name isn't already `to`.
-async function relabelWhere(env, collection, field, clientId, patch) {
-  const docs = await listDocsWhere(env, collection, field, clientId, { select: ['client', 'clientId'] });
+async function relabelWhere(env, collection, field, clientId, patch, plannedDocs) {
+  const docs = plannedDocs || await listDocsWhere(env, collection, field, clientId, { select: [...new Set(['client', 'clientId', field])] });
+  if (docs.truncated) throw new Error(`${collection}: rename listing capped — no relabel sent`);
   const stale = ownedBy(docs, field, clientId).filter(d => d.fields.client !== patch.client).map(d => d.name);
-  const n = await batchUpdateDocs(env, stale, patch);
-  // A capped listing is a partial result — say so (the broker shows it), never claim completeness.
-  if (docs.truncated) { const e = new Error(`${collection}: listing capped — ${n} relabeled, re-run to continue`); e.committed = n; throw e; }
+  const n = await batchUpdateDocs(env, stale, patch, { postSnapshots: docs });
   return n;
 }
 
-async function propagateClientRename(env, clientId, to) {
+export async function propagateClientRename(env, clientId, to, { list = listDocsWhere } = {}) {
   const results = { counts: {}, errors: [] };
   const now = new Date().toISOString();
-  await lifecycleStep(results, 'posts', () => relabelWhere(env, 'posts', 'clientId', clientId, { client: to, updatedAt: now }));
-  await lifecycleStep(results, 'suggestions', () => relabelWhere(env, 'posts', 'forClientId', clientId, { client: to, updatedAt: now }));
+  // Finish both post inventories before relabeling any store. This prevents a
+  // later protected suggestion from leaving an earlier store already renamed.
+  const postPlans = new Map();
+  for (const [store, field] of [['posts', 'clientId'], ['suggestions', 'forClientId']]) {
+    try {
+      const docs = await list(env, 'posts', field, clientId, {
+        select: ['client', 'clientId', 'forClientId', ...REVIEW_DETAILS_PROTECTED_FIELDS],
+      });
+      if (docs.truncated) throw new Error('Post rename inventory capped; no rename sent');
+      for (const doc of docs) assertLegacyMaintenancePost(doc.fields);
+      postPlans.set(store, docs);
+    } catch (error) {
+      results.counts[store] = 0;
+      results.errors.push({ store, error: error?.message || 'Post rename inventory unconfirmed' });
+    }
+  }
+  if (results.errors.length) return results;
+  await lifecycleStep(results, 'posts', () => relabelWhere(env, 'posts', 'clientId', clientId, { client: to, updatedAt: now }, postPlans.get('posts')));
+  // Stop after a CAS/refusal, rather than relabeling the remaining stores.
+  if (results.errors.length) return results;
+  await lifecycleStep(results, 'suggestions', () => relabelWhere(env, 'posts', 'forClientId', clientId, { client: to, updatedAt: now }, postPlans.get('suggestions')));
+  if (results.errors.length) return results;
   await lifecycleStep(results, 'shares', () => relabelWhere(env, 'shares', 'clientId', clientId, { client: to }));
   await lifecycleStep(results, 'automations', () => relabelWhere(env, 'automations', 'clientId', clientId, { client: to, updatedAt: now }));
   // Branding docs are NAME-keyed (`${OWNER_UID}__${encodeURIComponent(name)}`, ClientSettingsModal)
@@ -483,21 +506,25 @@ export async function deleteWhere(env, collection, field, clientId, skip, {
   list = listDocsWhere,
   remove = batchDeleteDocs,
 } = {}) {
-  const { names, skipped } = await planDeleteWhere(env, collection, field, clientId, skip, list);
-  const deleted = await remove(env, names);
+  const { names, skipped, postSnapshots } = await planDeleteWhere(env, collection, field, clientId, skip, list);
+  const deleted = await remove(env, names, { postSnapshots });
   return { deleted, skipped };
 }
 
 async function planDeleteWhere(env, collection, field, clientId, skip, list = listDocsWhere) {
-  const docs = await list(env, collection, field, clientId, { select: ['clientId', 'roles'] });
+  const docs = await list(env, collection, field, clientId, {
+    select: [...new Set(['clientId', 'roles', field, ...(collection === 'posts' ? REVIEW_DETAILS_PROTECTED_FIELDS : [])])],
+  });
   if (docs.truncated) {
     const error = new Error(`${collection}: purge listing capped — no documents deleted`);
     error.committed = 0;
     throw error;
   }
   const mine = ownedBy(docs, field, clientId);
+  if (collection === 'posts') for (const doc of docs) assertLegacyMaintenancePost(doc.fields);
   const doomed = skip ? mine.filter(d => !skip(d)) : mine;
-  return { names: doomed.map(d => d.name), skipped: mine.length - doomed.length };
+  return { names: doomed.map(d => d.name), postSnapshots: collection === 'posts' ? doomed : [],
+    skipped: mine.length - doomed.length };
 }
 
 async function deleteR2Keys(binding, keys) {
@@ -575,7 +602,8 @@ export async function purgeClient(env, clientId, {
   for (const [store] of specs) {
     const plan = plans.get(store);
     if (plan.skipped) results.notes.push(`${store}: left ${plan.skipped} hand-managed super_admin doc(s) in place`);
-    await lifecycleStep(results, store, () => remove(env, plan.names));
+    await lifecycleStep(results, store, () => remove(env, plan.names, { postSnapshots: plan.postSnapshots }));
+    if (results.errors.length) return results;
   }
   if (env.MEDIA) await lifecycleStep(results, 'media', () => removeObjects(env.MEDIA, mediaKeys));
   return results;
@@ -1768,7 +1796,14 @@ export default {
         }
 
         if (request.method === 'DELETE') {
-          await deletePost(env, id);
+          try {
+            assertLegacyMaintenancePost(existing);
+            await deletePost(env, id, { expected: existing });
+          } catch (err) {
+            const refusal = reviewDetailsErrorResponse(err, cors);
+            if (refusal) return refusal;
+            throw err;
+          }
           return json({ deleted: id }, 200, cors);
         }
 

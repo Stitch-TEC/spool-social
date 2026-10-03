@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  POST_REVIEW_PRESERVATION_FIELDS,
+  assertLegacyPostMaintenancePlan,
   auditWorkspace,
   buildRosterRepairMap,
   classifyPostRows,
+  hasPostReviewPreservationFields,
   listAllDocuments,
   normalizeFirestoreUpdateTime,
   parseCollectionPage,
   parseRosterSnapshot,
+  postMaintenanceInventoryFields,
   requestJsonObject,
   reviewStageBackfillPlan,
   postUpdatedAtAudit,
@@ -26,6 +30,114 @@ const apiDocument = (collection, id, values = {}) => {
   const { id: _id, ...document } = row(collection, id, values);
   return document;
 };
+
+describe('presence-aware legacy post maintenance admission', () => {
+  const fields = ['reviewDetailsVersion', 'reviewMedia', 'firstComment', 'reviewDetailsAck', 'reviewMediaLinks'];
+  const storedValues = [
+    { name: 'Firestore null', value: { nullValue: null } },
+    { name: 'empty string', value: { stringValue: '' } },
+    { name: 'empty map', value: { mapValue: {} } },
+    { name: 'empty array', value: { arrayValue: {} } },
+    { name: 'false', value: { booleanValue: false } },
+    { name: 'malformed typed field', value: { bogus: true } },
+    { name: 'unprepared undefined property', value: undefined },
+    { name: 'raw null property', value: null },
+  ];
+
+  it('pins every recognized extension, acknowledgment and retired alias field', () => {
+    expect(POST_REVIEW_PRESERVATION_FIELDS).toEqual(fields);
+    expect(Object.isFrozen(POST_REVIEW_PRESERVATION_FIELDS)).toBe(true);
+    expect(postMaintenanceInventoryFields(['client', 'firstComment', 'uid', 'client']))
+      .toEqual(['client', 'firstComment', 'uid', 'reviewDetailsVersion', 'reviewMedia', 'reviewDetailsAck', 'reviewMediaLinks']);
+    expect(postMaintenanceInventoryFields([])).toEqual(fields);
+    for (const input of [undefined, null, 'uid', [''], [null], [1]]) {
+      expect(() => postMaintenanceInventoryFields(input)).toThrow(/explicit field names/);
+    }
+  });
+
+  for (const field of fields) {
+    for (const { name, value } of storedValues) {
+      it(`refuses whole plans containing ${field} as ${name}`, () => {
+        const legacy = row('posts', 'legacy-before', { client: 'Acme', uid: 'owner' });
+        const extended = row('posts', 'extended-later', { client: 'Acme', uid: 'owner' });
+        extended.fields[field] = value;
+        const plan = [legacy, extended];
+        expect(hasPostReviewPreservationFields(extended)).toBe(true);
+        expect(() => assertLegacyPostMaintenancePlan(plan, 'Synthetic restamp'))
+          .toThrow(/review-detail fields/);
+        expect(() => reviewStageBackfillPlan(plan)).toThrow(/review-detail fields/);
+        expect(legacy.fields).not.toHaveProperty('reviewStage');
+        expect(extended.fields[field]).toBe(value);
+        expect(plan).toEqual([legacy, extended]);
+        try { assertLegacyPostMaintenancePlan(plan); }
+        catch (error) { expect(error.code).toBe('review_details_maintenance_unsupported'); }
+      });
+    }
+  }
+
+  it('refuses a valid complete/empty extension and an ack-only row even when no post needs repair', () => {
+    for (const values of [
+      { reviewDetailsVersion: { integerValue: '1' }, firstComment: '', reviewMedia: { arrayValue: {} } },
+      { reviewDetailsAck: { mapValue: { fields: {} } } },
+    ]) {
+      const extended = row('posts', 'already-complete', {
+        uid: 'owner', clientId: 'acme', reviewStage: 'in_review', updatedAt: '2026-08-24T12:00:00.000Z',
+        ...values,
+      });
+      expect(() => assertLegacyPostMaintenancePlan([extended])).toThrow(/legacy repair is not supported/);
+      expect(() => reviewStageBackfillPlan([extended])).toThrow(/legacy repair is not supported/);
+    }
+  });
+
+  it('keeps legacy planning and exact updateTime CAS evidence unchanged', () => {
+    const legacy = row('posts', 'ordinary', { client: 'Acme', uid: 'owner' });
+    legacy.updateTime = '2026-08-24T12:00:00.987654321Z';
+    const inventory = Object.freeze([Object.freeze({ ...legacy, fields: Object.freeze(legacy.fields) })]);
+    expect(hasPostReviewPreservationFields(inventory[0])).toBe(false);
+    expect(assertLegacyPostMaintenancePlan(inventory)).toBe(inventory);
+    expect(reviewStageBackfillPlan(inventory)).toMatchObject({
+      changes: [{ row: inventory[0], value: 'in_review' }],
+      updatedAtChanges: [{ row: inventory[0], value: '2026-08-24T12:00:00.987Z' }],
+    });
+    expect(inventory[0].updateTime).toBe('2026-08-24T12:00:00.987654321Z');
+    expect(inventory[0].fields).not.toHaveProperty('reviewStage');
+  });
+
+  it('refuses malformed inventories rather than treating them as unextended', () => {
+    for (const inventory of [null, {}, [null], [{ fields: null }], [{ fields: [] }], [new Date()]]) {
+      expect(() => assertLegacyPostMaintenancePlan(inventory)).toThrow(/inventory is malformed/);
+    }
+    expect(assertLegacyPostMaintenancePlan([])).toEqual([]);
+  });
+
+  it('does not print payload, media URL, share token or review text in refusal errors', () => {
+    const extended = row('posts', 'private-id', { firstComment: 'DO NOT EXPOSE THIS PRIVATE TEXT' });
+    expect(() => assertLegacyPostMaintenancePlan([extended])).toThrow(/nothing may be changed/);
+    try { assertLegacyPostMaintenancePlan([extended]); }
+    catch (error) { expect(String(error)).not.toMatch(/private-id|DO NOT EXPOSE/); }
+  });
+
+  it('carries all presence fields on every post inventory page before whole-plan admission', async () => {
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce({ documents: [apiDocument('posts', 'legacy')], nextPageToken: 'next' })
+      .mockResolvedValueOnce({ documents: [apiDocument('posts', 'extended', { firstComment: { nullValue: null } })] });
+    const inventory = await listAllDocuments({ collection: 'posts', fields: ['uid'], fetchPage });
+    expect(inventory.map((entry) => entry.id)).toEqual(['legacy', 'extended']);
+    for (const [url] of fetchPage.mock.calls) {
+      const params = new URL(url, 'https://example.test/').searchParams;
+      expect(params.getAll('mask.fieldPaths')).toEqual(['uid', ...fields]);
+    }
+    expect(() => assertLegacyPostMaintenancePlan(inventory)).toThrow(/review-detail fields/);
+    expect(fetchPage.mock.calls[1][0]).toContain('pageToken=next');
+  });
+
+  it('leaves non-post projection fields unchanged', async () => {
+    const fetchPage = vi.fn().mockResolvedValue({ documents: [] });
+    await listAllDocuments({ collection: 'shares', fields: ['ownerUid', 'clientId'], fetchPage });
+    const params = new URL(fetchPage.mock.calls[0][0], 'https://example.test/').searchParams;
+    expect(params.getAll('mask.fieldPaths')).toEqual(['ownerUid', 'clientId']);
+  });
+});
 
 describe('admin response validation', () => {
   const response = (payload, overrides = {}) => ({

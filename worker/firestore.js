@@ -10,6 +10,7 @@ import { transformMediaDestinations } from '../src/utils/mediaMarkup.js';
 import { DRAFT_PUBLIC_FIELD_PATHS } from './draftUpdate.js';
 import { readJsonBounded } from './httpBody.js';
 import { admitPeopleSyncRecord, parsePeopleSyncIntent, PeopleSyncError } from './peopleSync.js';
+import { assertLegacyMaintenancePost, assertStoredReviewDetails, REVIEW_DETAILS_PROTECTED_FIELDS } from './reviewDetails.js';
 
 let tokenCache = { exp: 0, token: null };
 
@@ -222,6 +223,7 @@ function toFields(obj) {
 
 // Create a document in the `posts` collection. Returns the new doc id.
 export async function createPost(env, docData) {
+  assertLegacyMaintenancePost(docData);
   const token = await getAccessToken(env);
   const projectId = env.FIREBASE_PROJECT_ID;
   if (!projectId) throw new Error('FIREBASE_PROJECT_ID not set');
@@ -1027,17 +1029,13 @@ export async function syncClientUserAccess(env, body) {
 }
 
 export async function updatePost(env, id, patch) {
-  const safeId = encodedAutoId(id, 'draft');
-  const token = await getAccessToken(env);
-  const mask = Object.keys(patch).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
-  const res = await fetch(`${FS_BASE(env)}/posts/${safeId}?${mask}`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fields: toFields(patch) })
+  requireAutoId(id, 'draft');
+  assertLegacyMaintenancePost(patch);
+  const result = await mutatePostAtomically(env, id, live => {
+    assertLegacyMaintenancePost(live);
+    return { patch };
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Update failed (${res.status})`);
-  return { id: requireAutoId(id, 'draft'), ...fromFields(data.fields) };
+  return result.document;
 }
 
 export class FirestoreUpdateConflictError extends Error {
@@ -1134,17 +1132,21 @@ export async function mutatePostAtomically(env, id, build, { maxAttempts = 5 } =
   return { ...result, document: await getPost(env, id) };
 }
 
-export async function deletePost(env, id) {
-  const safeId = encodedAutoId(id, 'draft');
-  const token = await getAccessToken(env);
-  const res = await fetch(`${FS_BASE(env)}/posts/${safeId}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!res.ok && res.status !== 404) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || `Delete failed (${res.status})`);
+export async function deletePost(env, id, { expected } = {}) {
+  requireAutoId(id, 'draft');
+  const live = await getPost(env, id);
+  if (!live) return true;
+  assertLegacyMaintenancePost(live);
+  if (expected && (expected.id !== live.id || expected._updateTime !== live._updateTime)) {
+    throw new FirestoreUpdateConflictError('Draft changed since delete was selected; no delete sent');
   }
+  if (!peopleSyncTimestamp(live._updateTime)) throw new Error('Draft revision is unconfirmed; no delete sent');
+  // Typed Commit carries the revision without a query-parser dependency and
+  // verifies the delete acknowledgement before claiming completion.
+  await commitChunked(env, [{
+    delete: docResourceName(env, 'posts', id),
+    currentDocument: { updateTime: live._updateTime },
+  }]);
   return true;
 }
 
@@ -1437,7 +1439,8 @@ export async function listDocsWhere(env, collectionId, fieldPath, value, { pageS
     const rows = await readRunQueryDocuments(res, `${safeCollectionId} lifecycle query`);
     for (const document of rows) {
       const raw = document.fields || {};
-      out.push({ id: document.name.split('/').pop(), name: document.name, fields: fromFields(raw), raw });
+      out.push({ id: document.name.split('/').pop(), name: document.name, fields: fromFields(raw), raw,
+        updateTime: document.updateTime });
       if (out.length >= cap) { out.truncated = true; return out; } // caller MUST surface this — never a silent partial
     }
     if (rows.length < pageSize) return out;
@@ -1466,15 +1469,36 @@ async function commitChunked(env, writes) {
   let committed = 0;
   for (let i = 0; i < writes.length; i += COMMIT_CHUNK) {
     const chunk = writes.slice(i, i + COMMIT_CHUNK);
-    const res = await fetch(`${FS_BASE(env)}:commit`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ writes: chunk })
-    });
+    let res;
+    try {
+      res = await fetch(`${FS_BASE(env)}:commit`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ writes: chunk })
+      });
+    } catch {
+      const err = new Error('Lifecycle commit outcome is unconfirmed; inspect before retrying');
+      err.committed = committed;
+      err.outcomeUnknown = true;
+      throw err;
+    }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       const err = new Error(data?.error?.message || `Commit failed (${res.status})`);
       err.committed = committed;
+      throw err;
+    }
+    let ack;
+    try { ack = await readJsonBounded(res, 2 * 1024 * 1024); } catch { /* unconfirmed below */ }
+    if (!isPlainObject(ack) || Object.keys(ack).some(key => !['commitTime', 'writeResults'].includes(key))
+      || !peopleSyncTimestamp(ack.commitTime)
+      || !Array.isArray(ack.writeResults) || ack.writeResults.length !== chunk.length
+      || ack.writeResults.some((result, index) => !isPlainObject(result)
+        || Object.keys(result).some(key => key !== 'updateTime')
+        || (chunk[index].update ? !peopleSyncTimestamp(result.updateTime) : result.updateTime !== undefined))) {
+      const err = new Error('Lifecycle commit acknowledgement is unconfirmed; inspect before retrying');
+      err.committed = committed;
+      err.outcomeUnknown = true;
       throw err;
     }
     committed += chunk.length;
@@ -1485,24 +1509,66 @@ async function commitChunked(env, writes) {
 // Masked update of the same `patch` on every doc (by exact resource name). `currentDocument.
 // exists=true` so a concurrently-deleted doc is never resurrected as a stub — the chunk fails
 // instead (reported, not silent). Returns the count applied.
-export async function batchUpdateDocs(env, docNames, patch) {
+export async function batchUpdateDocs(env, docNames, patch, { postSnapshots = [] } = {}) {
+  const postRevisions = await legacyPostRevisions(env, docNames, patch, postSnapshots);
   const fields = toFields(patch);
   const updateMask = { fieldPaths: Object.keys(patch) };
   return commitChunked(env, docNames.map(name => ({
-    update: { name, fields }, updateMask, currentDocument: { exists: true }
+    update: { name, fields }, updateMask,
+    currentDocument: postRevisions.has(name) ? { updateTime: postRevisions.get(name) } : { exists: true }
   })));
 }
 
 // Delete every doc (by exact resource name). A delete of an absent doc is a no-op success in
 // :commit, so re-running is idempotent. Returns the count of delete writes applied.
-export async function batchDeleteDocs(env, docNames) {
-  return commitChunked(env, docNames.map(name => ({ delete: name })));
+export async function batchDeleteDocs(env, docNames, { postSnapshots = [] } = {}) {
+  const postRevisions = await legacyPostRevisions(env, docNames, {}, postSnapshots);
+  return commitChunked(env, docNames.map(name => ({ delete: name,
+    ...(postRevisions.has(name) ? { currentDocument: { updateTime: postRevisions.get(name) } } : {}) })));
+}
+
+// Privileged lifecycle helpers bypass rules. Read every targeted post before
+// the first chunk and bind each write to that exact revision. A newly-added
+// extension or tenant/content edit after the read rejects the commit, not the
+// review boundary. No retry against a new unseen post is performed here.
+async function legacyPostRevisions(env, names, patch, postSnapshots) {
+  const revisions = new Map();
+  const planned = new Map(postSnapshots.map(row => [row.name, row]));
+  if (planned.size !== postSnapshots.length) throw new Error('Post inventory has duplicate resource names');
+  const prefix = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/posts/`;
+  for (const name of names) {
+    if (typeof name !== 'string') throw new Error('Document resource name is unconfirmed');
+    const segments = name.split('/');
+    if (segments[5] !== 'posts') continue;
+    assertLegacyMaintenancePost(patch);
+    if (!name.startsWith(prefix) || segments.length !== 7) throw new Error('Post resource is outside this project');
+    const expected = planned.get(name);
+    if (!expected || !peopleSyncTimestamp(expected.updateTime)) {
+      throw new Error('Post inventory revision is missing; no lifecycle commit sent');
+    }
+    assertLegacyMaintenancePost(expected.fields);
+    const id = requireDocumentSegment(segments[6]);
+    const token = await getAccessToken(env);
+    const response = await fetch(docResourceUrl(env, 'posts', id), { headers: { Authorization: `Bearer ${token}` } });
+    const document = await readJsonBounded(response, 2 * 1024 * 1024);
+    if (!response.ok || document?.name !== name || !peopleSyncTimestamp(document.updateTime)) {
+      throw new Error('Post revision read is unconfirmed; no lifecycle commit sent');
+    }
+    validateFirestoreFields(document.fields || {}, 'Post lifecycle read');
+    assertLegacyMaintenancePost(fromFields(document.fields || {}));
+    if (document.updateTime !== expected.updateTime) {
+      throw new FirestoreUpdateConflictError('Post changed since lifecycle inventory; no commit sent');
+    }
+    revisions.set(name, document.updateTime);
+  }
+  return revisions;
 }
 
 // Merge `rawFields` (REST typed fields, e.g. a doc's `raw` from listDocsWhere) into
 // `collectionId/{id}` — creates the doc if absent, overwrites only the listed fields if present
 // (SPA setDoc(..., {merge:true}) semantics). No precondition on purpose: this IS the upsert.
 export async function mergeDocRaw(env, collectionId, id, rawFields) {
+  if (collectionId === 'posts') throw new Error('Generic post upsert is unsupported; use a reviewed revision-aware writer');
   const keys = Object.keys(rawFields);
   if (!keys.length) return 0;
   return commitChunked(env, [{
@@ -1529,7 +1595,8 @@ export async function listAllImageUrls(env, pageSize = 1000) {
       // referenced: an inline markdown image was invisible here, so once it aged
       // past the grace window the nightly sweep deleted a picture that was still
       // published in a post. A larger projection is the cheap half of that trade.
-      select: { fields: [{ fieldPath: 'imageUrl' }, { fieldPath: 'content' }] },
+      select: { fields: ['imageUrl', 'content', ...REVIEW_DETAILS_PROTECTED_FIELDS, 'reviewedAt']
+        .map(fieldPath => ({ fieldPath })) },
       orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       limit: pageSize
     };
@@ -1552,7 +1619,19 @@ export async function listAllImageUrls(env, pageSize = 1000) {
 export function collectPostImageReferences(documents, urls = new Set()) {
   for (const document of documents) {
     const fields = document.fields || {};
-    for (const fieldName of ['imageUrl', 'content']) {
+    // Decode/validate the complete projected extension before treating its
+    // absence of references as safe. Malformed/alias-only rows stop the sweep.
+    const detailFields = Object.fromEntries(
+      [...REVIEW_DETAILS_PROTECTED_FIELDS, 'reviewedAt']
+        .filter(key => Object.prototype.hasOwnProperty.call(fields, key)).map(key => [key, fields[key]]));
+    validateFirestoreFields(detailFields, 'Image-reference GC review details');
+    const details = fromFields(detailFields);
+    if (Object.prototype.hasOwnProperty.call(details, 'reviewMediaLinks')) {
+      throw new Error('Image-reference GC query has unsupported review-media alias');
+    }
+    assertStoredReviewDetails(details);
+    for (const item of details.reviewMedia || []) urls.add(item.url);
+    for (const fieldName of ['imageUrl', 'content', 'firstComment']) {
       const value = fields[fieldName];
       if (value !== undefined && (!isPlainObject(value)
         || Object.keys(value).length !== 1
@@ -1560,10 +1639,17 @@ export function collectPostImageReferences(documents, urls = new Set()) {
         throw new Error(`Image-reference GC query returned non-string ${fieldName}`);
       }
     }
+    // Social first comments are plain text: a bare URL is still a reference.
+    // Keep both raw and punctuation-trimmed variants conservatively; this is
+    // retention-only and never a fetch, a URL rewrite or publishing decision.
+    for (const match of (fields.firstComment?.stringValue || '').matchAll(/https?:\/\/[^\s<>"']+|\/media\/[^\s<>"']+/g)) {
+      urls.add(match[0]);
+      urls.add(match[0].replace(/[.,;:!?)}\]]+$/, ''));
+    }
     const u = fields.imageUrl?.stringValue;
     if (u) urls.add(u);
-    const body = fields.content?.stringValue;
-    if (body) {
+    for (const body of [fields.content?.stringValue, fields.firstComment?.stringValue]) {
+      if (!body) continue;
       // Use the exact standards-aware destination parser used for output and
       // approval identity. This sees reference definitions, clickable media,
       // raw img/source srcset, and browser-decoded character references that

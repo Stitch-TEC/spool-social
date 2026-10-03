@@ -1,5 +1,7 @@
 # Editor recovery and asynchronous-result boundaries
 
+Historical September 23 record. October 2 existing-post recovery now uses a separate v3 localStorage envelope with explicit scoped-copy inspection and preservation; native new-create IndexedDB version 2 remains separate. See [Review details rollout](REVIEW-DETAILS-ROLLOUT.md) for current behavior and limits. The dated acceptance below is not the later release's evidence.
+
 This bounded follow-up fixes the two synthetic findings in the September 23
 Spool review: shared-browser recovery crossing accounts/clients, and late AI
 results replacing work after a client/platform change or cancellation.
