@@ -45,6 +45,7 @@ import HelpDialog from './components/HelpDialog';
 import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
 import { defaultPlatformForClient, validatedTags } from './utils/editorInputs';
+import { confirmedUsualClientId, usualPlatformForClient } from './utils/usualPlatform';
 import { postEditingAccess } from './utils/postEditingAccess';
 import { hasProtectedReviewDetails } from './utils/reviewDetails';
 import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
@@ -132,6 +133,10 @@ const App = () => {
   const hasClientHandoff = useMemo(() => parseClientHandoff(handoffSearch).status !== 'absent', [handoffSearch]);
   const roster = useClients(isOperator && !authLoading, savedViewSession, { strict: hasClientHandoff, isCurrent: getRecoveryUser });
   const { clients: rosterClients, loading: rosterLoading, error: rosterError } = roster;
+  // A retired render's display callback must not retain another read/roster snapshot.
+  const usualPlatformSourceRef = useRef(null);
+  const usualPlatformSource = { posts, rosterClients };
+  usualPlatformSourceRef.current = usualPlatformSource;
   const getHandoffUser = useCallback(() => auth.currentUser, []);
   const clientHandoff = useClientHandoff({
     search: handoffSearch, user, authRevision, getAuthRevision, getCurrentUser: getHandoffUser, authLoading,
@@ -1954,6 +1959,17 @@ const App = () => {
       }
       return postEditingAccess(editingPost, { isReadOnly, isOperator, isClientMember, clientId: myClientId }).canEdit;
     };
+    const getUsualPlatformForClient = name => {
+      // Reuse the existing page read predicate only; this never invokes an import
+      // or writer. No stale source, partial client name or guessed slug is shown.
+      if (usualPlatformSourceRef.current !== usualPlatformSource || editorReadOnly || capturedEditorUser?.isAnonymous
+        || !isEditorSessionCurrent() || getImportAdmissionKey() !== importAdmissionKey
+        || (isOperator && (rosterLoading || rosterError))) return null;
+      const clients = isOperator ? rosterClients : [{ name: myClientName, slug: myClientId }];
+      const clientId = confirmedUsualClientId(name, clients);
+      if (!clientId || recoveryClientIdFor(name) !== clientId) return null;
+      return usualPlatformForClient(posts, clientId);
+    };
     return (
       <ErrorBoundary>
         {/* ⚡ Lazy-loaded Editor keeps the initial dashboard bundle small. */}
@@ -1989,6 +2005,7 @@ const App = () => {
                member's own client) so the media picker works before first save. */
             initialClient={isOperator ? (filterClient || '') : (myClientName || '')}
             initialPlatform={defaultPlatformForClient(posts, isClientMember ? myClientId : recoveryClientIdFor(filterClient || ''))}
+            getUsualPlatformForClient={getUsualPlatformForClient}
             clientLocked={isClientMember}
             canPreviewEmail={isOperator}
             onHelp={help.open}
