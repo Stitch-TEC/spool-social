@@ -200,8 +200,10 @@ export default function usePosts(user, sharedUid, clientId, shareClientId, isOpe
             const _sortTs = (scheduledDate || createdAt).getTime();
 
             const post = {
-              id: change.doc.id,
               ...data,
+              // Stored fields cannot redirect a card/writer to another record.
+              // Keep the snapshot's document ID authoritative without rewriting data.
+              id: change.doc.id,
               // Old /media URLs were browser-cacheable for one year. Read them
               // through the v2 cache key without mutating Firestore so the SPA
               // never reuses an already-cached legacy response.

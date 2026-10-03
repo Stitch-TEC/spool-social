@@ -147,13 +147,56 @@ describe('usePosts attempt-owned content normalization reuse', () => {
     expect(currentPost(hook).content).toBe(normalize(raw));
   });
 
-  it('keeps the real document ID in private metadata when a malformed stored id overrides the public id', () => {
+  it('keeps public identity and normalization reuse with the real document rather than a stored id', () => {
     const hook = mount();
     emit([change({ id: 'different-document' }, 'added', 'first-document')]);
+    expect(currentPost(hook).id).toBe('first-document');
     versionSpoolMediaContent.mockClear();
+    emit([change({ id: 'different-document', title: 'Current metadata' }, 'modified', 'first-document')]);
+    expect(versionSpoolMediaContent).not.toHaveBeenCalled();
+    expect(currentPost(hook)).toMatchObject({ id: 'first-document', title: 'Current metadata' });
     emit([change({}, 'modified', 'different-document')]);
     expect(versionSpoolMediaContent).toHaveBeenCalled();
-    expect(currentPost(hook).content).toBe(normalize(raw));
+    expect(hook.result.current.posts.map(post => post.id).sort()).toEqual(['different-document', 'first-document']);
+    expect(hook.result.current.posts.every(post => post.content === normalize(raw))).toBe(true);
+  });
+
+  it.each([null, 42, { value: 'other-document' }, ['other-document'], ''])('ignores malformed stored id %j for an added and modified document', id => {
+    const hook = mount();
+    emit([change({ id }, 'added', 'canonical-document')]);
+    expect(currentPost(hook).id).toBe('canonical-document');
+    emit([change({ id, title: 'Modified' }, 'modified', 'canonical-document')]);
+    expect(hook.result.current.posts).toHaveLength(1);
+    expect(currentPost(hook)).toMatchObject({ id: 'canonical-document', title: 'Modified' });
+  });
+
+  it('keeps colliding stored IDs distinct and modifies only the canonical document', () => {
+    const hook = mount();
+    emit([change({ id: 'document-b', content: 'Caption A' }, 'added', 'document-a'),
+      change({ id: 'document-a', content: 'Caption B' }, 'added', 'document-b')]);
+    const beforeB = hook.result.current.posts.find(post => post.id === 'document-b');
+    expect(hook.result.current.posts.map(post => post.id).sort()).toEqual(['document-a', 'document-b']);
+    versionSpoolMediaContent.mockClear();
+    emit([change({ id: 'document-b', content: 'Caption A', title: 'Only A changed' }, 'modified', 'document-a')]);
+    expect(hook.result.current.posts).toHaveLength(2);
+    expect(hook.result.current.posts.find(post => post.id === 'document-a')).toMatchObject({ title: 'Only A changed', content: 'Caption A' });
+    expect(hook.result.current.posts.find(post => post.id === 'document-b')).toBe(beforeB);
+    expect(versionSpoolMediaContent).not.toHaveBeenCalled();
+  });
+
+  it('removes only the canonical document despite colliding stored IDs, and re-adds it independently', () => {
+    const hook = mount();
+    emit([change({ id: 'document-b', content: 'Caption A' }, 'added', 'document-a'),
+      change({ id: 'document-a', content: 'Caption B' }, 'added', 'document-b')]);
+    const beforeB = hook.result.current.posts.find(post => post.id === 'document-b');
+    emit([change({ id: 'document-b' }, 'removed', 'document-a')]);
+    expect(hook.result.current.posts).toEqual([beforeB]);
+    versionSpoolMediaContent.mockClear();
+    emit([change({ id: 'document-b', content: 'Re-added A' }, 'added', 'document-a')]);
+    expect(hook.result.current.posts.map(post => post.id).sort()).toEqual(['document-a', 'document-b']);
+    expect(hook.result.current.posts.find(post => post.id === 'document-b')).toBe(beforeB);
+    expect(hook.result.current.posts.find(post => post.id === 'document-a').content).toBe('Re-added A');
+    expect(versionSpoolMediaContent).toHaveBeenCalledOnce();
   });
 
   it.each([true, false])('normalizes removed/re-added content again (same snapshot: %s)', sameSnapshot => {
