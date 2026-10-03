@@ -1,6 +1,33 @@
 # Spool client feedback — October 2, 2026
 
-Status updated October 3: repair #138, review-details compatibility #139, writer/recovery safeguards #140, tool cleanup #141 and protected-presence fallback #142 are merged and verified live. Canonical live source is `f8525b36`; review-only link/first-comment authoring remains off and rules have not been activated by those releases. Strict draft-import/templates are a separate prepared batch until its own release acceptance is recorded. Owner requested review and fixes after a client-role pilot. Preserve all existing drafts, media, review history and dates; no bulk cleanup is authorized merely by a bug report. Client-specific feedback and QA remain in private suite evidence, not this public repository.
+Status updated October 3: #138–#147 are merged and verified live; canonical live source is `5610fe33`. This includes urgent editor/recovery/video-picker fixes, writer safeguards, strict imports/templates, the Usual-platform hint, guarded operator Archive/Restore, video-link labels/filtering and a narrow toolbar layout repair. Review-only link/first-comment authoring remains off; these releases did not activate rules. The owner chose to finish remaining original feedback before returning to POM, with external video links rather than further hosted-video work. Preserve existing drafts, media, review history and dates; no bulk cleanup is authorized merely by a bug report. Client-specific feedback and QA remain in private suite evidence, not this public repository.
+
+## Remaining feedback — not a completion claim
+
+| Request | Current state / next slice |
+| --- | --- |
+| Client Archive | Not delivered. Needs a disjoint transition on the historical deployed policy, trusted reversible provenance, cached/privileged writer compatibility and its own activation acceptance. Operator Archive is not client Archive. |
+| Review-only media and first comments | Compatibility/read-only safeguards live; authoring off. Keep existing caption URLs intact. |
+| Client-private staging, durable Hold and fact checks | Not delivered. Define author/workspace visibility and enforce Hold at review/schedule/handoff boundaries, not as a tag. |
+| Bulk editing and cadence | Tag-only repair prepared below. Other status/reassignment/archive/delete/review writers and schedule preview/cadence remain separate. |
+| Carousel/PDF assets | Not delivered. Ordered slides, per-slide alt text/captions and bounded document previews require an additive model and writer/permission compatibility. |
+| Grouped platform variants and video channels | Not delivered. Shared/per-variant approvals need exact identities; add channel fields/guidance without silently regrouping existing posts. |
+| Video enrichment | Manual labels, unique fallbacks, search and library picking live. Optional provider thumbnails/titles/duration, existing-label edits and scoped usage remain later enhancements; uploaded video storage is not a priority. |
+
+### Current preparation: reliable bulk tags
+
+Selected ordinary threads use one atomic transaction, capped at 200. Full input is retained;
+tag limits and whole-selection overflows are refused rather than shortened or dropped. All fresh
+raw-tag/identity/revision checks precede writes; only tags and the revision change. Confirmed
+changed/unchanged counts are distinct. Duplicate Apply is blocked.
+
+An uncertain response retains a page-memory receipt bound to the actual operator and project,
+separate from the selection. Check saved tags performs server-only reads of the original IDs,
+never a mutation replay. Only a complete exact candidate match clears the pause; missing,
+changed or unreadable rows leave bulk changes paused. A check proves the current saved tags
+match, not a historical delivery acknowledgement or cancellation. This is not durable recovery
+across reloads/devices, not a repair of every bulk writer, and not released until its own approval
+and exact release acceptance are recorded.
 
 ## First release: correct saves and trustworthy controls
 
@@ -40,7 +67,7 @@ These require a targeted rule review and current deployed-rule/account-shape evi
 
 ## Agency workflow roadmap
 
-1. Discoverable CSV/JSON templates and field reference. The prepared batch validates every row before writing, shows client/platform/date/tag/field errors without silent truncation, retires stale file readers, captures actor/tenant/read admission and generates each row reference once per attempt. A submitted uncertain batch is held for inspection in page memory, not automatically retried; this is not durable or exactly-once cross-device recovery. Preserve operator-private/member-in-review policy; member staging requires a separate policy decision. Imports create new draft/pending content, never restored historical approvals or IDs. File/reference metadata is not a media access test.
+1. Discoverable CSV/JSON templates and field reference are live in #143. Every row is validated before writing, with client/platform/date/tag/field errors without silent truncation, stale-file-reader retirement, captured actor/tenant/read admission and one generated reference per row/attempt. An uncertain submitted batch is held in page memory, not automatically retried; this is not durable or exactly-once cross-device recovery. Operator-private/member-in-review policy remains; member staging needs a separate policy. Imports create new draft/pending content, not restored historical approvals/IDs. File/reference metadata is not a media access test. Folder/ZIP filename matching is not delivered by this release.
 2. Bounded bulk actions with explicit selection and preview: add/remove tags, archive and shift planned dates. Preserve per-row unknown outcomes; do not blindly retry whole batches. Cadence should propose dates/time zone and conflicts before applying, not promise social publication.
 3. Multi-image carousel/document assets: one logical bundle with ordered slides, per-slide alt text/caption and swipeable review. Treat item-count and byte quotas separately. PDF preview needs safe parsing/rendering, type/size checks and resource budgets; it is not a generic executable embed.
 4. A parent content idea with platform variants and stable IDs. Shared visual/review intent can reduce duplicate work, but each variant needs an exact reviewed payload/revision. A shared approval covers only the displayed selected variants; edits or late-added variants need re-review. Optional per-variant overrides must be explicit. Export one row per variant with post_id/variant_id; do not silently merge existing near-duplicate posts.

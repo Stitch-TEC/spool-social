@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { findHelpGuide, guidesForAudience, HELP_GUIDES, HELP_SEARCH_LIMIT, searchHelpGuides } from './helpContent';
 
 describe('static task guides', () => {
+  it('documents atomic tag scope and uncertainty without exposing operator tools to clients', () => {
+    const guide = findHelpGuide('bulk-tags', 'operator');
+    expect(guide.steps.join(' ')).toContain('200');
+    expect(guide.steps.join(' ')).toContain('Errors keep your input');
+    expect(guide.steps.join(' ')).toContain('Check saved tags');
+    expect(guide.steps.join(' ')).toContain('never resends');
+    expect(guide.warning).toContain('not every other bulk action');
+    expect(guide.warning).toContain('does not prove no changes saved');
+    expect(findHelpGuide('bulk-tags', 'member')).toBeNull();
+    expect(findHelpGuide('bulk-tags', 'guest')).toBeNull();
+  });
   it('has unique known topics, short useful steps and no executable markup', () => {
     expect(new Set(HELP_GUIDES.map(guide => guide.id)).size).toBe(HELP_GUIDES.length);
     for (const guide of HELP_GUIDES) {

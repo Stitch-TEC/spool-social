@@ -52,6 +52,7 @@ import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
 import { validateImportRows } from './utils/importValidation';
 import { runImportAttempt } from './utils/importAttempt';
 import { archiveBaselineFor, runArchiveStatusAttempt } from './utils/archivePost';
+import { bulkTagBaselineFor, checkBulkTagReceipt, runBulkTagAttempt, BULK_TAG_THREAD_LIMIT } from './utils/bulkTagAttempt';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
@@ -233,6 +234,11 @@ const App = () => {
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveHold, setArchiveHold] = useState(false);
   const archiveLifetimeRef = useRef({ busy: false, hold: false });
+  const bulkTagLifetimeRef = useRef({ busy: false, checking: false, hold: false, receipt: null });
+  const [bulkTagBusy, setBulkTagBusy] = useState(false);
+  const [bulkTagHold, setBulkTagHold] = useState(false);
+  const [bulkTagChecking, setBulkTagChecking] = useState(false);
+  const [bulkTagCheckMessage, setBulkTagCheckMessage] = useState('');
   const importLifetimeRef = useRef({ mounted: true, busy: false, hold: null });
   useLayoutEffect(() => {
     const lifetime = importLifetimeRef.current;
@@ -241,6 +247,8 @@ const App = () => {
   }, []);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const selectedIdsRef = useRef(selectedIds);
+  useLayoutEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
   // Session-level dismissal for the "N suggestions parked" nudge — so it isn't naggy, but returns
   // next session (and the Suggestions chip stays as the always-available entry point regardless).
   const [suggestionsBannerDismissed, setSuggestionsBannerDismissed] = useState(false);
@@ -1632,7 +1640,7 @@ const App = () => {
   // Apply a per-post patch to the whole selection (skips unchanged posts).
   // `mutate(post)` returns a patch object or null to skip that post.
   const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false, emptyMsg } = {}) => {
-    if (isReadOnly || !user) return;
+    if (isReadOnly || !user || bulkTagLifetimeRef.current.busy || bulkTagLifetimeRef.current.hold) return;
     const byId = new Map(postsRef.current.map(p => [p.id, p]));
     if ([...selectedIds].some(id => hasProtectedReviewDetails(byId.get(id)))) {
       return showToast('Bulk changes to threads with review details are not enabled yet. No changes were submitted.', 'error');
@@ -1695,22 +1703,90 @@ const App = () => {
     );
   }, [commitBulk, clientIdFor]);
 
-  const handleBulkAddTags = useCallback((tags) => {
-    commitBulk(post => {
-      const cur = Array.isArray(post.tags) ? post.tags : [];
-      const merged = [...new Set([...cur, ...tags])].slice(0, 10);
-      return merged.length === cur.length && merged.every((t, i) => t === cur[i]) ? null : { tags: merged };
-    }, n => `Tagged ${n} thread${n === 1 ? '' : 's'}`);
-  }, [commitBulk]);
+  const handleBulkTags = useCallback(async (tags, action) => {
+    const lifetime = bulkTagLifetimeRef.current;
+    const captured = importAdmissionRef.current;
+    const capturedKey = getImportAdmissionKey();
+    if (lifetime.busy || lifetime.hold || !capturedKey || capturedKey !== importAdmissionKey
+      || !captured?.isOperator || captured.isReadOnly || captured.user !== user
+      || selectedIdsRef.current !== selectedIds) return false;
+    const isCurrent = () => getImportAdmissionKey() === capturedKey
+      && importAdmissionRef.current?.user === captured.user
+      && importAdmissionRef.current?.isOperator && !importAdmissionRef.current?.isReadOnly
+      && selectedIdsRef.current === selectedIds;
+    const assertAdmission = () => {
+      if (!isCurrent()) throw Object.assign(new Error('Sign-in or selection changed.'), { code: 'bulk_tag_admission' });
+    };
+    let items;
+    try {
+      if (!selectedIds.size || selectedIds.size > BULK_TAG_THREAD_LIMIT) throw new Error(`Select 1–${BULK_TAG_THREAD_LIMIT} threads.`);
+      const byId = new Map(postsRef.current.map(post => [post.id, post]));
+      items = [...selectedIds].map(id => {
+        const baseline = bulkTagBaselineFor(byId.get(id));
+        if (!baseline) throw new Error('Selected thread details need checking.');
+        return { id, postRef: doc(db, 'posts', id), baseline };
+      });
+    } catch (error) {
+      showToast(`${error.message} No tag changes submitted.`, 'error');
+      return false;
+    }
+    lifetime.busy = true;
+    setBulkTagBusy(true);
+    setBulkTagCheckMessage('');
+    const result = await runBulkTagAttempt({ db, items, tags, action, actorUid: captured.user.uid, assertAdmission });
+    if (result.status === 'needs_checking') {
+      lifetime.hold = true;
+      lifetime.receipt = result.receipt;
+    }
+    lifetime.busy = false;
+    if (!importLifetimeRef.current.mounted) return false;
+    setBulkTagBusy(false);
+    setBulkTagHold(lifetime.hold);
+    if (!isCurrent()) return false;
+    if (result.status !== 'complete') {
+      if (result.status === 'stopped') showToast(`${result.error?.message || 'Tags could not be checked.'} No tag changes submitted.`, 'error');
+      return false;
+    }
+    const changed = result.changedIds.length;
+    const unchanged = result.unchangedIds.length;
+    showToast(changed ? `Updated tags on ${changed} thread${changed === 1 ? '' : 's'}${unchanged ? ` · ${unchanged} unchanged` : ''}` : 'Tags already match. No changes needed.');
+    return true;
+  }, [getImportAdmissionKey, importAdmissionKey, user, selectedIds, showToast]);
+  const handleBulkAddTags = useCallback(tags => handleBulkTags(tags, 'add'), [handleBulkTags]);
+  const handleBulkRemoveTags = useCallback(tags => handleBulkTags(tags, 'remove'), [handleBulkTags]);
 
-  const handleBulkRemoveTags = useCallback((tags) => {
-    const rm = new Set(tags);
-    commitBulk(post => {
-      const cur = Array.isArray(post.tags) ? post.tags : [];
-      const next = cur.filter(t => !rm.has(t));
-      return next.length === cur.length ? null : { tags: next };
-    }, n => `Updated tags on ${n} thread${n === 1 ? '' : 's'}`);
-  }, [commitBulk]);
+  const handleCheckBulkTags = useCallback(async () => {
+    const lifetime = bulkTagLifetimeRef.current;
+    const receipt = lifetime.receipt;
+    const captured = importAdmissionRef.current;
+    const capturedKey = getImportAdmissionKey();
+    if (!lifetime.hold || lifetime.busy || lifetime.checking || !receipt || !capturedKey
+      || capturedKey !== importAdmissionKey || captured?.user !== user
+      || captured.user?.uid !== receipt.actorUid || !captured.isOperator || captured.isReadOnly) return;
+    // A new, healthy operator session can inspect its own original receipt;
+    // selection/view changes do not retarget the server reads.
+    const isCurrent = () => getImportAdmissionKey() === capturedKey
+      && importAdmissionRef.current?.user === captured.user
+      && importAdmissionRef.current?.isOperator && !importAdmissionRef.current?.isReadOnly
+      && lifetime.receipt === receipt;
+    const assertAdmission = () => { if (!isCurrent()) throw new Error('Sign-in or thread list changed.'); };
+    lifetime.checking = true;
+    setBulkTagChecking(true);
+    setBulkTagCheckMessage('');
+    const result = await checkBulkTagReceipt({ db, receipt, actorUid: captured.user.uid, assertAdmission });
+    lifetime.checking = false;
+    if (!importLifetimeRef.current.mounted) return;
+    setBulkTagChecking(false);
+    if (!isCurrent()) return;
+    if (result.status === 'matched') {
+      lifetime.hold = false;
+      lifetime.receipt = null;
+      setBulkTagHold(false);
+      showToast(`Saved tags match the original update on ${result.count} thread${result.count === 1 ? '' : 's'}.`);
+    } else {
+      setBulkTagCheckMessage('Could not confirm the original update. Bulk changes remain paused.');
+    }
+  }, [getImportAdmissionKey, importAdmissionKey, user, showToast]);
 
   const handleBulkStatus = useCallback((status) => {
     if (!Object.values(STATUS).includes(status)) return;
@@ -1721,7 +1797,7 @@ const App = () => {
   // the realistic way to work a week of drafts. Posts with hard blockers are SKIPPED,
   // not silently included, and the toast names how many and why.
   const handleBulkSendForReview = useCallback(async () => {
-    if (isReadOnly || !user) return;
+    if (isReadOnly || !user || bulkTagLifetimeRef.current.busy || bulkTagLifetimeRef.current.hold) return;
     let blocked = 0;
     const byId = new Map(postsRef.current.map(post => [post.id, post]));
     const items = [];
@@ -1754,7 +1830,7 @@ const App = () => {
   }, [isReadOnly, user, selectedIds, showToast, clearSelection]);
 
   const handleBulkHold = useCallback(async () => {
-    if (isReadOnly || !user) return;
+    if (isReadOnly || !user || bulkTagLifetimeRef.current.busy || bulkTagLifetimeRef.current.hold) return;
     const byId = new Map(postsRef.current.map(post => [post.id, post]));
     const items = [...selectedIds].map(id => byId.get(id)).filter(post =>
       post && post.status !== STATUS.ARCHIVED && post.source !== 'suggestion' && !post.isTemplate && !isStaged(post))
@@ -1782,6 +1858,7 @@ const App = () => {
   }, [commitBulk]);
 
   const handleBulkDelete = useCallback(() => {
+    if (bulkTagLifetimeRef.current.busy || bulkTagLifetimeRef.current.hold) return;
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     if (ids.some(id => hasProtectedReviewDetails(postsRef.current.find(post => post.id === id)))) {
@@ -1792,6 +1869,7 @@ const App = () => {
       message: "This permanently removes the selected threads. This can't be undone.",
       type: 'danger',
       onConfirm: async () => {
+        if (bulkTagLifetimeRef.current.busy || bulkTagLifetimeRef.current.hold) return;
         let deleted = 0;
         try {
           assertLegacyReviewSelection(postsRef.current, ids);
@@ -2166,6 +2244,16 @@ const App = () => {
 
             {isOperator && archiveBusy && <p role="status" className="mb-4 text-sm text-slate-600">Updating archive…</p>}
             {isOperator && archiveHold && <p role="alert" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Archive or restore needs checking. Inspect the thread before reloading; these actions are paused in this tab.</p>}
+            {isOperator && bulkTagBusy && <p role="status" className="mb-4 text-sm text-slate-600">Checking and updating selected tags…</p>}
+            {isOperator && bulkTagHold && <div role="alert" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+              <p>Tag update needs checking. Bulk changes are paused in this tab.</p>
+              {user?.uid === bulkTagLifetimeRef.current.receipt?.actorUid && <button type="button"
+                onClick={handleCheckBulkTags} disabled={bulkTagChecking || !getImportAdmissionKey()}
+                className="mt-2 min-h-11 rounded-lg border border-amber-700 px-3 py-2 font-semibold disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">
+                {bulkTagChecking ? 'Checking saved tags…' : 'Check saved tags'}
+              </button>}
+              {bulkTagCheckMessage && user?.uid === bulkTagLifetimeRef.current.receipt?.actorUid && <p className="mt-2">{bulkTagCheckMessage}</p>}
+            </div>}
 
             {isLoading ? (
               <div className="flex flex-col items-center justify-center h-64">
@@ -2402,6 +2490,7 @@ const App = () => {
       )}
       {isOperator && !showTemplates && filterReview !== SUGGESTIONS_LANE && selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
+          disabled={bulkTagBusy || bulkTagHold}
           count={selectedIds.size}
           totalFiltered={filteredPosts.length}
           uniqueClients={uniqueClients}
