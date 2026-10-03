@@ -10,6 +10,25 @@ const require = createRequire(import.meta.url)
 const json = async (path) => JSON.parse(await readFile(new URL(path, root), 'utf8'))
 
 describe('reviewed development-tool security', () => {
+  it('retires the legacy Pages publisher while retaining the live Worker release commands', async () => {
+    const manifest = await json('package.json')
+    const lock = await json('package-lock.json')
+    expect(manifest.scripts).not.toHaveProperty('deploy:pages')
+    expect(manifest.scripts.build).toBe('vite build')
+    expect(manifest.scripts.deploy).toBe('npm run build && wrangler deploy')
+    for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+      expect(manifest[group] || {}).not.toHaveProperty('gh-pages')
+    }
+    expect(lock.packages[''].devDependencies).not.toHaveProperty('gh-pages')
+    expect(Object.keys(lock.packages).filter(path => path.endsWith('node_modules/gh-pages'))).toEqual([])
+
+    const workflow = parse(await readFile(new URL('.github/workflows/deploy.yml', root), 'utf8'))
+    expect(workflow.permissions).toEqual({ contents: 'read' })
+    expect(workflow.jobs.deploy.steps.find(step => step.name === 'Deploy Worker').run)
+      .toBe('./node_modules/.bin/wrangler deploy')
+    expect(workflow.jobs.deploy.steps.some(step => /gh-pages|deploy:pages/.test(step.run || ''))).toBe(false)
+  })
+
   it('keeps the manifest, lock and actual release command on one exact Wrangler version', async () => {
     const manifest = await json('package.json')
     const lock = await json('package-lock.json')
