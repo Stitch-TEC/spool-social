@@ -1,9 +1,46 @@
 export const CLIENT_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+// These maintenance commands predate the review-details contract. Their
+// service-account writes bypass rules, so even an empty/invalid extension or
+// an ack-only row must stop the complete plan, not be silently re-stamped.
+export const POST_REVIEW_PRESERVATION_FIELDS = Object.freeze([
+  'reviewDetailsVersion', 'reviewMedia', 'firstComment', 'reviewDetailsAck', 'reviewMediaLinks',
+]);
+const own = (value, field) => Object.prototype.hasOwnProperty.call(value, field);
+
 const isObject = (value) => value !== null
   && typeof value === 'object'
   && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+
+export function postMaintenanceInventoryFields(fields) {
+  if (!Array.isArray(fields) || fields.some((field) => typeof field !== 'string' || !field)) {
+    throw new Error('Post maintenance inventory needs explicit field names');
+  }
+  return [...new Set([...fields, ...POST_REVIEW_PRESERVATION_FIELDS])];
+}
+
+export function hasPostReviewPreservationFields(row) {
+  return isObject(row?.fields)
+    && POST_REVIEW_PRESERVATION_FIELDS.some((field) => own(row.fields, field));
+}
+
+/** Pure whole-inventory admission: callers must invoke this before writing
+ * ANY plan row (including branding/share rows in a mixed restamp plan). A later
+ * extension on a planned post makes that post's unchanged updateTime CAS fail;
+ * this is not a cross-document lock or rollback of earlier plan writes.
+ * No payload, link, feedback, or credential value is included in the error. */
+export function assertLegacyPostMaintenancePlan(posts, context = 'Post maintenance') {
+  if (!Array.isArray(posts) || posts.some((row) => !isObject(row) || !isObject(row.fields))) {
+    throw new Error(`${context} inventory is malformed; no repair is permitted`);
+  }
+  if (posts.some(hasPostReviewPreservationFields)) {
+    const error = new Error(`${context} includes review-detail fields. This legacy repair is not supported; nothing may be changed from this plan.`);
+    error.code = 'review_details_maintenance_unsupported';
+    throw error;
+  }
+  return posts;
+}
 
 function validateFirestoreValue(value, context) {
   if (!isObject(value)) throw new Error(`${context} returned a malformed typed field`);
@@ -129,13 +166,16 @@ export function parseCollectionPage(data, collection) {
 }
 
 export async function listAllDocuments({ collection, fields, fetchPage }) {
+  // All post projections carry presence evidence, including read-only audit
+  // and ID inventory. This cannot be omitted accidentally by a new caller.
+  const projectedFields = collection === 'posts' ? postMaintenanceInventoryFields(fields) : fields;
   const rows = [];
   let pageToken = '';
   const seenPageTokens = new Set();
   do {
     const params = new URLSearchParams({ pageSize: '300' });
     if (pageToken) params.set('pageToken', pageToken);
-    for (const field of fields) params.append('mask.fieldPaths', field);
+    for (const field of projectedFields) params.append('mask.fieldPaths', field);
     const data = await fetchPage(`${collection}?${params}`);
     if (data?._status === 404) throw new Error(`Collection inventory failed: ${collection} returned 404`);
     const page = parseCollectionPage(data, collection);
@@ -384,6 +424,7 @@ export function auditWorkspace({ posts, clients, automations, shares, roster, ow
 }
 
 export function reviewStageBackfillPlan(posts) {
+  assertLegacyPostMaintenancePlan(posts, 'Review-stage backfill');
   const malformedSources = posts.filter((row) => (
     Object.prototype.hasOwnProperty.call(row.fields || {}, 'source')
     && fieldString(row, 'source') === undefined

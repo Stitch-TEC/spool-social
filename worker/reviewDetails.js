@@ -16,6 +16,7 @@ export function reviewDetailsError(code) {
     review_details_required: [428, 'Reload in an updated app and review the additional details before acting.'],
     review_details_authoring_disabled: [400, 'Writing additional review details is not enabled.'],
     review_details_handoff_unsupported: [409, 'Additional review details are not supported by this handoff.'],
+    review_details_maintenance_unsupported: [409, 'This thread has review details. This maintenance action is not supported yet.'],
   };
   const [status, message] = errors[code];
   return Object.assign(new Error(message), { code, status });
@@ -81,3 +82,17 @@ export function assertReviewDetailsHandoffSupported(value) {
 }
 
 export const REVIEW_DETAILS_PUBLIC_FIELDS = Object.freeze([...REVIEW_DETAILS_FIELDS, 'reviewDetailsAck']);
+
+// Presence, not validity/truthiness, is the maintenance boundary. An ack-only,
+// null or old alias record must not be silently treated as an ordinary post.
+export const REVIEW_DETAILS_PROTECTED_FIELDS = Object.freeze([...REVIEW_DETAILS_PUBLIC_FIELDS, 'reviewMediaLinks']);
+export function hasProtectedReviewDetails(value) {
+  return object(value) && REVIEW_DETAILS_PROTECTED_FIELDS.some(field => own(value, field));
+}
+export function assertLegacyMaintenancePost(value) {
+  if (!hasProtectedReviewDetails(value)) return;
+  const error = new Error('This thread has review details. This maintenance action is not supported yet.');
+  error.code = 'review_details_maintenance_unsupported';
+  error.status = 409;
+  throw error;
+}

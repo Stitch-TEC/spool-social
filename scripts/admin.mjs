@@ -51,6 +51,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import {
+  assertLegacyPostMaintenancePlan,
   auditWorkspace,
   buildRosterRepairMap,
   classifyPostRows,
@@ -286,6 +287,7 @@ function buildClientMap(names) {
 async function cmdBackfill() {
   console.log(`\nProject: ${PROJECT_ID}   OWNER_UID: ${OWNER_UID}   mode: ${flags.apply ? 'APPLY' : 'dry-run'}\n`);
   const posts = await listAll('posts', ['client', 'clientId', 'uid', 'source', 'forClientId', 'reviewStage']);
+  assertLegacyPostMaintenancePlan(posts, 'Client-ID backfill');
   const clients = await listAll('clients', ['name', 'clientId', 'uid']);
   const { ordinaryPosts, suggestions, malformedSources, unsafeSuggestionTenants } = classifyPostRows(posts);
 
@@ -379,6 +381,7 @@ async function cmdReviewStage() {
   const posts = await listAll('posts', [
     'reviewStage', 'source', 'clientId', 'forClientId', 'uid', 'updatedAt',
   ]);
+  assertLegacyPostMaintenancePlan(posts, 'Review-stage backfill');
   const suggestions = posts.filter((post) => fieldString(post, 'source') === 'suggestion');
   const suggestionTargets = rosterClaimAudit(suggestions, 'forClientId', rosterIds);
   const suggestionOwners = stringClaimAudit(suggestions, 'uid', OWNER_UID);
@@ -513,6 +516,7 @@ async function cmdRestamp() {
   const repair = (name, id) => (!id || slugSet.has(id)) ? undefined : slugByName.get(slugify(name || ''));
 
   const posts = await listAll('posts', ['client', 'clientId', 'forClientId', 'source']);
+  assertLegacyPostMaintenancePlan(posts, 'Roster restamp');
   const clients = await listAll('clients', ['name', 'clientId']);
   const automations = await listAll('automations', ['client', 'clientId']);
   const shares = await listAll('shares', ['client', 'clientId', 'revoked']);

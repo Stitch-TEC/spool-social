@@ -189,7 +189,8 @@ describe('runGC aborts before any R2 inventory or deletion on parser uncertainty
     for (const query of requests) {
       expect(query).toMatchObject({
         from: [{ collectionId: 'posts' }], limit: 2,
-        select: { fields: [{ fieldPath: 'imageUrl' }, { fieldPath: 'content' }] },
+        select: { fields: ['imageUrl', 'content', 'reviewDetailsVersion', 'reviewMedia', 'firstComment',
+          'reviewDetailsAck', 'reviewMediaLinks', 'reviewedAt'].map(fieldPath => ({ fieldPath })) },
         orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       });
     }

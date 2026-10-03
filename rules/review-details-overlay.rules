@@ -1,0 +1,536 @@
+rules_version = '2';
+
+// =============================================================================
+// Spool — Firestore Security Rules
+//
+// THREE-TIER RBAC (mirrors Site-Auditor's users/{email} model + Sender's role
+// semantics). Authorization comes from a users/{lowercased-email} doc:
+//   { roles: ['super_admin'] }                  → you (the operator); sees all
+//   { roles: ['client_admin'], clientId: '..' } → admin of ONE client/entity
+//   { roles: ['client'],       clientId: '..' } → member of ONE client/entity
+// The immutable `clientId` field — NEVER the free-text `client` display name —
+// is the tenant boundary. A client/client_admin may CRUD only their own
+// entity's content (posts whose clientId == their clientId).
+//
+// The legacy operator path (isOwner, keyed on the single OWNER_UID that all
+// posts/clients carry) is RETAINED on every operation so the operator keeps
+// working through migration and even if their users/{email} doc is missing.
+//
+// The `?s=` review-guest flow: a Worker-minted custom token with
+// { share, shareOwner, shareClientId } claims, read+approve+feedback only.
+// Guest reads match on the immutable clientId (not the display name), so links
+// minted before this change must be RE-ISSUED (their token lacks shareClientId).
+//
+// NULL-SAFETY: Firestore evaluates a function's ARGUMENTS eagerly, and reading
+// an ABSENT map field with dot notation (resource.data.clientId on an
+// un-backfilled doc) THROWS — which denies the whole rule before the OR-chain
+// can fall through to isShareGuest. So clientId is always read via
+// .get('clientId', null), and the guest branches are ordered BEFORE the
+// isEntityMember branch. This keeps the reviewer flow working in the window
+// after these rules deploy but before the clientId backfill runs.
+//
+// ⚠️  DEPLOY ORDER: initial RBAC bootstrap still requires the super_admin doc
+//     out-of-band before rules. This revision ALSO requires the guarded
+//     reviewStage backfill before the app merge, then app before rules; see
+//     REVIEW_STAGE_ROLLOUT.md. Never deploy this file first.
+//       firebase deploy --only firestore:rules
+//     get(users/$(email)) is called by several helpers per evaluation, but
+//     Firestore caches same-path reads within one evaluation — ONE read, not N.
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The single operator/owner uid that every post & clients doc is attributed
+    // to (Firebase console → Authentication). Not a secret; pinning to the
+    // literal lets the operator's legacy path work without a users doc while
+    // staying provably unreachable by client users (their uid != this).
+    function ownerUid() {
+      return 'sLcLtGsm9SOKkR82a6cDoLCOOVO2';
+    }
+
+    // --- Identity helpers ----------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function getUserEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Guard: review-guest custom tokens carry NO email claim. Checking
+    // `email is string` BEFORE calling .lower()/get() keeps the email-based
+    // helpers from ERRORING (an erroring branch denies) on a guest token — so
+    // the OR-chains below fall through cleanly to isShareGuest().
+    function hasEmail() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function isRegistered() {
+      return hasEmail()
+        && exists(/databases/$(database)/documents/users/$(getUserEmail()));
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(getUserEmail())).data;
+    }
+
+    // .get(...) defaults keep these from throwing on a malformed user doc.
+    function getUserRoles() {
+      return userData().get('roles', []);
+    }
+
+    function getUserClientId() {
+      return userData().get('clientId', null);
+    }
+
+    // --- Role predicates -----------------------------------------------------
+    function isSuperAdmin() {
+      return isRegistered() && ('super_admin' in getUserRoles());
+    }
+
+    // A client or client_admin scoped to exactly `cid`. The stable clientId is
+    // the security key; the free-text `client` name is never trusted here.
+    // Callers pass resource.data.get('clientId', null), so cid may be null
+    // (un-backfilled doc) — the `cid != null` guard then fails closed.
+    function isEntityMember(cid) {
+      return isRegistered()
+        && cid != null
+        && (('client' in getUserRoles()) || ('client_admin' in getUserRoles()))
+        && getUserClientId() == cid;
+    }
+
+    // --- Review-guest helpers ------------------------------------------------
+    // A token-scoped review guest: signed in via a Worker-minted custom token
+    // carrying { share, shareOwner, shareClientId, shareToken } claims, bound to
+    // exactly one (owner, clientId) pair. The match is on the IMMUTABLE clientId
+    // (not the free-text display name) so a client member cannot forge a post into
+    // another tenant's review queue. `cid != null` requires a real clientId on
+    // both sides — an un-backfilled doc or a legacy token (shareClientId absent
+    // → null) fails closed (re-issue the link). shareClient (name) is display-only.
+    //
+    // REVOKE-AT-REQUEST-TIME (identity P3): shareStillLive() re-checks the share
+    // DOC on every guest request (the shareToken claim = the shares/ doc id).
+    // Revoking a link hard-deletes shares/{token}, so an already-signed-in guest
+    // loses access on their NEXT request — not after their ~1h ID-token expiry.
+    // The soft `revoked` flag is honored too. Legacy tokens without the claim
+    // fail closed; useAuth force-re-exchanges any persisted guest session when a
+    // ?s= link loads (it never trusts stored claims), so still-valid links
+    // self-heal on reload and revoked ones land on the link-invalid screen.
+    function shareStillLive() {
+      return request.auth.token.get('shareToken', '') != ''
+        && exists(/databases/$(database)/documents/shares/$(request.auth.token.shareToken))
+        && get(/databases/$(database)/documents/shares/$(request.auth.token.shareToken)).data.get('revoked', false) != true;
+    }
+    function isShareGuest(uid, cid) {
+      return isSignedIn()
+        && request.auth.token.share == true
+        && request.auth.token.shareOwner == uid
+        && cid != null
+        && request.auth.token.shareClientId == cid
+        && shareStillLive();
+    }
+
+    // Client-facing review access is an explicit state, not a UI convention.
+    // Missing/invalid legacy values fail closed; the rollout runbook requires
+    // the update-time-precondition backfill before these rules are deployed.
+    function isReviewVisible(data) {
+      return data.get('reviewStage', null) == 'in_review';
+    }
+
+    // A guest may ONLY approve / request changes / append feedback — never edit
+    // content, reassign ownership, or change the client/clientId. Value and
+    // transition checks matter as much as the field allowlist: without them a
+    // guest could write arbitrary workflow/status strings or replace the whole
+    // feedback history while technically touching only approved field names.
+    function isIsoUtc(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$');
+    }
+
+    function reviewThreadAppendsOne(actor) {
+      let before = resource.data.get('feedbackThread', []);
+      let after = request.resource.data.get('feedbackThread', []);
+      let entry = after[after.size() - 1];
+      return before is list
+        && after is list
+        && after.size() == before.size() + 1
+        && after.size() <= 200
+        && (before.size() == 0 || after[0:before.size()] == before)
+        && entry is map
+        && entry.keys().hasOnly(['text', 'by', 'at'])
+        && entry.text is string
+        && entry.text.size() > 0
+        && entry.text.size() <= 500
+        && entry.text.matches('(?s).*\\S.*')
+        && entry.text == request.resource.data.feedback
+        && entry.by == actor
+        && isIsoUtc(entry.at)
+        // One client-clock value drives both fields in the app. This does not
+        // make it an authoritative audit timestamp, but it prevents a forged
+        // history time from diverging from the review update it belongs to.
+        && entry.at == request.resource.data.updatedAt;
+    }
+
+    function reviewValuesAreValid(actor) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let feedbackChanged = changed.hasAny(['feedback']);
+      let threadChanged = changed.hasAny(['feedbackThread']);
+      let approving = request.resource.data.approvalStatus == 'approved';
+      let requesting = request.resource.data.approvalStatus == 'changes_requested';
+      return changed.hasAny(['approvalStatus', 'feedbackThread'])
+        && changed.hasAll(['updatedAt'])
+        // reviewedBy may already equal the actor after an earlier review round;
+        // affectedKeys excludes same-value writes. The value check below still
+        // requires missing/different attribution to be written correctly.
+        && changed.hasAll(['reviewedAt'])
+        && isIsoUtc(request.resource.data.updatedAt)
+        && request.resource.data.reviewedBy == actor
+        && request.resource.data.reviewedAt == request.resource.data.updatedAt
+        && resource.data.get('status', 'draft') != 'archived'
+        && (approving || requesting)
+        // The app advances workflow only when approving a still-draft post.
+        // An already scheduled/posted post keeps its workflow state. Archived
+        // rows are rejected above and are not review actions at all.
+        && (!changed.hasAny(['status'])
+          || (resource.data.get('status', 'draft') == 'draft'
+            && request.resource.data.status == 'scheduled'
+            && approving))
+        // Feedback and its history entry are one atomic review action. They may
+        // only accompany a changes-requested result, never an approval.
+        && (!feedbackChanged || threadChanged)
+        && (!threadChanged
+          || (requesting
+            && request.resource.data.feedback is string
+            && request.resource.data.feedback.size() > 0
+            && request.resource.data.feedback.size() <= 500
+            && reviewThreadAppendsOne(actor)))
+        // Repeating the same text in a later round leaves the compatibility
+        // `feedback` scalar unchanged, but the new history entry is still the
+        // review action. Require the append; do not require a scalar diff.
+        && (!requesting || threadChanged)
+        && (!approving || (!feedbackChanged && !threadChanged));
+    }
+
+    function isGuestReviewUpdate() {
+      return isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+        && isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread',
+                       'reviewedBy', 'reviewedAt', 'updatedAt'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && reviewValuesAreValid('client');
+    }
+
+    // --- Member data contracts ---------------------------------------------
+    function validPostEnums(data) {
+      return data.get('platform', null) in ['gmb', 'instagram', 'facebook', 'linkedin', 'twitter', 'blog', 'job']
+        && data.get('status', null) in ['draft', 'scheduled', 'posted', 'archived']
+        && data.get('approvalStatus', null) in ['pending', 'approved', 'changes_requested']
+        && data.get('reviewStage', null) in ['private', 'in_review'];
+    }
+
+    function validTagAt(tags, index) {
+      return tags.size() <= index
+        || (tags[index] is string && tags[index].size() > 0 && tags[index].size() <= 20);
+    }
+
+    function validTags(tags) {
+      return tags is list
+        && tags.size() <= 10
+        && validTagAt(tags, 0)
+        && validTagAt(tags, 1)
+        && validTagAt(tags, 2)
+        && validTagAt(tags, 3)
+        && validTagAt(tags, 4)
+        && validTagAt(tags, 5)
+        && validTagAt(tags, 6)
+        && validTagAt(tags, 7)
+        && validTagAt(tags, 8)
+        && validTagAt(tags, 9);
+    }
+
+    function validMemberCreate() {
+      let data = request.resource.data;
+      let tags = data.get('tags', []);
+      let thread = data.get('feedbackThread', []);
+      let scheduled = data.get('scheduledDate', null);
+      return data.keys().hasOnly([
+          'uid', 'clientId', 'client', 'content', 'title', 'altText',
+          'metaDescription', 'slug', 'platform', 'status', 'approvalStatus',
+          'feedback', 'feedbackThread', 'reviewStage', 'imageUrl', 'tags',
+          'isTemplate', 'scheduledDate', 'createdAt', 'updatedAt', 'source'
+        ])
+        && data.keys().hasAll([
+          'uid', 'clientId', 'client', 'content', 'platform', 'status',
+          'approvalStatus', 'feedback', 'reviewStage', 'createdAt', 'updatedAt'
+        ])
+        && validPostEnums(data)
+        // Member-created content starts as a fresh, visible review draft. It
+        // cannot be born posted/approved or parked in operator-only staging.
+        && data.status == 'draft'
+        && data.approvalStatus == 'pending'
+        && data.reviewStage == 'in_review'
+        && data.feedback == ''
+        && thread is list && thread.size() == 0
+        && data.get('source', '') in ['', 'import']
+        && data.get('isTemplate', false) == false
+        && data.clientId is string && data.clientId.matches('^[a-z0-9]+(-[a-z0-9]+)*$')
+        && data.clientId.size() <= 64
+        && data.client is string && data.client.size() > 0 && data.client.size() <= 50
+        && data.content is string && data.content.size() > 0 && data.content.size() <= 100000
+        && data.get('title', '') is string && data.get('title', '').size() <= 200
+        && data.get('altText', '') is string && data.get('altText', '').size() <= 300
+        && data.get('metaDescription', '') is string && data.get('metaDescription', '').size() <= 200
+        && data.get('slug', '') is string && data.get('slug', '').size() <= 80
+        && (data.get('slug', '') == '' || data.get('slug', '').matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
+        && data.get('imageUrl', '') is string && data.get('imageUrl', '').size() <= 500000
+        && validTags(tags)
+        && (scheduled == null || (scheduled is string && scheduled.size() <= 40))
+        && isIsoUtc(data.createdAt)
+        && isIsoUtc(data.updatedAt);
+    }
+
+    function memberStatusTransitionIsValid() {
+      let before = resource.data.status;
+      let after = request.resource.data.status;
+      return after == before
+        || (before == 'draft' && after == 'scheduled')
+        || (before == 'scheduled' && after == 'draft');
+    }
+
+    function memberEditorialValuesAreValid() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      // Every field shown in the approval preview or used as its publication
+      // target is consent-bearing. approvalSafeStoragePatch removes
+      // missing→empty and canonical-equivalent representations before a member
+      // write reaches rules. Keeping the rule itself as a compact affected-key
+      // boundary rejects direct bypasses and stays below Firestore's
+      // 1,000-expression evaluation ceiling. Tags and scheduledDate remain
+      // internal workflow metadata; they do not revoke approval.
+      let payloadChanged = changed.hasAny([
+        'content', 'title', 'imageUrl', 'platform', 'altText',
+        'metaDescription', 'slug'
+      ]);
+      let approvalChanged = changed.hasAny(['approvalStatus']);
+      let tags = request.resource.data.get('tags', []);
+      let scheduled = request.resource.data.get('scheduledDate', null);
+      return changed.hasAny([
+          'content', 'title', 'altText', 'metaDescription', 'slug', 'platform',
+          'status', 'tags', 'isTemplate', 'scheduledDate', 'imageUrl'
+        ])
+        && changed.hasAll(['updatedAt'])
+        && changed.hasOnly([
+          'content', 'title', 'altText', 'metaDescription', 'slug', 'platform',
+          'status', 'tags', 'isTemplate', 'scheduledDate', 'imageUrl',
+          'approvalStatus', 'updatedAt'
+        ])
+        && validPostEnums(request.resource.data)
+        && memberStatusTransitionIsValid()
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0
+        && request.resource.data.content.size() <= 100000
+        && request.resource.data.get('title', '') is string
+        && request.resource.data.get('title', '').size() <= 200
+        && request.resource.data.get('altText', '') is string
+        && request.resource.data.get('altText', '').size() <= 300
+        && request.resource.data.get('metaDescription', '') is string
+        && request.resource.data.get('metaDescription', '').size() <= 200
+        && request.resource.data.get('slug', '') is string
+        && request.resource.data.get('slug', '').size() <= 80
+        && (request.resource.data.get('slug', '') == ''
+          || request.resource.data.get('slug', '').matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
+        && request.resource.data.get('imageUrl', '') is string
+        && request.resource.data.get('imageUrl', '').size() <= 500000
+        && validTags(tags)
+        && request.resource.data.get('isTemplate', false) == false
+        && (scheduled == null || (scheduled is string && scheduled.size() <= 40))
+        && isIsoUtc(request.resource.data.updatedAt)
+        // Members cannot grant approval through the editorial path. Editing an
+        // approved payload must revoke it in the same atomic update.
+        && (!approvalChanged
+          || (resource.data.approvalStatus == 'approved'
+            && payloadChanged
+            && request.resource.data.approvalStatus == 'pending'))
+        && (!(resource.data.approvalStatus == 'approved' && payloadChanged)
+          || request.resource.data.approvalStatus == 'pending');
+    }
+
+    function isMemberEditorialUpdate() {
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && request.resource.data.client == resource.data.client
+        && memberEditorialValuesAreValid();
+    }
+
+    function isMemberResubmitUpdate() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && changed.hasOnly(['approvalStatus', 'feedback', 'sentForReviewAt', 'updatedAt'])
+        && changed.hasAll(['approvalStatus', 'sentForReviewAt', 'updatedAt'])
+        && resource.data.approvalStatus == 'changes_requested'
+        && resource.data.get('status', 'draft') != 'archived'
+        && request.resource.data.approvalStatus == 'pending'
+        && request.resource.data.feedback == ''
+        && isIsoUtc(request.resource.data.sentForReviewAt)
+        && request.resource.data.sentForReviewAt == request.resource.data.updatedAt;
+    }
+
+    function isMemberReviewUpdate() {
+      return isReviewVisible(resource.data)
+        && isReviewVisible(request.resource.data)
+        && isEntityMember(resource.data.get('clientId', null))
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.get('clientId', null) == resource.data.get('clientId', null)
+        && request.resource.data.client == resource.data.client
+        && ((request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'approvalStatus', 'feedback', 'feedbackThread',
+                        'reviewedBy', 'reviewedAt', 'updatedAt'])
+            && reviewValuesAreValid('client'))
+          || isMemberResubmitUpdate());
+    }
+
+    // Compatibility-only global post fence. Presence includes null and empty
+    // values: cached SDK clients must not create, strip, approve or delete
+    // review-detail records they cannot safely observe. Authoring stays OFF.
+    // This gate is deliberately outside every existing authorization OR.
+    // Use a conditional to avoid evaluating the inherited OR on marked rows.
+    function hasReviewDetailPresence(data) {
+      return data.keys().hasAny([
+        'reviewDetailsVersion', 'reviewMedia', 'firstComment',
+        'reviewDetailsAck', 'reviewMediaLinks'
+      ]);
+    }
+
+    // --- Posts ---------------------------------------------------------------
+    // clientId is the tenant key. Every post carries uid == ownerUid() (so the
+    // operator's uid-scoped query and the single per-client share token both
+    // resolve across multi-author client content). App queries MUST filter so
+    // the read rule resolves: operator/super_admin read unscoped or by uid;
+    // a client member queries by clientId + reviewStage=in_review; a guest
+    // filters by uid + clientId + reviewStage. (Guest branches precede isEntityMember so an
+    // un-backfilled doc can't throw before the guest grant is evaluated.)
+    match /posts/{postId} {
+      allow read: if isOwner(resource.data.uid)
+        || isSuperAdmin()
+        || (isReviewVisible(resource.data)
+            && (isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+                || isEntityMember(resource.data.get('clientId', null))));
+
+      // Operator creates via super_admin OR the ownerUid() fallback (no users
+      // doc required). A client member creates ONLY within their OWN clientId
+      // (isEntityMember pins clientId == theirs) AND must attribute the post to
+      // ownerUid() — so the system-wide invariant (every post uid==ownerUid)
+      // holds in rules, not just in the app. We deliberately do NOT accept a
+      // generic isOwner(request…uid): every signed-in user "owns" their own uid.
+      //
+      // The free-text `client` display name is intentionally NOT a security key:
+      // guest review reads match on the immutable clientId (isShareGuest above),
+      // so a forged display name can never surface a post in another tenant's
+      // review queue (that tenant's clientId won't match).
+      // A full SDK/REST replacement also evaluates create. Refuse its existing
+      // marked resource before entering the inherited guest/email create path.
+      allow create: if (hasReviewDetailPresence(request.resource.data)
+          || (resource != null ? hasReviewDetailPresence(resource.data) : false)) ? false
+        : (isSuperAdmin()
+          || isOwner(ownerUid())
+          || (isEntityMember(request.resource.data.get('clientId', null))
+              && request.resource.data.uid == ownerUid()
+              && validMemberCreate()));
+
+      // A client member edits content only — uid, clientId, and the client
+      // display name are all immutable on their path (reassignment/rename are
+      // operator-only). Guests get the field allowlist (evaluated first).
+      // Guest first: custom-token guests intentionally have no email claim,
+      // and a successful narrow review branch should not spend the expression
+      // budget evaluating email/RBAC editorial branches.
+      allow update: if (hasReviewDetailPresence(resource.data)
+          || hasReviewDetailPresence(request.resource.data)) ? false
+        : (isGuestReviewUpdate()
+          || isSuperAdmin()
+          || isOwner(resource.data.uid)
+          || isMemberEditorialUpdate()
+          || isMemberReviewUpdate());
+
+      allow delete: if hasReviewDetailPresence(resource.data) ? false
+        : (isSuperAdmin()
+          || isOwner(resource.data.uid)
+          || (isReviewVisible(resource.data)
+              && isEntityMember(resource.data.get('clientId', null))));
+    }
+
+    // --- Client branding -----------------------------------------------------
+    // Doc id is currently `${uid}__${encodeURIComponent(name)}` (see
+    // ClientSettingsModal). `{clientDocId}` below is that DOC ID — NOT the tenant
+    // `clientId` field, which lives in resource.data.clientId (backfilled).
+    // A guest reads only their own client's branding, matched on the immutable
+    // clientId (same shareClientId claim as posts) — display name is not a key.
+    match /clients/{clientDocId} {
+      allow read: if isOwner(resource.data.uid)
+        || isSuperAdmin()
+        || isShareGuest(resource.data.uid, resource.data.get('clientId', null))
+        || isEntityMember(resource.data.get('clientId', null));
+
+      // Phase 1: only the operator writes branding — via super_admin OR the
+      // ownerUid() fallback. No generic isOwner(request…uid) branch: a client
+      // "owns" their own uid and could otherwise create a clients doc under
+      // their own uid prefix. (Phase 2 may let a client_admin edit their OWN
+      // brand: add `|| isEntityMember(resource.data.get('clientId', null))`.)
+      allow create, update: if isSuperAdmin()
+        || isOwner(ownerUid());
+
+      allow delete: if isSuperAdmin() || isOwner(resource.data.uid);
+    }
+
+    // --- Users / RBAC grants -------------------------------------------------
+    // A user may READ their own doc (to resolve role + clientId at login) but
+    // may NEVER write it — that self-write lockout stops any client/client_admin
+    // from promoting themselves to super_admin or moving to another clientId.
+    // Phase 1: only super_admin writes user docs (and not their own). The very
+    // first super_admin doc is created out-of-band (service account bypasses
+    // rules) — see scripts/admin.mjs bootstrap.
+    match /users/{email} {
+      // A user reads their OWN doc (to resolve role at login). The operator —
+      // super_admin OR the legacy ownerUid() (kept per the header's "every
+      // operation, even without a users doc" promise) — may read/LIST all user
+      // docs, which the Manage Users modal needs (getDocs(collection('users'))).
+      // A client/client_admin still can't list (their branch only matches own-id).
+      allow read: if (hasEmail() && getUserEmail() == email)
+        || isSuperAdmin()
+        || isOwner(ownerUid());
+      // Grants/revokes: the operator (super_admin OR ownerUid()) writes any doc
+      // BUT NEVER their own — the self-write lockout stops self-demotion and
+      // stops any client from self-promoting (clients hit neither branch).
+      allow write: if (isSuperAdmin() || isOwner(ownerUid()))
+        && getUserEmail() != email;
+    }
+
+    // --- Share-link tokens ---------------------------------------------------
+    // Worker-only (service account bypasses rules). No client ever touches this.
+    match /shares/{shareId} {
+      allow read, write: if false;
+    }
+
+    // --- Content automations -------------------------------------------------
+    // Super-admin-only scheduled content generator config. Like shares/{shareId},
+    // this is touched ONLY by the Worker (service account, which bypasses rules);
+    // the management API is gated to the operator. Clients must have ZERO access
+    // or visibility, so the client SDK is denied outright here — no member/guest
+    // branch. (The DRAFTS automations produce are normal `posts`, governed by the
+    // posts rules above; only this config collection is locked down.)
+    match /automations/{autoId} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -119,6 +119,18 @@ export const HELP_GUIDES = [
     warning: 'Do not create another copy or clear browser storage to fix an uncertain save. Copy text does not include images or settings, and a device recovery copy is not proof of a server save.',
   },
   {
+    id: 'existing-recovery', title: 'Recover existing thread work', category: 'Troubleshooting', audiences: WRITERS,
+    summary: 'Inspect device copies without losing older work.',
+    keywords: 'existing thread recovery older device copy restore dismiss autosave',
+    steps: [
+      'Restore brings back the current account-scoped device copy for this thread. Dismiss deletes that exact copy; typing or saving does not discard an unresolved copy.',
+      'If Older device copy kept appears, Inspect older copy shows a manual reference. Select and copy the text you need; it has not been restored, uploaded or deleted.',
+      'Copies containing newer review details are inspection-only until editing those details is enabled.',
+      'If device recovery needs checking, keep the editor open or copy your current text before closing. You can still save the existing thread to Spool.',
+    ],
+    warning: 'Unscoped older copies cannot be safely attributed to an account and are not displayed. Device storage is not a backup; do not clear it to fix recovery.',
+  },
+  {
     id: 'access', title: 'Check missing access or content', category: 'Troubleshooting', audiences: [...EVERYONE, 'unknown'],
     summary: 'Check the account, link and connection without changing access.',
     keywords: 'access sign in login account client missing navigation connection permission review link',

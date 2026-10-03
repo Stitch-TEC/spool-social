@@ -22,8 +22,11 @@ import { processImageFile } from '../utils/helpers';
 import { replaceRange, computeWrapToggle, WRAPS, twitterLength, looksLikeSocialMarkdown, containsRawHtml } from '../utils/markdownEditing';
 import { describeImage, generateText, ensureHostedImage } from '../utils/generationApi';
 import { slugifyClientId } from '../config/roles';
-import { EDITOR_WORK_FIELDS as WORK_FIELDS, editorWorkSignature as workSignature, reconcileEditorSave } from '../utils/editorSaveState';
-import { recoveryScope, readRecovery } from '../utils/editorRecovery';
+import { editorWorkSignature as workSignature, reconcileEditorSave } from '../utils/editorSaveState';
+import { recoveryScope, inspectRecovery, olderRecoveryScope, olderRecoveryPresence,
+  captureRecoveryWork, recoveryMatchesLoaded, restoreRecoveryWork, writeRecovery,
+  clearRecovery } from '../utils/editorRecovery';
+import { hasReviewDetailsFields } from '../utils/reviewDetails';
 import useAsyncRequest from '../hooks/useAsyncRequest';
 import useCreateRecovery from '../hooks/useCreateRecovery';
 import { createScope } from '../utils/createJournal';
@@ -119,6 +122,12 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   const [discardRecovery, setDiscardRecovery] = useState(null);
   // Locally-recovered unsaved work (see the autosave effects below).
   const [recovered, setRecovered] = useState(null);
+  const [olderCopies, setOlderCopies] = useState(null);
+  const [inspectedCopy, setInspectedCopy] = useState(null);
+  const [recoveryWarning, setRecoveryWarning] = useState(null);
+  const observedRecoveryRef = useRef(new Map());
+  const undecidedRecoveryRef = useRef(new Map());
+  const inspectButtonRef = useRef(null);
   const textareaRef = useRef(null);
 
   // Last-saved (or loaded) snapshot — the unsaved-changes guard compares
@@ -372,22 +381,46 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     }
     const scope = scopeRef.current;
     if (!scope) return null;
-    const fd = formDataRef.current;
-    const snap = {};
-    for (const k of WORK_FIELDS) snap[k] = fd[k];
-    const imageOmitted = typeof snap.imageUrl === 'string' && snap.imageUrl.startsWith('data:');
-    if (imageOmitted) delete snap.imageUrl;
-    snap.savedAt = Date.now();
     try {
-      window.localStorage.setItem(scope.key, JSON.stringify({ scope, work: snap }));
+      if (!observedRecoveryRef.current.has(scope.key)) {
+        const found = inspectRecovery(window.localStorage, scope);
+        if (!['absent', 'available'].includes(found.state)) {
+          setRecoveryWarning({ key: scope.key, state: found.state });
+          return null;
+        }
+        observedRecoveryRef.current.set(scope.key, found.raw);
+        if (found.entry && !recoveryMatchesLoaded(found.entry.work, pristineRef.current || {})) {
+          undecidedRecoveryRef.current.set(scope.key, found.raw);
+        }
+      }
+      // Current typing is not a decision to lose an older unsaved copy. Keep
+      // the old exact copy until Restore/Dismiss; ordinary remote Save remains usable.
+      if (undecidedRecoveryRef.current.has(scope.key)) return null;
+      const { work, imageOmitted } = captureRecoveryWork(formDataRef.current);
+      const stored = writeRecovery(window.localStorage, scope, work, observedRecoveryRef.current.get(scope.key));
+      if (stored.state !== 'stored') {
+        setRecoveryWarning({ key: scope.key, state: stored.state });
+        return null;
+      }
+      observedRecoveryRef.current.set(scope.key, stored.raw);
+      setRecoveryWarning(null);
       return { imageOmitted };
     } catch { return null; /* quota/private mode */ }
   };
 
-  const clearAutosave = (scope = scopeRef.current) => {
+  const clearAutosave = (scope = scopeRef.current, explicitDecision = false) => {
     autosaveGenRef.current += 1; // invalidate any pending debounced write
-    if (newCreateSession) return; // v2 copies have no create identity: never adopt/delete them.
-    try { if (scope) window.localStorage?.removeItem(scope.key); } catch { /* private mode */ }
+    if (newCreateSession || !scope) return; // IDB2 and older localStorage copies remain separate.
+    if (undecidedRecoveryRef.current.has(scope.key) && !explicitDecision) return;
+    try {
+      const result = clearRecovery(window.localStorage, scope, observedRecoveryRef.current.get(scope.key));
+      if (result.state === 'cleared') {
+        observedRecoveryRef.current.set(scope.key, null);
+        undecidedRecoveryRef.current.delete(scope.key);
+        return true;
+      }
+      else setRecoveryWarning({ key: scope.key, state: result.state });
+    } catch { /* private mode */ }
   };
 
   // Mobile Safari may suspend an installed app without firing beforeunload.
@@ -429,21 +462,29 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     scopeRef.current = scopeFor(formDataRef.current);
     if (readScopeKeyRef.current === scopeRef.current?.key) return;
     readScopeKeyRef.current = scopeRef.current?.key;
+    const scope = scopeRef.current;
+    setInspectedCopy(null);
+    setOlderCopies(null);
+    setRecoveryWarning(null);
     let entry = null;
-    try { if (scopeRef.current) entry = readRecovery(window.localStorage, scopeRef.current); } catch { /* storage unavailable */ }
+    try {
+      if (scope) {
+        const found = inspectRecovery(window.localStorage, scope);
+        if (['absent', 'available'].includes(found.state)) observedRecoveryRef.current.set(scope.key, found.raw);
+        else setRecoveryWarning({ key: scope.key, state: found.state });
+        entry = found.entry;
+        setOlderCopies({ key: scope.key, ...olderRecoveryPresence(window.localStorage, scope) });
+      }
+    } catch { /* storage unavailable */ }
     const saved = entry?.work;
     if (!saved) { setRecovered(null); return; }
     const pristine = pristineRef.current || {};
-    const matchesLoaded = WORK_FIELDS.every((k) => {
-      if (!(k in saved)) return true;
-      // App trims content at save — don't let trailing whitespace alone summon a banner.
-      if (k === 'content') return String(saved[k] ?? '').trim() === String(pristine[k] ?? '').trim();
-      return JSON.stringify(saved[k] ?? null) === JSON.stringify(pristine[k] ?? null);
-    });
-    if (matchesLoaded) {
+    const matchesLoaded = recoveryMatchesLoaded(saved, pristine);
+    if (matchesLoaded && !hasReviewDetailsFields(saved)) {
       clearAutosave();
       return;
     }
+    undecidedRecoveryRef.current.set(scope.key, entry ? observedRecoveryRef.current.get(scope.key) : null);
     setRecovered(entry);
     // Read recovery only on open. A newly acknowledged save changes the slot
     // directly; it must not reload an older recovery copy over current edits.
@@ -466,19 +507,51 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
   }, [formData, isDirty, isReadOnly]);
 
   const restoreRecovered = () => {
-    if (!recovered || recovered.scope.key !== scopeRef.current?.key) return;
-    setFormData(prev => {
-      const next = { ...prev };
-      for (const k of WORK_FIELDS) {
-        if (recovered.work[k] !== undefined) next[k] = recovered.work[k];
-      }
-      // A client member's posts stay pinned to their own client (save path
-      // enforces it anyway — don't even show a recovered foreign name).
-      // The immutable scope matched; preserve the current label across a rename.
-      next.client = prev.client;
-      return next;
-    });
+    if (!recovered || recovered.scope.key !== scopeRef.current?.key || permissionRef.current
+      || currentSessionRef.current?.() === false || hasReviewDetailsFields(recovered.work)) return;
+    const user = getRecoveryUser?.();
+    if (getRecoveryUser && (!user || user.isAnonymous || user.uid !== scopeRef.current.principalId)) return;
+    // Verify the exact observed copy again. A stale banner must not adopt work
+    // another tab changed, even when its account/client still match.
+    let found;
+    try { found = inspectRecovery(window.localStorage, scopeRef.current); }
+    catch { found = { state: 'unavailable' }; }
+    if (found.state !== 'available' || found.raw !== observedRecoveryRef.current.get(scopeRef.current.key)) {
+      setRecoveryWarning({ key: scopeRef.current.key, state: 'changed' });
+      return;
+    }
+    try { setFormData(prev => restoreRecoveryWork(prev, found.entry.work)); }
+    catch { setRecoveryWarning({ key: scopeRef.current.key, state: 'invalid' }); return; }
+    undecidedRecoveryRef.current.delete(scopeRef.current.key);
     setRecovered(null);
+  };
+
+  const inspectDeviceCopy = (older = false) => {
+    const scope = scopeRef.current;
+    if (!scope || !editorAliveRef.current || currentSessionRef.current?.() === false
+      || openingPrincipal.current !== recoveryPrincipalId) return;
+    const user = getRecoveryUser?.();
+    if (getRecoveryUser && (!user || user.isAnonymous || user.uid !== scope.principalId)) return;
+    let found;
+    try { found = inspectRecovery(window.localStorage, older ? olderRecoveryScope(scope) : scope); }
+    catch { found = { state: 'unavailable' }; }
+    if (found.state !== 'available') {
+      setRecoveryWarning({ key: scope.key, state: found.state });
+      setInspectedCopy(null);
+      return;
+    }
+    // Plain JSON is a lossless manual copy, not executable markup, a restore,
+    // remote save or migration. Older values never enter editable form state.
+    setInspectedCopy({ key: scope.key, user, text: JSON.stringify(found.entry.work, null, 2) });
+  };
+
+  const dismissRecovered = () => {
+    const scope = scopeRef.current;
+    if (!scope || recovered?.scope.key !== scope.key || permissionRef.current
+      || currentSessionRef.current?.() === false || openingPrincipal.current !== recoveryPrincipalId) return;
+    const user = getRecoveryUser?.();
+    if (getRecoveryUser && (!user || user.isAnonymous || user.uid !== scope.principalId)) return;
+    if (clearAutosave(scope, true)) setRecovered(null);
   };
 
   const handleFileUpload = async (e) => {
@@ -574,7 +647,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
         formDataRef.current = next.form;
         isDirtyRef.current = next.dirty;
         setFormData(next.form);
-        setRecovered(null);
+        if (!undecidedRecoveryRef.current.has(scopeRef.current?.key)) setRecovered(null);
         if (next.dirty) {
           const stored = writeAutosaveNow();
           if (stored && previousScope?.key !== scopeRef.current?.key) clearAutosave(previousScope);
@@ -772,7 +845,7 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
               className="w-full max-h-32 mt-1 rounded-lg border border-slate-400 p-2 text-sm text-slate-900" />
           </div>
         )}
-        <fieldset disabled={isReadOnly} className="min-w-0 min-h-0 flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
+        <div className="min-w-0 min-h-0 flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
           {newCreateSession && !isReadOnly && (!newScope || createRecovery.error || createRecovery.record || createRecovery.loading) && (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2" aria-live="polite">
               <p className="text-sm font-bold text-amber-800">{createRecovery.loading ? 'Checking this device for previous work…' : !createRecovery.restored ? 'Previous work is available on this device' : createRecovery.record?.state === 'submitted' ? 'Spool has not confirmed this save' : createRecovery.record?.state === 'confirmed' ? 'Previous save confirmed' : 'New-draft recovery'}</p>
@@ -791,23 +864,47 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
             </div>
           )}
           {/* Recovered-work banner: a local snapshot exists that this post doesn't hold. */}
-          {recovered && recovered.scope.key === scopeKey && !isReadOnly && (
+          {recovered && recovered.scope.key === scopeKey && (!isReadOnly || hasReviewDetailsFields(recovered.work)) && (
             <div className="flex flex-wrap items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
               <History size={18} className="text-amber-600 shrink-0 mt-0.5" />
               <div className="flex-1 min-w-[160px]">
                 <p className="text-sm font-bold text-amber-800">Unsaved work recovered</p>
                 <p className="text-xs text-amber-700 mt-0.5">
-                  A draft auto-saved {recovered.work.savedAt ? `on ${new Date(recovered.work.savedAt).toLocaleString()} ` : ''}for this account and client differs from what&apos;s shown. Restore it, or dismiss to keep what&apos;s here.
+                  {hasReviewDetailsFields(recovered.work)
+                    ? 'This copy includes review details. Inspect and copy it; editing those details is not enabled yet.'
+                    : `A draft auto-saved ${recovered.work.savedAt ? `on ${new Date(recovered.work.savedAt).toLocaleString()} ` : ''}for this account and client differs from what’s shown. Restore it, or dismiss to delete this device copy and keep what’s here.`}
                 </p>
               </div>
               <div className="flex gap-2 shrink-0 ml-auto">
-                <button onClick={restoreRecovered} className="px-3 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-full">Restore</button>
-                <button onClick={() => { setRecovered(null); clearAutosave(); }} className="px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 rounded-full">Dismiss</button>
+                {!hasReviewDetailsFields(recovered.work) && <>
+                  <button type="button" onClick={restoreRecovered} className="min-h-11 px-3 py-1.5 text-xs font-bold text-white bg-amber-700 hover:bg-amber-800 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800">Restore</button>
+                  <button type="button" onClick={dismissRecovered} className="min-h-11 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800">Dismiss</button>
+                </>}
+                {hasReviewDetailsFields(recovered.work) && <button type="button" ref={inspectButtonRef} onClick={() => inspectDeviceCopy()} className="min-h-11 px-3 py-1.5 text-xs font-bold text-amber-800 border border-amber-700 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800">Inspect device copy</button>}
               </div>
+            </div>
+          )}
+          {!newCreateSession && olderCopies?.key === scopeKey && (olderCopies.scoped || olderCopies.unscoped) && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+              <p className="text-sm font-bold text-amber-800">Older device copy kept</p>
+              <p className="text-xs text-amber-800 mt-1">Older copies stay untouched. {olderCopies.scoped ? 'Inspect the account-scoped copy for manual recovery.' : 'The unscoped copy cannot be safely attributed to this account.'}</p>
+              {olderCopies.scoped && <button type="button" ref={inspectButtonRef} onClick={() => inspectDeviceCopy(true)} className="mt-2 min-h-11 px-3 py-1.5 text-xs font-bold text-amber-800 border border-amber-700 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800">Inspect older copy</button>}
+            </div>
+          )}
+          {!newCreateSession && recoveryWarning?.key === scopeKey && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">Device recovery needs checking. The stored copy was not changed. You can still save to Spool; keep this editor open or copy your current text before closing.</p>}
+          {!newCreateSession && inspectedCopy?.key === scopeKey
+            && (!getRecoveryUser || getRecoveryUser() === inspectedCopy.user)
+            && currentSessionRef.current?.() !== false && openingPrincipal.current === recoveryPrincipalId && (
+            <div className="p-4 bg-slate-50 border border-slate-300 rounded-xl">
+              <label htmlFor="editor-inspected-copy" className="block text-sm font-bold text-slate-800">Device copy — select and copy</label>
+              <p className="text-xs text-slate-700 my-2">Manual reference only. It has not been restored, saved to Spool or removed.</p>
+              <textarea id="editor-inspected-copy" autoFocus readOnly value={inspectedCopy.text} onFocus={event => event.currentTarget.select()} className="w-full min-h-40 rounded-lg border border-slate-500 bg-white p-3 font-mono text-xs text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600" />
+              <button type="button" onClick={() => { setInspectedCopy(null); inspectButtonRef.current?.focus(); }} className="mt-2 min-h-11 px-3 py-1.5 rounded-lg border border-slate-500 text-sm font-semibold text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">Close inspection</button>
             </div>
           )}
 
           {/* Platform Select */}
+          <fieldset disabled={isReadOnly} className="min-w-0 m-0 p-0 space-y-6">
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform</label>
             <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-4">
@@ -1136,7 +1233,8 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
               </div>
             )}
           </div>
-        </fieldset>
+          </fieldset>
+        </div>
       </div>
 
       {/* Drag handle to resize the preview (desktop only) */}

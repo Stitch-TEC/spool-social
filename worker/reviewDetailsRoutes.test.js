@@ -60,6 +60,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('worker routes preserve supplemental fields without authoring them', () => {
+  it.each(['firstComment', 'reviewMedia', 'reviewDetailsVersion', 'reviewDetailsAck', 'reviewMediaLinks'])(
+    'DELETE refuses protected field presence before any provider operation: %s', async field => {
+      mocks.getPost.mockResolvedValue({ ...base(), [field]: null });
+      const result = await request(`/api/drafts/${id}`, 'DELETE');
+      expect(result.status).toBe(409);
+      expect(await result.json()).toMatchObject({ error: 'review_details_maintenance_unsupported' });
+      expect(fetch).not.toHaveBeenCalled();
+    });
   it('returns all exact public supplemental fields through GET and list', async () => {
     const live = detailed();
     mocks.getPost.mockResolvedValue(live);
