@@ -1,8 +1,9 @@
 import { parseVideoReference } from './videoReferences';
+import { normalizeVideoTitle } from './videoLibrary';
 
 const text = value => typeof value === 'string' && value.length <= 240
   // eslint-disable-next-line no-control-regex
-  ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() : '';
+  ? value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, ' ').trim() : '';
 
 // Display only: no oEmbed, external thumbnails, provider authorization or URL
 // shortening. Keep the full normalized URL for the deliberate external action.
@@ -44,7 +45,7 @@ export function readableMediaItems(value) {
   return value;
 }
 
-export function confirmedLibraryItem(value, type, clientKey, expectedUrl = '') {
+export function confirmedLibraryItem(value, type, clientKey, expectedUrl = '', expectedTitle) {
   readableMediaItems([value]);
   const pieces = value.key.split('/');
   if (value.type !== type || pieces[0] !== 'library' || !pieces[1] || pieces[2] !== clientKey || pieces.length < 4) throw new Error('Unconfirmed media result');
@@ -52,6 +53,8 @@ export function confirmedLibraryItem(value, type, clientKey, expectedUrl = '') {
     const actual = videoMediaPresentation(value);
     const expected = videoMediaPresentation({ type: 'video', url: expectedUrl });
     if (!actual || !expected || actual.url !== expected.url) throw new Error('Unconfirmed video result');
+    if (expectedTitle !== undefined && (normalizeVideoTitle(expectedTitle) !== expectedTitle
+      || (expectedTitle ? value.title !== expectedTitle : value.title !== undefined && value.title !== ''))) throw new Error('Unconfirmed video title');
   } else {
     let url;
     try { url = new URL(value.url, 'https://spool.stitchtec.dev'); } catch { throw new Error('Unconfirmed image result'); }
@@ -68,7 +71,7 @@ export function mediaMatchesSearch(item, query) {
   if (!needle) return true;
   const video = videoMediaPresentation(item);
   // Do not search signed query strings: their tokens are not useful labels.
-  const fields = video ? [video.label, video.provider, video.detail]
+  const fields = video ? [video.label, video.provider, video.detail, text(item.title), text(item.label), text(item.name)]
     : [text(item.title), text(item.label), text(item.name), text(item.alt), item.key];
   return fields.join(' ').toLocaleLowerCase().includes(needle);
 }

@@ -71,7 +71,7 @@ describe('MediaLibrary first-stage video usability and local admission', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
     const button = screen.getByRole('button', { name: 'Add link' });
     fireEvent.click(button); fireEvent.click(button);
-    expect(api.addVideoUrl).toHaveBeenCalledExactlyOnceWith('northwind', video.url);
+    expect(api.addVideoUrl).toHaveBeenCalledExactlyOnceWith('northwind', video.url, { title: '', isCurrent: expect.any(Function) });
     await act(async () => added.resolve(video));
     await waitFor(() => expect(api.listClientMedia).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('textbox', { name: 'Video library URL' })).toHaveValue('');
@@ -83,6 +83,144 @@ describe('MediaLibrary first-stage video usability and local admission', () => {
     fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
     expect(api.addVideoUrl).not.toHaveBeenCalled();
     fireEvent.keyDown(field, { key: 'Enter' }); expect(api.addVideoUrl).toHaveBeenCalledOnce();
+  });
+  it('labels the optional title, counts characters and clears the trimmed title only after confirmed success', async () => {
+    const added = deferred(); api.addVideoUrl.mockReturnValue(added.promise);
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    const title = screen.getByRole('textbox', { name: 'Video title (optional)' });
+    // The title limit is validated whole; the browser must not clip pasted text.
+    expect(title).not.toHaveAttribute('maxLength');
+    expect(title).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.getByText('0 / 120')).toBeInTheDocument();
+    fireEvent.change(title, { target: { value: '  CT demo  ' } });
+    expect(screen.getByText('11 / 120')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    fireEvent.keyDown(title, { key: 'Enter', isComposing: true });
+    expect(api.addVideoUrl).not.toHaveBeenCalled();
+    fireEvent.keyDown(title, { key: 'Enter' });
+    expect(api.addVideoUrl).toHaveBeenCalledExactlyOnceWith('northwind', video.url, { title: 'CT demo', isCurrent: expect.any(Function) });
+    expect(title).toHaveValue('  CT demo  ');
+    expect(title).toBeDisabled();
+    expect(api.addVideoUrl.mock.calls[0][2].isCurrent()).toBe(true);
+    await act(async () => added.resolve({ ...video, title: 'CT demo' }));
+    expect(title).toHaveValue('');
+    expect(screen.getByText('0 / 120')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Video library URL' })).toHaveValue('');
+    expect(defaults.showToast).toHaveBeenCalledWith('Video added');
+  });
+  it.each(['', '   ', 'T'.repeat(120)])('admits blank or exactly bounded title %j', async raw => {
+    const title = raw.trim(); api.addVideoUrl.mockResolvedValue({ ...video, ...(title ? { title } : {}) });
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video title (optional)' }), { target: { value: raw } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    expect(api.addVideoUrl).toHaveBeenCalledExactlyOnceWith('northwind', video.url, { title, isCurrent: expect.any(Function) });
+    await waitFor(() => expect(defaults.showToast).toHaveBeenCalledWith('Video added'));
+  });
+  it.each(['T'.repeat(121), 'CT\u0007demo', 'CT\u0085demo', 'CT\u202edemo', 'CT\u200bdemo', 'CT\u2028demo', 'CT\u2029demo'])('keeps invalid raw title %j whole, shows an alert and refuses dispatch', async raw => {
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    const field = screen.getByRole('textbox', { name: 'Video title (optional)' });
+    fireEvent.change(field, { target: { value: raw } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    expect(field).toHaveValue(raw); expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(`${raw.length} / 120`)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Use a single-line title of 120 characters or fewer');
+    expect(screen.getByRole('button', { name: 'Add link' })).toBeDisabled();
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(api.addVideoUrl).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: 'Corrected title' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add link' })).toBeEnabled();
+  });
+  it.each([undefined, null, 7, {}, 'Other title', ' CT demo ', 'CT\u0007demo', 'CT\u202edemo'])('holds a missing, malformed or nonexact title acknowledgement %j without clearing entered work', async title => {
+    api.addVideoUrl.mockResolvedValue({ ...video, ...(title === undefined ? {} : { title }) });
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video title (optional)' }), { target: { value: 'CT demo' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Result not confirmed');
+    expect(screen.getByRole('textbox', { name: 'Video title (optional)' })).toHaveValue('CT demo');
+    expect(screen.getByRole('textbox', { name: 'Video library URL' })).toHaveValue(video.url);
+    expect(defaults.showToast).not.toHaveBeenCalledWith('Video added');
+    expect(api.listClientMedia).toHaveBeenCalledOnce();
+  });
+  it.each([' ', '\u0007', '\u202e', 7, null])('does not accept malformed raw title %j as an empty-title acknowledgement', async title => {
+    api.addVideoUrl.mockResolvedValue({ ...video, title });
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Result not confirmed');
+    expect(defaults.showToast).not.toHaveBeenCalledWith('Video added');
+    expect(screen.getByRole('textbox', { name: 'Video library URL' })).toHaveValue(video.url);
+  });
+  it('combines type and search for curated and Used-on-posts images without changing the confirmed count', async () => {
+    const used = '/media/generated/o/team.jpg';
+    const { container } = render(<MediaLibrary {...defaults} postImagesByClient={{ Northwind: [used] }} />);
+    await screen.findByRole('link');
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Videos', exact: true }));
+    expect(container.querySelectorAll('img')).toHaveLength(0);
+    expect(screen.queryByRole('region', { name: 'Images used on posts' })).not.toBeInTheDocument();
+    expect(screen.getByText('2 / 50')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'team.jpg' } });
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Images', exact: true }));
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+    expect(container.querySelector('img')).toHaveAttribute('src', used);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cover.jpg' } });
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+    expect(container.querySelector('img')).toHaveAttribute('src', image.url);
+    expect(screen.queryByRole('region', { name: 'Images used on posts' })).not.toBeInTheDocument();
+  });
+  it('keeps loading and read failures visible under type and search filters without empty claims or counts', async () => {
+    const first = deferred(); api.listClientMedia.mockReturnValueOnce(first.promise);
+    render(<MediaLibrary {...defaults} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Videos', exact: true }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } });
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    expect(screen.getByText('Count not checked')).toBeInTheDocument();
+    expect(screen.queryByText('No matching library items.')).not.toBeInTheDocument();
+    await act(async () => first.reject(new Error('offline')));
+    expect(screen.getByText('Library could not load. Try again.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText(/No media in the library|No matching library/)).not.toBeInTheDocument();
+    expect(screen.getByText('Count not checked')).toBeInTheDocument();
+  });
+  it('resets title, URL, search and type when the selected client changes', async () => {
+    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video title (optional)' }), { target: { value: 'Old title' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Old query' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Videos', exact: true }));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Acme' } });
+    await waitFor(() => expect(api.listClientMedia).toHaveBeenCalledWith('acme'));
+    expect(screen.getByRole('textbox', { name: 'Video title (optional)' })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'Video library URL' })).toHaveValue('');
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'All', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  });
+  it('retires the captured add callback on account change and keeps fresh input when the old acknowledgement arrives', async () => {
+    const added = deferred(); api.addVideoUrl.mockReturnValue(added.promise);
+    const { rerender } = render(<MediaLibrary {...defaults} sessionKey="one" />); await screen.findByRole('link');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video title (optional)' }), { target: { value: 'Old title' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video library URL' }), { target: { value: video.url } });
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'abcdefghijk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Videos', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    const isCurrent = api.addVideoUrl.mock.calls[0][2].isCurrent;
+    rerender(<MediaLibrary {...defaults} sessionKey="two" />);
+    await waitFor(() => expect(api.listClientMedia).toHaveBeenCalledTimes(2));
+    expect(isCurrent()).toBe(false);
+    expect(screen.getByRole('textbox', { name: 'Video title (optional)' })).toHaveValue('');
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'All', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Video title (optional)' }), { target: { value: 'Fresh title' } });
+    await act(async () => added.resolve({ ...video, title: 'Old title' }));
+    expect(screen.getByRole('textbox', { name: 'Video title (optional)' })).toHaveValue('Fresh title');
+    expect(defaults.showToast).not.toHaveBeenCalled();
+    expect(api.listClientMedia).toHaveBeenCalledTimes(2);
   });
   it('holds uncertain mutations until a fresh read and explicit inspection without automatic replay', async () => {
     api.addVideoUrl.mockRejectedValue(new Error('lost response'));
@@ -175,9 +313,33 @@ describe('MediaLibrary first-stage video usability and local admission', () => {
     expect(api.listClientMedia).toHaveBeenCalledOnce(); expect(defaults.onClose).toHaveBeenCalledOnce();
   });
   it('keeps Close and the client selector reachable by keyboard with 44px target classes', async () => {
-    render(<MediaLibrary {...defaults} />); await screen.findByRole('link');
+    const { container } = render(<MediaLibrary {...defaults} />); const link = await screen.findByRole('link');
     const close = screen.getByRole('button', { name: 'Close' }); expect(close).toHaveFocus();
     fireEvent.keyDown(close, { key: 'Tab', shiftKey: true }); expect(screen.getByRole('combobox')).toHaveFocus();
+    close.focus();
+    const controls = [
+      screen.getByRole('button', { name: 'Upload image' }),
+      screen.getByRole('textbox', { name: 'Video library URL' }),
+      // Add link is disabled until a URL is entered, so it is skipped initially.
+      screen.getByRole('textbox', { name: 'Video title (optional)' }),
+      screen.getByRole('button', { name: 'All', exact: true }),
+      screen.getByRole('button', { name: 'Images', exact: true }),
+      screen.getByRole('button', { name: 'Videos', exact: true }),
+      screen.getByRole('searchbox'), link,
+      screen.getByRole('button', { name: 'Delete library item: YouTube · abcdefghijk' }),
+      screen.getByRole('button', { name: `Delete library item: ${image.key}` }),
+      screen.getByRole('combobox'), close,
+    ];
+    for (const next of controls) {
+      fireEvent.keyDown(document, { key: 'Tab' }); expect(next).toHaveFocus();
+      expect(container.querySelector('input[type="file"]')).not.toHaveFocus();
+    }
+    const url = screen.getByRole('textbox', { name: 'Video library URL' });
+    fireEvent.change(url, { target: { value: video.url } });
+    url.focus(); fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.getByRole('button', { name: 'Add link' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.getByRole('textbox', { name: 'Video title (optional)' })).toHaveFocus();
     expect(close).toHaveClass('min-h-11', 'min-w-11');
     expect(screen.getByRole('button', { name: 'Add link' })).toHaveClass('min-h-11', 'min-w-11');
     expect(screen.getByRole('combobox')).toHaveClass('h-11', 'py-0');

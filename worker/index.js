@@ -79,6 +79,8 @@ import { runDueAutomations, generateForAutomation } from './automation.js';
 import { fetchClientProfile, probeClientProfile, fetchClientRoster, fetchClientHandoffRoster, fetchClientSignals, fetchClientPage, fetchContentIndex, fetchContentIndexPage, importSiteImage, pushSenderTemplate, publishDraftToSite, renderSenderPreview, rosterNameLookup } from './suiteContext.js';
 // Shared with the SPA editor (pure string helpers — no DOM at module scope).
 import { stripLeadingDuplicateH1 } from '../src/utils/markdownEditing.js';
+import { parseVideoReference } from '../src/utils/videoReferences.js';
+import { normalizeVideoTitle } from '../src/utils/videoLibrary.js';
 
 // ---- Post → email-safe HTML fragment (the Sender template push + email preview) ----------------
 // Shared with the SPA + vitest via src/utils/emailHtml.js — ONE converter, so the
@@ -266,14 +268,9 @@ function slugifyClient(name) {
 
 // Accept only YouTube / Vimeo / direct video-file URLs as references.
 function validateVideoUrl(raw) {
-  let u;
-  try { u = new URL(String(raw)); } catch { return null; }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-  const h = u.hostname.replace(/^www\./, '');
-  if (h === 'youtube.com' || h === 'youtu.be' || h === 'm.youtube.com') return { url: u.href, provider: 'youtube' };
-  if (h === 'vimeo.com' || h === 'player.vimeo.com') return { url: u.href, provider: 'vimeo' };
-  if (/\.(mp4|webm|mov|m4v)$/i.test(u.pathname)) return { url: u.href, provider: 'file' };
-  return null;
+  const reference = parseVideoReference(raw);
+  const provider = { YouTube: 'youtube', Vimeo: 'vimeo', 'Video file': 'file' }[reference?.provider];
+  return provider ? { url: reference.url, provider } : null;
 }
 
 // List a curated library prefix (images + video-reference pointers via customMetadata).
@@ -319,7 +316,11 @@ async function listMediaPrefix(env, origin, prefix) {
   const objects = await listR2ObjectsCompletely(env.MEDIA, { prefix, include: ['customMetadata'], limit: 1000 });
   for (const o of objects) {
     const cm = o.customMetadata || {};
-    if (cm.type === 'video') items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded });
+    if (cm.type === 'video') {
+      const title = normalizeVideoTitle(cm.title);
+      items.push({ key: o.key, type: 'video', url: cm.url, provider: cm.provider, uploaded: o.uploaded,
+        ...(title ? { title } : {}) });
+    }
     else items.push({ key: o.key, type: 'image', url: mediaUrl(origin, o.key), size: o.size, uploaded: o.uploaded });
   }
   items.sort((a, b) => String(b.uploaded || '').localeCompare(String(a.uploaded || '')));
@@ -1368,14 +1369,17 @@ export default {
         const existing = await env.MEDIA.list({ prefix: base, limit: 1000 });
 
         if (body?.videoUrl) {
+          const title = normalizeVideoTitle(body.videoTitle);
+          if (title === null) return json({ error: 'Video title must be one line, up to 120 characters.' }, 400, cors);
           if (existing.objects.length >= cap) {
             return json({ error: `Library is full (${cap} items per client) — delete some first.` }, 409, cors);
           }
           const v = validateVideoUrl(body.videoUrl);
           if (!v) return json({ error: 'Unsupported video URL (use YouTube, Vimeo, or a direct .mp4/.webm/.mov link)' }, 400, cors);
           const key = `${base}v-${crypto.randomUUID()}`;
-          await env.MEDIA.put(key, 'video', { customMetadata: { type: 'video', url: v.url, provider: v.provider, addedAt: new Date().toISOString() } });
-          return json({ key, type: 'video', url: v.url, provider: v.provider }, 201, cors);
+          await env.MEDIA.put(key, 'video', { customMetadata: { type: 'video', url: v.url, provider: v.provider, addedAt: new Date().toISOString(),
+            ...(title ? { title } : {}) } });
+          return json({ key, type: 'video', url: v.url, provider: v.provider, ...(title ? { title } : {}) }, 201, cors);
         }
 
         const b64 = body?.image?.base64;

@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useId } from 'react';
 import { X, Trash2, UploadCloud, Loader2, Video, Plus, ImageOff, AlertCircle, Images, FolderPlus, Search } from 'lucide-react';
 import { listClientMedia, uploadMedia, addVideoUrl, deleteMedia } from '../utils/generationApi';
 import { processImageFile, imageContentId } from '../utils/helpers';
 import { useMediaSession, useMediaDialog } from '../hooks/useMediaSession';
 import { readableMediaItems, videoMediaPresentation, mediaMatchesSearch, confirmedLibraryItem } from '../utils/mediaPresentation';
+import { VIDEO_TITLE_LIMIT, normalizeVideoTitle } from '../utils/videoLibrary';
+import MediaTypeFilter from './MediaTypeFilter';
 
 const MEDIA_CAP = 50; // mirrors MEDIA_PER_CLIENT in wrangler.toml
 
@@ -35,7 +37,9 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   const [operation, setOperation] = useState(null);
   const [uncertain, setUncertain] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
+  const [videoTitle, setVideoTitle] = useState('');
   const [search, setSearch] = useState('');
+  const [mediaType, setMediaType] = useState('all');
   const [reloadKey, setReloadKey] = useState(0);
   // Two-step delete: first tap arms ("Delete?"), second tap within 3s commits.
   // Deletion is permanent and unconfirmed was the only destructive action
@@ -45,10 +49,11 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   const operationRef = useRef(null);
+  const titleId = useId();
   if (clientSession !== sessionKey) {
     setClientSession(sessionKey);
     setClient(initialClient || uniqueClients[0] || '');
-    setConfirmKey(null); setVideoUrl(''); setSearch('');
+    setConfirmKey(null); setVideoUrl(''); setVideoTitle(''); setSearch(''); setMediaType('all');
   }
 
   useEffect(() => {
@@ -84,7 +89,7 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   const refresh = () => { if (!isCurrent()) return; setRead(null); setReloadKey(k => k + 1); };
   const pickClient = (e) => {
     if (!isCurrent() || busy) return;
-    setClient(e.target.value); setConfirmKey(null); setVideoUrl(''); setSearch('');
+    setClient(e.target.value); setConfirmKey(null); setVideoUrl(''); setVideoTitle(''); setSearch(''); setMediaType('all');
   };
   const begin = () => {
     if (!isCurrent() || !clientKey || items === null || error || needsCheck || operationRef.current?.scope === scope) return null;
@@ -126,6 +131,8 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   const handleAddVideo = async () => {
     const v = videoUrl.trim();
     if (!v) return;
+    const title = normalizeVideoTitle(videoTitle);
+    if (title === null) return;
     const reference = videoMediaPresentation({ type: 'video', url: v });
     if (!reference || !['YouTube', 'Vimeo', 'Video file'].includes(reference.provider)) {
       if (isCurrent()) showToast?.('Use a YouTube, Vimeo or direct HTTPS video-file link.', 'error');
@@ -134,11 +141,12 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
     const attempt = begin(); if (!attempt) return;
     try {
       attempt.dispatched = true;
-      const result = await addVideoUrl(clientKey, v);
+      const result = await addVideoUrl(clientKey, v, { title, isCurrent: () => owns(attempt) });
       if (!owns(attempt)) return;
-      confirmedLibraryItem(result, 'video', clientKey, v);
+      confirmedLibraryItem(result, 'video', clientKey, v, title);
       showToast?.('Video added');
       setVideoUrl('');
+      setVideoTitle('');
       refresh();
     } catch {
       failure(attempt, 'Video result not confirmed. Check the library before trying again.');
@@ -193,7 +201,9 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
   }, [client, items, postImagesByClient]);
 
   const count = Array.isArray(items) ? items.length : 0;
-  const visibleItems = (items || []).filter(item => mediaMatchesSearch(item, search));
+  const visibleItems = (items || []).filter(item => (mediaType === 'all' || item.type === mediaType) && mediaMatchesSearch(item, search));
+  const visiblePostImages = mediaType === 'video' ? [] : postImages.filter(url => mediaMatchesSearch({ type: 'image', key: url, url }, search));
+  const invalidTitle = normalizeVideoTitle(videoTitle) === null;
   const blocked = !client || busy || items === null || Boolean(error) || needsCheck;
 
   return (
@@ -219,20 +229,35 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
             <UploadCloud size={14} /> Upload image
           </button>
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
-          <div className="flex min-w-0 basis-52 grow flex-wrap items-center gap-1">
+          <div className="min-w-0 basis-52 grow space-y-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
             <input aria-label="Video library URL" type="url" value={videoUrl} maxLength={4096} onChange={(e) => setVideoUrl(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); handleAddVideo(); } }}
               placeholder="YouTube / Vimeo / .mp4 link" disabled={blocked}
               className="min-h-11 min-w-0 basis-36 grow px-3 py-1.5 border border-slate-500 rounded-lg text-base bg-white disabled:opacity-50" />
-            <button type="button" onClick={handleAddVideo} disabled={blocked || !videoUrl.trim()}
+            <button type="button" onClick={handleAddVideo} disabled={blocked || !videoUrl.trim() || invalidTitle}
               className="min-h-11 min-w-11 flex items-center gap-1 border border-indigo-400 text-indigo-700 px-2.5 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50">
               <Plus size={14} /> Add link
             </button>
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-1 text-xs text-slate-700">
+                <label htmlFor={titleId}>Video title (optional)</label>
+                <span id={`${titleId}-count`}>{videoTitle.length} / {VIDEO_TITLE_LIMIT}</span>
+              </div>
+              <input id={titleId} type="text" value={videoTitle} onChange={event => setVideoTitle(event.target.value)}
+                aria-invalid={invalidTitle} aria-describedby={`${titleId}-count${invalidTitle ? ` ${titleId}-error` : ''}`}
+                onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); handleAddVideo(); } }}
+                placeholder="A label to find this video" disabled={blocked}
+                className="min-h-11 w-full min-w-0 rounded-lg border border-slate-500 bg-white px-3 py-1.5 text-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50" />
+              {invalidTitle && <p id={`${titleId}-error`} role="alert" className="mt-1 text-sm text-rose-800">Use a single-line title of {VIDEO_TITLE_LIMIT} characters or fewer, without control characters.</p>}
+            </div>
           </div>
           <span className="text-xs text-slate-600 font-medium ml-auto">{items === null || error ? 'Count not checked' : `${count} / ${MEDIA_CAP}`}</span>
         </div>
 
         <div className="p-4 shrink-0">
+          <div className="mb-3"><MediaTypeFilter value={mediaType} onChange={value => { if (isCurrent()) setMediaType(value); }} /></div>
           <label className="mb-4 flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-slate-500 px-3 text-slate-700 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-indigo-600">
             <Search size={17} aria-hidden="true" />
             <input type="search" aria-label="Search media" placeholder="Search labels, video IDs or filenames" maxLength={200} value={search} onChange={event => setSearch(event.target.value)} className="min-h-11 w-full min-w-0 bg-transparent text-base outline-none" />
@@ -298,14 +323,14 @@ const MediaLibrary = ({ onClose, uniqueClients = [], initialClient = '', clientI
               {/* Everything already used on this client's posts but not curated yet —
                   previously invisible here, which made the library look empty even
                   when the client had plenty of content. */}
-              {postImages.length > 0 && (
+              {visiblePostImages.length > 0 && (
                 <section aria-label="Images used on posts">
                   <h3 className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
                     <Images size={13} className="text-indigo-400" /> Used on {client}&rsquo;s posts
                   </h3>
                   <p className="text-[11px] text-slate-400 mb-2">Not in the library yet — save one to share it with the rest of the suite (e.g. POM&rsquo;s Assets card).</p>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {postImages.map(u => (
+                    {visiblePostImages.map(u => (
                       <div key={u} className="group relative aspect-square rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
                         <img src={u} alt="" loading="lazy" className="w-full h-full object-cover" />
                         <button type="button" onClick={() => handleSaveToLibrary(u)} disabled={blocked} title="Save to library"
