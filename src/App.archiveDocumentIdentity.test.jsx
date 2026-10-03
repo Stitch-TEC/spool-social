@@ -1,10 +1,10 @@
 import React from 'react';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import App from './App';
 import { OPERATOR_UID } from './config/roles';
 
-const state = vi.hoisted(() => ({ user: null, auth: null, grid: null, subscriptions: [], server: new Map(), reads: [], writes: [] }));
+const state = vi.hoisted(() => ({ user: null, auth: null, grid: null, bulk: null, subscriptions: [], server: new Map(), reads: [], writes: [] }));
 vi.mock('./config/firebase', () => ({ db: {}, auth: { get currentUser() { return state.user; } } }));
 vi.mock('./hooks/useAuth', () => ({ default: () => state.auth }));
 vi.mock('./hooks/useClients', () => ({ useClients: () => ({ clients: [{ name: 'Acme', slug: 'acme' }], loading: false }) }));
@@ -15,12 +15,14 @@ vi.mock('firebase/firestore', () => ({
   onSnapshot: (query, next, error) => { state.subscriptions.push({ query, next, error }); return vi.fn(); },
   runTransaction: async (_db, callback) => {
     const pending = [];
-    await callback({ get: async ref => { state.reads.push(ref); return { exists: () => state.server.has(ref.id), data: () => state.server.get(ref.id) }; },
+    const result = await callback({ get: async ref => { state.reads.push(ref); return { exists: () => state.server.has(ref.id), data: () => state.server.get(ref.id) }; },
       update: (ref, patch) => pending.push({ ref, patch }) });
     for (const write of pending) { state.writes.push(write); state.server.set(write.ref.id, { ...state.server.get(write.ref.id), ...write.patch }); }
+    return result;
   },
 }));
 vi.mock('./components/PostGrid', () => ({ default: props => { state.grid = props; return <div>Canonical fixture threads</div>; } }));
+vi.mock('./components/BulkActionBar', () => ({ default: props => { state.bulk = props; return <div>Tag fixture controls</div>; } }));
 vi.mock('./components/Sidebar', () => ({ default: () => null }));
 vi.mock('./components/DashboardHeader', () => ({ default: () => null }));
 vi.mock('./components/FilterBar', () => ({ default: () => null, SUGGESTIONS_LANE: 'suggestions' }));
@@ -39,12 +41,36 @@ beforeEach(() => {
   state.user = { uid: OPERATOR_UID, email: 'owner@example.test' };
   state.auth = { user: state.user, authRevision: 1, getAuthRevision: () => 1, role: 'super_admin', isOperator: true,
     isClientMember: false, isReadOnly: false, authLoading: false, clientId: null };
-  state.grid = null; state.subscriptions = []; state.server = new Map(); state.reads = []; state.writes = [];
+  state.grid = null; state.bulk = null; state.subscriptions = []; state.server = new Map(); state.reads = []; state.writes = [];
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('No live network in canonical identity QA'); }));
 });
 afterEach(() => { cleanup(); expect(fetch).not.toHaveBeenCalled(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('actual usePosts → App Archive canonical document identity', () => {
+  it('changes only displayed A’s tags when its stored id points at B with matching metadata', async () => {
+    const a = data('document-b', 'Caption A'), b = data('document-a', 'Caption B');
+    state.server = new Map([['document-a', a], ['document-b', b]]);
+    render(<App />); emit([['document-a', a], ['document-b', b]]);
+    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }));
+    await act(async () => { state.grid.onToggleSelect('document-a'); });
+    await act(async () => { expect(await state.bulk.onAddTags(['new'])).toBe(true); });
+    expect(state.reads.map(ref => ref.id)).toEqual(['document-a']);
+    expect(state.writes.map(write => write.ref.id)).toEqual(['document-a']);
+    expect(state.server.get('document-a')).toEqual({ ...a, ...state.writes[0].patch });
+    expect(state.server.get('document-a').id).toBe('document-b');
+    expect(state.server.get('document-b')).toBe(b);
+    expect(Object.keys(state.writes[0].patch).sort()).toEqual(['tags', 'updatedAt']);
+  });
+  it('refuses malformed raw tags even when usePosts presents a safe shortened array', async () => {
+    const a = { ...data('stored-id', 'Caption A'), tags: Array.from({ length: 11 }, (_, index) => `tag${index}`) };
+    state.server.set('document-a', a); render(<App />); emit([['document-a', a]]);
+    expect(state.grid.posts[0].tags).toHaveLength(10);
+    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }));
+    await act(async () => { state.grid.onToggleSelect('document-a'); });
+    await act(async () => { expect(await state.bulk.onRemoveTags(['tag0'])).toBe(false); });
+    expect(state.writes).toEqual([]); expect(state.server.get('document-a')).toBe(a);
+    expect(screen.getByText(/No tag changes submitted/)).toBeInTheDocument();
+  });
   it('archives the displayed document A, not body id B, even when both share all archive baseline fields', async () => {
     const a = data('document-b', 'Caption A'), b = data('document-a', 'Caption B');
     state.server = new Map([['document-a', a], ['document-b', b]]);

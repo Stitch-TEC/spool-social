@@ -172,6 +172,19 @@ export const HELP_GUIDES = [
     note: 'Use at most 2,000 rows. JSON exports remain reference archives, not a backup-restore path; remove unsupported historical fields only when you deliberately want new draft content.',
   },
   {
+    id: 'bulk-tags', title: 'Change tags on several threads', category: 'Drafting', audiences: ['operator'],
+    summary: 'Add or remove tags without shortening them or changing the draft.',
+    keywords: 'bulk select tags limit batch unchanged uncertain checking',
+    steps: [
+      'Choose Select and mark up to 200 ordinary threads. Templates, suggestions and threads with newer review details are not eligible.',
+      'Open Tags to add or remove. Separate tags with commas or |; use up to 10 distinct tags of 20 characters each.',
+      'Select Apply. Every selected thread must pass fresh checks; adding tags must keep each thread within its 10-tag limit. Errors keep your input.',
+      'Wait for the saved and unchanged counts. Already-matching threads are left untouched; content, schedules, approvals and feedback stay unchanged.',
+      'If Tag update needs checking appears, choose Check saved tags. It reads the original threads even after selection/view changes and never resends the update. Only a complete match clears the pause; otherwise inspect the original threads before reloading.',
+    ],
+    warning: 'An unconfirmed response does not prove no changes saved. This safeguard covers tag changes, not every other bulk action; it is not durable cross-device recovery.',
+  },
+  {
     id: 'access', title: 'Check missing access or content', category: 'Troubleshooting', audiences: [...EVERYONE, 'unknown'],
     summary: 'Check the account, link and connection without changing access.',
     keywords: 'access sign in login account client missing navigation connection permission review link',
