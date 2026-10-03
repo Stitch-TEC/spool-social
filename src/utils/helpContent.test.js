@@ -27,7 +27,7 @@ describe('static task guides', () => {
     expect(guidesForAudience(audience).map(guide => guide.id)).toEqual(['access']);
     expect(findHelpGuide('handoff', audience)).toBeNull();
   });
-  it.each(['review', 'approval', 'video', 'save', 'recovery', 'access', 'navigation'])('finds useful results for %s', query => {
+  it.each(['review', 'approval', 'video', 'save', 'recovery', 'access', 'navigation', 'import', 'CSV', 'spreadsheet', 'columns'])('finds useful results for %s', query => {
     expect(searchHelpGuides(query, 'operator').length).toBeGreaterThan(0);
   });
   it('searches all words without escaping the audience or interpreting input', () => {
@@ -47,5 +47,15 @@ describe('static task guides', () => {
     expect(findHelpGuide('video-links', 'member').warning).toContain('not a private attachment');
     expect(findHelpGuide('save-recovery', 'member').warning).toContain('Do not create another copy or clear browser storage');
     expect(findHelpGuide('access', 'guest').note).toContain('does not grant access');
+  });
+  it('keeps import consequences role-selected and excludes review-link guests', () => {
+    expect(findHelpGuide('import-operator', 'member')).toBeNull();
+    expect(findHelpGuide('import-member', 'operator')).toBeNull();
+    expect(searchHelpGuides('import', 'guest')).toEqual([]);
+    expect(findHelpGuide('import-operator', 'operator').steps.join(' ')).toContain('private drafts');
+    expect(findHelpGuide('import-member', 'member').warning).toContain('available for client review immediately');
+    expect(findHelpGuide('import-fields', 'member').note).toContain('not a backup-restore path');
+    expect(findHelpGuide('import-fields', 'operator').steps.join(' ')).toContain('never shortened');
+    expect(findHelpGuide('import-operator', 'operator').warning).toContain('currently loaded threads');
   });
 });

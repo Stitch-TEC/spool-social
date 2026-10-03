@@ -48,6 +48,8 @@ import { defaultPlatformForClient, validatedTags } from './utils/editorInputs';
 import { postEditingAccess } from './utils/postEditingAccess';
 import { hasProtectedReviewDetails } from './utils/reviewDetails';
 import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
+import { validateImportRows } from './utils/importValidation';
+import { runImportAttempt } from './utils/importAttempt';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
@@ -113,6 +115,7 @@ const App = () => {
   const getHelpUser = useCallback(() => auth.currentUser, []);
   const help = useHelpSession({ user, authRevision, getAuthRevision, authLoading, role, clientId: myClientId,
     sharedUid, shareClientId, isReadOnly, isOperator, isClientMember, getCurrentUser: getHelpUser });
+  const openHelp = help.open;
   const getRecoveryUser = useCallback(() => {
     if (authLoading || isReadOnly || (getAuthRevision && getAuthRevision() !== authRevision)) return null;
     return auth.currentUser === user ? user : null;
@@ -218,6 +221,15 @@ const App = () => {
   const [isAutomationsOpen, setIsAutomationsOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
   const [isDataOpen, setIsDataOpen] = useState(false); // Import & Export modal
+  const [importBusy, setImportBusy] = useState(false);
+  const [importHold, setImportHold] = useState(null);
+  const [importHelpRequest, setImportHelpRequest] = useState(null);
+  const importLifetimeRef = useRef({ mounted: true, busy: false, hold: null });
+  useLayoutEffect(() => {
+    const lifetime = importLifetimeRef.current;
+    lifetime.mounted = true;
+    return () => { lifetime.mounted = false; };
+  }, []);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   // Session-level dismissal for the "N suggestions parked" nudge — so it isn't naggy, but returns
@@ -344,6 +356,42 @@ const App = () => {
     return rosterSlugByName.get(normClientName(name))
       || clientIdByName[name] || clientMap[name]?.clientId || '';
   }, [isClientMember, myClientName, myClientId, isOperator, rosterSlugByName, clientIdByName, clientMap]);
+
+  const importAdmissionRef = useRef(null);
+  const importIdentity = JSON.stringify([editorIdentity, myClientName, isOperator, isClientMember]);
+  const priorImportAdmission = importAdmissionRef.current;
+  const importAdmissionChanged = !priorImportAdmission || priorImportAdmission.identity !== importIdentity
+    || priorImportAdmission.user !== user || priorImportAdmission.authLoading !== authLoading
+    || priorImportAdmission.postsLoading !== postsLoading || priorImportAdmission.postsError !== postsError
+    || priorImportAdmission.postsStalled !== !!postsStalled;
+  const importEpoch = (priorImportAdmission?.epoch || 0) + (importAdmissionChanged ? 1 : 0);
+  const importAdmissionKey = JSON.stringify([importIdentity, importEpoch]);
+  useLayoutEffect(() => {
+    importAdmissionRef.current = { key: importAdmissionKey, identity: importIdentity, epoch: importEpoch,
+      user, authRevision, authLoading, postsLoading, postsError, postsStalled: !!postsStalled,
+      isReadOnly, isOperator, isClientMember, role, clientId: myClientId,
+      clientName: myClientName, resolveClientId: recoveryClientIdFor };
+  }, [importAdmissionKey, importIdentity, importEpoch, user, authRevision, authLoading, postsLoading,
+    postsError, postsStalled, isReadOnly, isOperator, isClientMember, role, myClientId, myClientName, recoveryClientIdFor]);
+  const getImportAdmissionKey = useCallback(() => {
+    const current = importAdmissionRef.current;
+    if (!importLifetimeRef.current.mounted || !current?.user || auth.currentUser !== current.user
+      || current.authLoading || current.postsLoading || current.postsError || current.postsStalled
+      || current.isReadOnly || (!current.isOperator && !current.isClientMember)
+      || (getAuthRevision && getAuthRevision() !== current.authRevision)) return null;
+    return current.key;
+  }, [getAuthRevision]);
+  const getImportHoldDetails = useCallback(() => {
+    const hold = importLifetimeRef.current.hold;
+    if (!hold || getImportAdmissionKey() !== hold.ownerAdmissionKey
+      || auth.currentUser !== hold.ownerUser) return null;
+    return { confirmed: hold.confirmed, total: hold.total, ids: hold.ids };
+  }, [getImportAdmissionKey]);
+  useEffect(() => {
+    if (isDataOpen || !importHelpRequest) return;
+    if (getImportAdmissionKey() === importHelpRequest) openHelp();
+    setImportHelpRequest(null);
+  }, [isDataOpen, importHelpRequest, getImportAdmissionKey, openHelp]);
 
   // Selection only makes sense in the grid — drop it when switching views.
   useEffect(() => {
@@ -824,92 +872,88 @@ const App = () => {
     }
   }, [isReadOnly, isClientMember, showToast, isCurrentReview, closeReview]);
 
-  // Commit previewed import rows. Rows are already sanitized by parseImportFile
-  // (in ImportExportModal); here we attach ownership/timestamps and chunk to the
-  // 500-op batch cap. Returns true on success so the modal can close.
-  //
-  // 🔒 SECURITY: a client member's rows are FORCE-pinned to their own client
-  // (name + immutable clientId), ignoring the file's client column — mirrors the
-  // save/create-drafts write paths. firestore.rules enforce the same boundary
-  // (isEntityMember(clientId) && uid == ownerUid()), so a mislabelled or hostile
-  // file can never land content in another tenant.
-  const handleImportRows = useCallback(async (rows) => {
-    if (isReadOnly || !user || !rows?.length) return false;
-    if (rows.some(hasProtectedReviewDetails)) {
-      showToast('Importing review media and first comments is not enabled yet. No rows were imported.', 'error');
+  // Validate again at the writer boundary. Each attempt captures its account,
+  // loaded-feed admission and canonical destinations; it never retries a commit.
+  const handleImportRows = useCallback(async (rows, context = {}) => {
+    const lifetime = importLifetimeRef.current;
+    if (lifetime.busy || lifetime.hold) return false;
+    const captured = importAdmissionRef.current;
+    if (!captured || !context.admissionKey || getImportAdmissionKey() !== context.admissionKey) {
+      showToast('Import stopped before saving. Reopen the preview in your current workspace.', 'error');
       return false;
     }
-
-    const now = new Date().toISOString();
-    // Firestore caps a commit at 500 OPS *and* ~10 MiB. Chunking on ops alone was
-    // enough for tiny rows, but an import carrying data-URL images (each up to
-    // 500 KB — see the imageUrl cap on the save path) blows the byte cap long
-    // before op 450, and the commit REJECTS. Earlier batches are already durable at
-    // that point, so the operator got a flat "Import failed" on a half-imported
-    // file. Flush BEFORE adding a row that would cross the line; checking after the
-    // fact still lets one oversized row straddle it.
-    const MAX_OPS = 450;
-    const MAX_BYTES = 8 * 1024 * 1024; // headroom under the 10 MiB commit cap
-    let committed = 0;
-    let batch = writeBatch(db);
-    let ops = 0, bytes = 0;
-    const flush = async () => {
-      if (ops === 0) return;
-      await batch.commit();
-      committed += ops;
-      batch = writeBatch(db);
-      ops = 0; bytes = 0;
+    const checked = validateImportRows(rows);
+    if (checked.errors.length || !checked.rows.length) {
+      showToast('Fix the import rows before saving. Nothing was submitted.', 'error');
+      return false;
+    }
+    if (captured.isClientMember && checked.rows.some(item => item.isTemplate)) {
+      showToast('Client imports cannot create reusable templates. Set isTemplate to false. Nothing was submitted.', 'error');
+      return false;
+    }
+    const destinations = checked.rows.map(item => ({
+      client: captured.isClientMember ? captured.clientName : item.client,
+      clientId: captured.isClientMember ? captured.clientId : captured.resolveClientId(item.client),
+    }));
+    if (destinations.some(destination => !destination.client || !destination.clientId)) {
+      showToast('Choose an existing client for every row. Nothing was submitted.', 'error');
+      return false;
+    }
+    const isCurrent = () => {
+      const current = importAdmissionRef.current;
+      return getImportAdmissionKey() === captured.key && current?.user === captured.user
+        && destinations.every(destination => current.resolveClientId(destination.client) === destination.clientId);
     };
-
+    if (!isCurrent()) return false;
+    lifetime.busy = true;
+    setImportBusy(true);
+    let attemptStarted = false;
+    let entries = [];
     try {
-      for (const item of rows) {
-        const size = (item.imageUrl?.length || 0) + (item.content?.length || 0) + 512;
-        if (ops >= MAX_OPS || (ops > 0 && bytes + size > MAX_BYTES)) await flush();
-        const client = isClientMember ? (myClientName || myClientId) : item.client;
-        batch.set(doc(collection(db, 'posts')), {
-          uid: OPERATOR_UID,
-          clientId: isClientMember ? myClientId : clientIdFor(item.client),
-          client,
-          content: item.content,
-          title: item.title || '',
-          altText: item.altText || '',
-          metaDescription: item.metaDescription || '',
-          slug: item.slug || '',
-          platform: item.platform,
-          status: isClientMember ? STATUS.DRAFT : item.status,
-          approvalStatus: isClientMember ? APPROVAL_STATUS.PENDING : item.approvalStatus,
-          feedback: item.feedback || '',
-          imageUrl: item.imageUrl || '',
-          tags: item.tags || [],
-          // Preserve templates through a backup → restore round-trip (otherwise a
-          // full-backup import floods the dated queue with evergreen content).
-          isTemplate: isClientMember ? false : !!item.isTemplate,
-          // Operator imports land in STAGING; a client member's own imports are
-          // already their content and must remain in_review under the rules boundary.
-          reviewStage: isClientMember ? REVIEW_STAGE.IN_REVIEW : REVIEW_STAGE.PRIVATE,
-          scheduledDate: item.scheduledDate || null,
-          createdAt: now,
-          updatedAt: now,
-          source: 'import'
-        });
-        ops++; bytes += size;
+      const now = new Date().toISOString();
+      // Generate each reference once, before any dispatch. Data is a new draft,
+      // not a restored ID, approval, feedback history or creation timestamp.
+      entries = checked.rows.map((item, index) => {
+        const data = { uid: OPERATOR_UID, ...destinations[index], content: item.content,
+          title: item.title || '', altText: item.altText || '', metaDescription: item.metaDescription || '',
+          slug: item.slug || '', platform: item.platform, status: STATUS.DRAFT,
+          approvalStatus: APPROVAL_STATUS.PENDING, feedback: '', imageUrl: item.imageUrl || '',
+          tags: item.tags || [], isTemplate: captured.isClientMember ? false : !!item.isTemplate,
+          reviewStage: captured.isClientMember ? REVIEW_STAGE.IN_REVIEW : REVIEW_STAGE.PRIVATE,
+          scheduledDate: item.scheduledDate ?? null, createdAt: now, updatedAt: now, source: 'import' };
+        return { ref: doc(collection(db, 'posts')), data, size: new TextEncoder().encode(JSON.stringify(data)).byteLength + 512 };
+      });
+      attemptStarted = true;
+      const result = await runImportAttempt({ entries, isCurrent, createBatch: () => writeBatch(db) });
+      if (result.status === 'needs_checking') {
+        const hold = { ...result, ownerAdmissionKey: captured.key, ownerUser: captured.user };
+        lifetime.hold = hold;
+        if (lifetime.mounted) setImportHold(hold);
+        showToast('Import needs checking. Some submitted rows may be saved. Do not import this file again yet.', 'error');
+        return false;
       }
-      await flush();
-      showToast(`Imported ${rows.length} thread${rows.length === 1 ? '' : 's'}! 🚀`);
+      if (result.status !== 'complete') {
+        showToast('Import stopped before saving. Nothing was submitted.', 'error');
+        return false;
+      }
+      showToast(`Imported ${result.confirmed} thread${result.confirmed === 1 ? '' : 's'}`);
       return true;
-    } catch (err) {
-      // Report what ACTUALLY landed. A flat "Import failed" after 900 of 1200 rows
-      // were already durable sent the operator to re-run the file and duplicate them.
-      console.error("Import error:", err);
-      showToast(
-        committed > 0
-          ? `Imported ${committed} of ${rows.length} — the rest failed. Re-import only the remaining rows.`
-          : "Import failed. Please try again.",
-        "error"
-      );
+    } catch (error) {
+      console.error('Import preparation error:', error);
+      if (attemptStarted) {
+        // A broken local result handler is not evidence of a failed server write.
+        const hold = { status: 'needs_checking', reason: 'result_handler_failed', total: entries.length,
+          confirmed: null, ids: entries.map(entry => entry.ref.id), ownerAdmissionKey: captured.key, ownerUser: captured.user };
+        lifetime.hold = hold;
+        if (lifetime.mounted) setImportHold(hold);
+        showToast('Import result needs checking. Check saved threads before importing this file again.', 'error');
+      } else showToast('Could not prepare the import. Nothing was submitted.', 'error');
       return false;
+    } finally {
+      lifetime.busy = false;
+      if (lifetime.mounted) setImportBusy(false);
     }
-  }, [isReadOnly, user, isClientMember, myClientName, myClientId, showToast, clientIdFor]);
+  }, [getImportAdmissionKey, showToast]);
 
   // Operator: after addressing client feedback, send the revised post back for
   // another review round — reset approvalStatus to pending and clear the current
@@ -2395,8 +2439,15 @@ const App = () => {
             uniqueClients={isOperator ? uniqueClients : (myClientName ? [myClientName] : [])}
             isOperator={isOperator}
             scopeClient={isOperator ? null : (myClientName || myClientId)}
+            admissionKey={importAdmissionKey}
+            getAdmissionKey={getImportAdmissionKey}
+            resolveClientId={recoveryClientIdFor}
+            importBusy={importBusy}
+            importHold={importHold}
+            getHoldDetails={getImportHoldDetails}
+            onOpenHelp={() => { setImportHelpRequest(getImportAdmissionKey()); setIsDataOpen(false); }}
             onImport={handleImportRows}
-            onClose={() => setIsDataOpen(false)}
+            onClose={() => { if (!importLifetimeRef.current.busy) setIsDataOpen(false); }}
             showToast={showToast}
           />
         </Suspense>
