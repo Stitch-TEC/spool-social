@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import Editor from './Editor';
 import { editorWorkSignature } from '../utils/editorSaveState';
+import { PLATFORMS } from '../constants';
 
 const props = { post: null, clientMap: {}, uniqueClients: ['Acme'], showToast: vi.fn(),
   onSave: vi.fn(), onCancel: vi.fn(), isReadOnly: false,
@@ -84,5 +85,30 @@ describe('display-only usual platform in the real editor', () => {
     expect(platform('LinkedIn')).toHaveAccessibleDescription('Most-used in this client’s loaded threads, not a publishing connection.');
     expect(platform('LinkedIn')).toHaveClass('min-h-11', 'flex-wrap');
     expect(screen.getByText('Usual')).toHaveAttribute('aria-hidden', 'true');
+  });
+  it('keeps every platform in a responsive wrapping grid instead of an unwrapped desktop row', () => {
+    render(<Editor {...props} initialClient="Acme" />);
+    const choices = platform('Google Business').parentElement;
+    expect(choices).toHaveClass('grid', 'grid-cols-2', 'sm:grid-cols-3', 'xl:grid-cols-4');
+    expect(choices).not.toHaveClass('sm:flex');
+    for (const choice of Object.values(PLATFORMS)) {
+      expect(platform(choice.name)).toBeEnabled();
+      expect(platform(choice.name).parentElement).toBe(choices);
+      expect(platform(choice.name)).toHaveClass('min-w-0', 'min-h-11');
+    }
+  });
+  it('preserves explicit selection for every choice including the last desktop choice', () => {
+    render(<Editor {...props} initialClient="Acme" />);
+    const caption = document.querySelector('textarea');
+    fireEvent.change(caption, { target: { value: 'Keep this exact caption.' } });
+    for (const choice of Object.values(PLATFORMS)) {
+      fireEvent.click(platform(choice.name));
+      for (const candidate of Object.values(PLATFORMS)) {
+        expect(platform(candidate.name)).toHaveAttribute('aria-pressed', String(candidate.id === choice.id));
+      }
+      expect(caption).toHaveValue('Keep this exact caption.');
+      expect(screen.getByLabelText('Schedule (optional)')).toHaveValue('');
+      expect(props.onSave).not.toHaveBeenCalled();
+    }
   });
 });

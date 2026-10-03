@@ -912,7 +912,7 @@ const EditorForm = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, 
           <fieldset disabled={isReadOnly} className="min-w-0 m-0 p-0 space-y-6">
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform</label>
-            <div className="grid grid-cols-2 sm:flex gap-2 sm:gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-4">
               {Object.values(PLATFORMS).map(p => (
                 <button
                   key={p.id}
@@ -921,7 +921,7 @@ const EditorForm = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, 
                   aria-describedby={usualPlatform === p.id ? 'usual-platform-note' : undefined}
                   title={usualPlatform === p.id ? 'Usual in this client’s loaded threads' : undefined}
                   aria-pressed={formData.platform === p.id}
-                  className={`min-h-11 flex-1 flex flex-row flex-wrap sm:flex-col sm:flex-nowrap items-center justify-center gap-2 p-2 sm:p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? (PLATFORM_ACTIVE_CLASSES[p.id] || 'border-indigo-500 bg-indigo-50') : 'border-slate-100 hover:border-slate-200'}`}
+                  className={`min-w-0 min-h-11 flex-1 flex flex-row flex-wrap sm:flex-col sm:flex-nowrap items-center justify-center gap-2 p-2 sm:p-3 rounded-xl border-2 transition-all ${formData.platform === p.id ? (PLATFORM_ACTIVE_CLASSES[p.id] || 'border-indigo-500 bg-indigo-50') : 'border-slate-100 hover:border-slate-200'}`}
                 >
                    <PlatformIcon platformId={p.id} size={20} className="sm:w-6 sm:h-6" />
                    <span className={`text-[10px] sm:text-xs font-bold ${formData.platform === p.id ? 'text-slate-800' : 'text-slate-400'}`}>{p.name}</span>
