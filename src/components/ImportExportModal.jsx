@@ -1,23 +1,24 @@
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { X, Upload, Download, Database, FileText, AlertCircle, Users, Lock, Loader2 } from 'lucide-react';
 import { PLATFORMS, STATUS } from '../constants';
 import {
   convertToCSV,
   postsToJSON,
   downloadFile,
-  parseImportFile,
   postFingerprint,
   filterPostsByClients,
   repinPostsToClient,
 } from '../utils/csv';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { hasProtectedReviewDetails } from '../utils/reviewDetails';
+import { inspectImportFile, getImportTemplate, MAX_IMPORT_ROWS } from '../utils/importValidation';
 
 const EXPORT_SCOPES = [
   { id: 'active', label: 'Active threads' },
   { id: 'archived', label: 'Archived only' },
   { id: 'all', label: 'Everything (active + archived)' },
 ];
+const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 
 const scopeMatches = (post, scope) => {
   const archived = post.status === STATUS.ARCHIVED;
@@ -43,10 +44,20 @@ const ImportExportModal = ({
   isOperator = false,
   scopeClient = null,       // client member's own display name (locks the scope)
   onImport,                 // async (rows) => boolean — App writes + returns success
+  admissionKey,
+  getAdmissionKey,
+  resolveClientId,
+  importBusy = false,
+  importHold = null,
+  getHoldDetails,
+  onOpenHelp,
   onClose,
   showToast,
 }) => {
-  useEscapeKey(onClose);
+  const [paneBusy, setPaneBusy] = useState(false);
+  const modalBusy = importBusy || paneBusy;
+  const close = () => { if (!modalBusy) onClose?.(); };
+  useEscapeKey(close);
   const [tab, setTab] = useState('export'); // 'export' | 'import'
 
   return (
@@ -64,13 +75,14 @@ const ImportExportModal = ({
               </p>
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close" className="p-2 text-slate-400 hover:bg-slate-100 rounded-full"><X size={20} /></button>
+          <button onClick={close} disabled={modalBusy} aria-label="Close" className="p-2 text-slate-400 hover:bg-slate-100 rounded-full disabled:opacity-50"><X size={20} /></button>
         </div>
 
         {/* Tabs */}
         <div className="px-5 pt-4 flex gap-1" role="tablist">
           <button
             role="tab" aria-selected={tab === 'export'}
+            disabled={modalBusy}
             onClick={() => setTab('export')}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-bold rounded-lg transition-colors ${tab === 'export' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
           >
@@ -78,6 +90,7 @@ const ImportExportModal = ({
           </button>
           <button
             role="tab" aria-selected={tab === 'import'}
+            disabled={modalBusy}
             onClick={() => setTab('import')}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-bold rounded-lg transition-colors ${tab === 'import' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
           >
@@ -88,7 +101,9 @@ const ImportExportModal = ({
         <div className="p-6 overflow-y-auto">
           {tab === 'export'
             ? <ExportPane posts={posts} uniqueClients={uniqueClients} isOperator={isOperator} showToast={showToast} onDone={onClose} />
-            : <ImportPane posts={posts} isOperator={isOperator} scopeClient={scopeClient} onImport={onImport} showToast={showToast} onDone={onClose} />}
+            : <ImportPane posts={posts} isOperator={isOperator} scopeClient={scopeClient} onImport={onImport} showToast={showToast} onDone={close}
+                admissionKey={admissionKey} getAdmissionKey={getAdmissionKey} resolveClientId={resolveClientId}
+                importBusy={modalBusy} onBusyChange={setPaneBusy} importHold={importHold} getHoldDetails={getHoldDetails} onOpenHelp={onOpenHelp} />}
         </div>
       </div>
     </div>
@@ -96,11 +111,11 @@ const ImportExportModal = ({
 };
 
 // --- Shared: operator client multi-select -----------------------------------
-const ClientPicker = ({ uniqueClients, allSelected, setAllSelected, selected, toggle, countFor }) => (
+const ClientPicker = ({ uniqueClients, allSelected, setAllSelected, selected, toggle, countFor, disabled = false }) => (
   <div className="mb-5">
     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><Users size={12} /> Clients</h3>
     <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 cursor-pointer text-sm font-semibold text-slate-700">
-      <input type="checkbox" checked={allSelected} onChange={(e) => setAllSelected(e.target.checked)} className="accent-indigo-600" />
+      <input type="checkbox" disabled={disabled} checked={allSelected} onChange={(e) => setAllSelected(e.target.checked)} className="accent-indigo-600" />
       All clients
     </label>
     {!allSelected && (
@@ -109,7 +124,7 @@ const ClientPicker = ({ uniqueClients, allSelected, setAllSelected, selected, to
         {uniqueClients.map((c) => (
           <label key={c} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 cursor-pointer text-sm text-slate-600">
             <span className="flex items-center gap-2 min-w-0">
-              <input type="checkbox" checked={selected.has(c)} onChange={() => toggle(c)} className="accent-indigo-600 shrink-0" />
+              <input type="checkbox" disabled={disabled} checked={selected.has(c)} onChange={() => toggle(c)} className="accent-indigo-600 shrink-0" />
               <span className="truncate">{c}</span>
             </span>
             {countFor && <span className="text-xs text-slate-300 tabular-nums shrink-0">{countFor(c)}</span>}
@@ -196,7 +211,7 @@ const ExportPane = ({ posts, uniqueClients, isOperator, showToast, onDone }) => 
           onClick={() => setFormat('json')}
           className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors ${format === 'json' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
         >
-          <Database size={16} /> <span className="text-left leading-tight">JSON<span className="block text-[10px] font-normal opacity-70">Full backup</span></span>
+          <Database size={16} /> <span className="text-left leading-tight">JSON<span className="block text-[10px] font-normal opacity-70">Reference archive</span></span>
         </button>
       </div>
 
@@ -212,37 +227,103 @@ const ExportPane = ({ posts, uniqueClients, isOperator, showToast, onDone }) => 
 };
 
 // --- Import -----------------------------------------------------------------
-const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDone }) => {
+const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDone,
+  admissionKey, getAdmissionKey, resolveClientId, importBusy, onBusyChange, importHold, getHoldDetails, onOpenHelp }) => {
   const inputRef = useRef(null);
-  const [rows, setRows] = useState(null);      // parsed + (member) re-pinned rows, or null before a file
+  const [inspection, setInspection] = useState(null);
   const [fileName, setFileName] = useState('');
   const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [allSelected, setAllSelected] = useState(true);
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [callbackUnknown, setCallbackUnknown] = useState(false);
+  const [reading, setReading] = useState(false);
+  const readerRef = useRef(null);
+  const readRevision = useRef(0);
+  const confirmRef = useRef(false);
+  const liveRef = useRef(null);
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    liveRef.current = { admissionKey, getAdmissionKey, resolveClientId, isOperator, scopeClient, importHold, importBusy };
+  }, [admissionKey, getAdmissionKey, resolveClientId, isOperator, scopeClient, importHold, importBusy]);
+  const cancelRead = useCallback(() => {
+    readRevision.current += 1;
+    if (readerRef.current?.readyState === 1) readerRef.current.abort();
+    readerRef.current = null;
+  }, []);
+  useEffect(() => () => { mountedRef.current = false; cancelRead(); }, [cancelRead]);
+  useEffect(() => {
+    cancelRead(); setInspection(null); setFileName(''); setReading(false);
+  }, [admissionKey, cancelRead]);
+  const rows = inspection && inspection.admissionKey === admissionKey ? inspection.rows : null;
+  const errors = inspection && inspection.admissionKey === admissionKey ? inspection.errors : [];
+  const warnings = inspection && inspection.admissionKey === admissionKey ? inspection.warnings : [];
+  const visibleHold = importHold || (callbackUnknown ? { confirmed: null } : null);
+  const holdDetails = getHoldDetails?.();
+  const locked = busy || importBusy || !!visibleHold;
 
   const handleFile = (e) => {
     const file = e.target.files[0];
     e.target.value = ''; // allow re-selecting the same file
-    if (!file) return;
+    if (!file || locked) return;
+    cancelRead(); setInspection(null); setFileName('');
+    const capturedKey = getAdmissionKey?.();
+    if (!capturedKey || capturedKey !== admissionKey) {
+      showToast?.('Wait for your current workspace to finish loading.', 'error');
+      return;
+    }
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      setInspection({ rows: [], errors: [{ row: null, field: '', message: 'Use a file smaller than 10 MiB.' }], warnings: [], admissionKey: capturedKey });
+      setFileName(file.name);
+      return;
+    }
+    const revision = readRevision.current;
     const reader = new FileReader();
+    readerRef.current = reader;
+    setReading(true);
+    const current = () => mountedRef.current && revision === readRevision.current
+      && liveRef.current?.admissionKey === capturedKey && liveRef.current?.getAdmissionKey?.() === capturedKey
+      && !liveRef.current.importHold && !liveRef.current.importBusy;
     reader.onload = (ev) => {
+      if (!current()) {
+        if (mountedRef.current && revision === readRevision.current) setReading(false);
+        return;
+      }
       try {
-        let parsed = parseImportFile(ev.target.result, file.name);
+        const parsed = inspectImportFile(ev.target.result, file.name);
+        let importedRows = parsed.rows;
         // A client member's upload is re-pinned to their own client up front so
         // the duplicate check + breakdown reflect what will actually be written.
-        if (!isOperator && scopeClient) parsed = repinPostsToClient(parsed, scopeClient);
-        setRows(parsed);
+        if (!isOperator && scopeClient) importedRows = repinPostsToClient(importedRows, scopeClient);
+        const destinationErrors = [];
+        // Only add destination row numbers when all source rows validated; an
+        // invalid row elsewhere must not shift their original file coordinates.
+        if (!parsed.errors.length) importedRows.forEach((row, index) => {
+          if (!liveRef.current.resolveClientId?.(row.client)) destinationErrors.push({ row: index + 1,
+            field: 'client', code: 'unknown_client', message: 'Choose an existing client in this workspace.' });
+          if (!isOperator && row.isTemplate) destinationErrors.push({ row: index + 1,
+            field: 'isTemplate', code: 'member_template', message: 'Client imports cannot create reusable templates. Set isTemplate to false.' });
+        });
+        setInspection({ ...parsed, rows: importedRows, errors: [...parsed.errors, ...destinationErrors], admissionKey: capturedKey });
         setFileName(file.name);
         setAllSelected(true);
         setSelected(new Set());
         setSkipDuplicates(true); // each file starts from the safe default (parity with the old per-file preview)
       } catch (err) {
         console.error('Import parse error:', err);
-        showToast?.("Couldn't read that file — use a Spool CSV or JSON export", 'error');
+        setInspection({ rows: [], errors: [{ row: null, field: '', message: 'Could not check this file. Use a draft template.' }], warnings: [], admissionKey: capturedKey });
+      } finally {
+        if (current()) setReading(false);
       }
     };
-    reader.readAsText(file);
+    reader.onerror = () => {
+      if (!current()) return;
+      setReading(false);
+      showToast?.('Could not read the file. Choose it again before previewing.', 'error');
+    };
+    try { reader.readAsText(file); }
+    catch { reader.onerror(); }
   };
 
   const existingFps = useMemo(() => new Set((posts || []).map(postFingerprint)), [posts]);
@@ -287,25 +368,71 @@ const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDon
   }, []);
 
   const handleConfirm = async () => {
-    if (busy || toImport.length === 0) return;
-    setBusy(true);
-    try {
-      const ok = await onImport(toImport);
-      if (ok) onDone?.();
-    } finally {
-      setBusy(false);
+    if (confirmRef.current || locked || errors.length || toImport.length === 0 || !inspection) return;
+    if (getAdmissionKey?.() !== inspection.admissionKey || admissionKey !== inspection.admissionKey) {
+      setInspection(null);
+      showToast?.('Workspace changed. Choose the file again for a fresh preview.', 'error');
+      return;
     }
+    confirmRef.current = true;
+    setBusy(true);
+    onBusyChange?.(true);
+    let completed = false;
+    try {
+      completed = await onImport(toImport, { admissionKey: inspection.admissionKey });
+    } catch {
+      // The App owns submitted-batch uncertainty. Never suggest another import
+      // merely because this callback did not return a successful response.
+      if (mountedRef.current) setCallbackUnknown(true);
+      showToast?.('Import result needs checking. Check saved threads before importing this file again.', 'error');
+    } finally {
+      confirmRef.current = false;
+      onBusyChange?.(false);
+      if (mountedRef.current) setBusy(false);
+    }
+    if (mountedRef.current && completed) onDone?.();
   };
+
+  const templateButtons = <div className="flex flex-wrap items-center gap-3 mb-4 text-xs font-semibold">
+    {['csv', 'json'].map(format => <button key={format} disabled={locked} onClick={() => {
+      const template = getImportTemplate(format);
+      downloadFile(template.text, template.filename, template.mime);
+    }} className="min-h-11 text-indigo-700 hover:underline disabled:opacity-50">Download {format.toUpperCase()} template</button>)}
+    {onOpenHelp && <button disabled={locked} onClick={onOpenHelp} className="min-h-11 text-indigo-700 hover:underline disabled:opacity-50">Import guides</button>}
+  </div>;
+  const holdNotice = visibleHold && <div role="alert" className="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-950">
+    <p className="font-bold">Import needs checking</p>
+    <p className="mt-1">Some submitted rows may be saved. Check saved threads before importing this file again.</p>
+    {holdDetails?.confirmed > 0 && <p className="mt-1">{holdDetails.confirmed} rows were confirmed saved.</p>}
+    {holdDetails && <details className="mt-2">
+      <summary className="min-h-11 cursor-pointer">Import references</summary>
+      <p className="text-xs">Prepared IDs are references, not proof of saved threads.</p>
+      <button onClick={async () => {
+        const current = getHoldDetails?.();
+        if (!current) return;
+        try {
+          await navigator.clipboard.writeText(current.ids.join('\n'));
+          if (getHoldDetails?.()?.ids === current.ids) showToast?.('Copied import references');
+        } catch { if (getHoldDetails?.()) showToast?.('Select the references below to copy them.', 'error'); }
+      }} className="min-h-11 font-semibold text-indigo-700 hover:underline">Copy references</button>
+      <ul className="max-h-32 overflow-y-auto text-xs select-text">{holdDetails.ids.slice(0, 50).map(id => <li key={id}>{id}</li>)}</ul>
+      {holdDetails.ids.length > 50 && <p className="text-xs">Showing 50 of {holdDetails.ids.length}. Copy references includes them all.</p>}
+    </details>}
+    <p className="mt-1 text-xs">Imports are paused on this page. Reloading loses this hold; it does not resolve the previous save.</p>
+  </div>;
 
   if (!rows) {
     return (
       <div>
-        <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-xl py-10 px-4 text-center cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors">
+        {holdNotice}{templateButtons}
+        <div className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-xl py-8 px-4 text-center">
           <Upload size={26} className="text-slate-400" />
           <span className="text-sm font-semibold text-slate-600">Choose a CSV or JSON file</span>
-          <span className="text-xs text-slate-400">Exported from Spool, or a spreadsheet with the same columns</span>
-          <input ref={inputRef} type="file" accept=".csv,.json,text/csv,application/json" onChange={handleFile} className="hidden" />
-        </label>
+          <span className="text-xs text-slate-500">Use a draft template · up to {MAX_IMPORT_ROWS.toLocaleString()} rows · 10 MiB</span>
+          <button disabled={locked || reading} onClick={() => inputRef.current?.click()} className="min-h-11 px-4 rounded-lg bg-indigo-600 text-white text-sm font-bold disabled:opacity-50">Choose file</button>
+          <input aria-label="Select import file" ref={inputRef} disabled={locked || reading} type="file" accept=".csv,.json,text/csv,application/json" onChange={handleFile} className="hidden" />
+        </div>
+        {reading && <p role="status" className="mt-3 text-sm text-slate-600">Checking file…</p>}
         {!isOperator && scopeClient && (
           <p className="mt-4 text-xs text-slate-500 flex items-start gap-1.5">
             <Lock size={12} className="mt-0.5 shrink-0" /> Every imported thread is added under <span className="font-semibold">{scopeClient}</span>, whatever the file's client column says.
@@ -317,15 +444,32 @@ const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDon
 
   return (
     <div>
+      {holdNotice}{templateButtons}
       <p className="text-xs text-slate-400 flex items-center gap-1 mb-4"><FileText size={12} /> {fileName}
-        <button onClick={() => setRows(null)} className="ml-auto text-indigo-600 font-semibold hover:underline">Choose another</button>
+        <button disabled={locked} onClick={() => { cancelRead(); setInspection(null); }} className="ml-auto min-h-11 text-indigo-600 font-semibold hover:underline disabled:opacity-50">Choose another</button>
       </p>
+
+      {errors.length > 0 && <div role="alert" className="mb-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-950">
+        <p className="font-bold">Fix {errors.length} issue{errors.length === 1 ? '' : 's'} before importing</p>
+        <ul className="mt-2 space-y-1 max-h-48 overflow-y-auto">{errors.slice(0, 50).map((error, index) => <li key={index}>
+          <span className="font-semibold">{error.row === null ? 'File' : `Row ${error.row}`}{error.field ? ` · ${error.field}` : ''}: </span>{error.message}
+        </li>)}</ul>
+        {errors.length > 50 && <p className="mt-2 text-xs">Showing the first 50 issues. Fix these and check the file again.</p>}
+        <p className="mt-2 text-xs">No rows will be submitted until the whole file is valid.</p>
+      </div>}
+      {warnings.length > 0 && <details className="mb-4 text-sm text-slate-700">
+        <summary className="cursor-pointer min-h-11">Review {warnings.length} import note{warnings.length === 1 ? '' : 's'}</summary>
+        <ul className="space-y-1 max-h-40 overflow-y-auto">{warnings.slice(0, 50).map((warning, index) => <li key={index}>
+          {warning.row === null ? 'File' : `Row ${warning.row}`}: {warning.message}
+        </li>)}</ul>
+        {warnings.length > 50 && <p>Showing the first 50 notes.</p>}
+      </details>}
 
       {rows.length === 0 ? (
         <div className="text-center py-8 text-slate-500">
           <AlertCircle className="mx-auto mb-2 text-amber-500" size={28} />
           <p className="font-medium">No valid rows found.</p>
-          <p className="text-sm text-slate-400 mt-1">Each row needs at least a <code className="text-xs bg-slate-100 px-1 rounded">client</code> and <code className="text-xs bg-slate-100 px-1 rounded">content</code> value.</p>
+          <p className="text-sm text-slate-500 mt-1">Use the template and fix the listed rows.</p>
         </div>
       ) : (
         <>
@@ -334,6 +478,7 @@ const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDon
               uniqueClients={fileClients}
               allSelected={allSelected} setAllSelected={setAllSelected}
               selected={selected} toggle={toggle}
+              disabled={locked}
               countFor={(c) => rows.filter((r) => r.client === c).length}
             />
           )}
@@ -346,12 +491,12 @@ const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDon
 
           <div className="flex items-baseline gap-2 mb-4">
             <span className="text-3xl font-black text-slate-900">{toImport.length}</span>
-            <span className="text-slate-500 font-medium">thread{toImport.length === 1 ? '' : 's'} will be created</span>
+            <span className="text-slate-500 font-medium">thread{toImport.length === 1 ? '' : 's'} in this preview</span>
           </div>
 
           {duplicates.length > 0 && (
             <label className="flex items-start gap-3 p-3 mb-4 rounded-xl bg-amber-50 border border-amber-100 cursor-pointer">
-              <input type="checkbox" checked={skipDuplicates} onChange={(e) => setSkipDuplicates(e.target.checked)} className="mt-0.5 accent-amber-600" />
+              <input type="checkbox" disabled={locked} checked={skipDuplicates} onChange={(e) => setSkipDuplicates(e.target.checked)} className="mt-0.5 accent-amber-600" />
               <span className="text-sm text-amber-900">
                 <span className="font-bold">Skip {duplicates.length} duplicate{duplicates.length === 1 ? '' : 's'}</span>
                 <span className="block text-xs text-amber-700/80 mt-0.5">Rows matching an existing thread (same client, platform &amp; content) — or repeated within this file.</span>
@@ -370,15 +515,16 @@ const ImportPane = ({ posts, isOperator, scopeClient, onImport, showToast, onDon
       )}
 
       <div className="mt-6 flex items-center justify-end gap-3">
-        <button onClick={onDone} className="px-4 py-2 font-bold text-slate-500 hover:text-slate-700 text-sm">Cancel</button>
+        <button disabled={busy || importBusy} onClick={onDone} className="px-4 min-h-11 py-2 font-bold text-slate-500 hover:text-slate-700 text-sm disabled:opacity-50">Cancel</button>
         <button
           onClick={handleConfirm}
-          disabled={busy || toImport.length === 0}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          disabled={locked || errors.length > 0 || toImport.length === 0}
+          className="flex min-h-11 items-center gap-2 bg-indigo-600 text-white px-5 py-2 font-bold rounded-lg text-sm shadow-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {busy ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Import {toImport.length > 0 ? toImport.length : ''}
         </button>
       </div>
+      <p className="mt-3 text-xs text-slate-600">{isOperator ? 'Creates new private drafts.' : 'Creates new drafts available for client review.'} This does not publish them.</p>
     </div>
   );
 };

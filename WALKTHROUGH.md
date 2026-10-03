@@ -117,10 +117,21 @@ Full details + the deploy/migration steps are in [SHARE_LINKS.md](SHARE_LINKS.md
   or **export** just the selection.
 - **Rename / merge a client** — Client Settings → *Rename or merge*: moves every
   thread from one client name to another (fix a typo, or merge two into one).
-- **Import** — CSV **or** JSON, with a **preview** (counts + breakdown) and a
-  **skip-duplicates** option before anything is written.
-- **Export** — lossless **CSV** (now includes title, tags, alt text, meta, slug)
-  or a full-fidelity **JSON backup**.
+- **Import draft content** — download a **CSV or JSON template**, edit it, then preview
+  the whole file. Fix every row/field error before importing; content is not silently
+  shortened and invalid platforms or dates are not silently replaced. Help includes a
+  searchable field reference. Files allow up to 2,000 rows; schedule may remain blank.
+  Duplicate skipping compares with currently loaded threads, not a complete server inventory.
+- Import creates **new IDs and timestamps**, **Draft / Pending** state, and no historical
+  approval or feedback. Operator imports are private; client-member imports belong to their
+  current workspace and are **immediately available for client review**. Member imports
+  cannot create reusable templates. Review-details fields and unsupported history are refused.
+- **Import needs checking** means a submitted batch may already have saved. Keep its
+  references and inspect the threads before another import. This page-memory safeguard cannot
+  cancel a dispatched batch, survive a reload, or promise exactly-once cross-device importing.
+- **Export** — spreadsheet **CSV** includes title, tags, alt text, meta and slug;
+  **JSON** retains the selected records as a reference archive. CSV refuses records with
+  reserved review details. Import is **not** a full-history backup-restoration feature.
 - **Resizable preview** — drag the divider in the editor to widen the live
   preview (great for long-form blog/job posts); the width is remembered.
 
@@ -133,4 +144,6 @@ Full details + the deploy/migration steps are in [SHARE_LINKS.md](SHARE_LINKS.md
 | Spool, a long-form piece | **Blog/Job** editor + toolbar, **Repurpose → social** |
 | Another app / Claude / a script | **Drafts API** or **`/draft-to-spool`** |
 
-Everything lands as a **draft** for your review before anything is shared with a client.
+New content lands as a **draft**, not a published post. Operator-created/imported drafts
+start private; client-member drafts are available for client review immediately. API staging
+and other write paths retain their own admission rules; a draft label is not a visibility guarantee.
