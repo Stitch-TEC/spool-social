@@ -48,6 +48,13 @@ describe('static task guides', () => {
     expect(findHelpGuide('save-recovery', 'member').warning).toContain('Do not create another copy or clear browser storage');
     expect(findHelpGuide('access', 'guest').note).toContain('does not grant access');
   });
+  it('explains the observed-only Usual badge in each writer’s existing guide, not guest instructions', () => {
+    for (const [id, audience] of [['create-operator', 'operator'], ['create-member', 'member']]) {
+      expect(findHelpGuide(id, audience).note).toBe('Usual marks the most-used platform in this client’s loaded threads; choose any platform you need.');
+      expect(searchHelpGuides('usual platform', audience).map(guide => guide.id)).toContain(id);
+    }
+    expect(searchHelpGuides('usual', 'guest')).toEqual([]);
+  });
   it('keeps import consequences role-selected and excludes review-link guests', () => {
     expect(findHelpGuide('import-operator', 'member')).toBeNull();
     expect(findHelpGuide('import-member', 'operator')).toBeNull();
