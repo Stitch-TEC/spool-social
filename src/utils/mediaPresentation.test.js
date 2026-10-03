@@ -34,6 +34,19 @@ describe('media presentation without external metadata requests', () => {
     expect(mediaMatchesSearch(video('https://vimeo.com/12345'), 'vimeo')).toBe(true);
     expect(mediaMatchesSearch({ key: 'library/o/omni/team.jpg', type: 'image', url: '/media/team.jpg' }, 'TEAM')).toBe(true);
   });
+  it('searches all saved aliases even when the display title takes precedence', () => {
+    const item = { ...video('https://youtu.be/abcdefghijk'), title: 'Display title', label: 'P01 inspection', name: 'Final CT cut' };
+    expect(mediaMatchesSearch(item, 'inspection')).toBe(true);
+    expect(mediaMatchesSearch(item, 'final ct')).toBe(true);
+  });
+  it('refuses a missing, stale or malformed title acknowledgement', () => {
+    const item = video('https://youtu.be/abcdefghijk');
+    for (const title of [undefined, 'Different', null, 'P01\n']) {
+      expect(() => confirmedLibraryItem({ ...item, ...(title !== undefined ? { title } : {}) }, 'video', 'omni', item.url, 'P01')).toThrow('Unconfirmed video title');
+    }
+    expect(confirmedLibraryItem({ ...item, title: 'P01' }, 'video', 'omni', item.url, 'P01').title).toBe('P01');
+    expect(confirmedLibraryItem(item, 'video', 'omni', item.url, '')).toBe(item);
+  });
   it('preserves a valid list and rejects malformed or duplicate item identities', () => {
     const list = [video('https://youtu.be/abcdefghijk')];
     expect(readableMediaItems(list)).toBe(list);

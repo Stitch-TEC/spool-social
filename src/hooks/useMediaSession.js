@@ -5,7 +5,8 @@ import { useLayoutEffect, useRef, useState } from 'react';
 const dialogOwners = [];
 
 // Local UI admission only. Retires late reads/selections and pre-dispatch work,
-// not a server write already submitted or the API client's own token await.
+// not a server write already submitted. New-video API calls separately recheck
+// this admission around their token await; other API writers remain separate.
 export function useMediaSession(sessionKey, clientKey, isSessionCurrent) {
   const key = JSON.stringify([sessionKey, clientKey]);
   const [scope, setScope] = useState(() => ({ key }));
@@ -50,7 +51,11 @@ export function useMediaDialog(dialogRef, closeRef, onClose) {
         currentClose.current();
       } else if (event.key === 'Tab') {
         const controls = [...dialog.querySelectorAll('button, input, select, a[href], [tabindex="0"]')]
-          .filter(element => !element.disabled && !element.closest('[hidden]'));
+          .filter(element => {
+            if (element.disabled || element.type === 'hidden' || element.closest('[hidden], [inert], .hidden')) return false;
+            const style = getComputedStyle(element);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+          });
         if (!controls.length) { event.preventDefault(); return; }
         const index = controls.indexOf(document.activeElement);
         const next = index === -1 ? (event.shiftKey ? controls.length - 1 : 0)

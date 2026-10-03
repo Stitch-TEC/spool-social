@@ -6,6 +6,8 @@
 
 import { auth } from '../config/firebase';
 import { versionMediaUrl } from './helpers';
+import { normalizeVideoTitle } from './videoLibrary';
+import { readableMediaItems } from './mediaPresentation';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -16,10 +18,16 @@ async function authHeaders() {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 }
 
-async function postJSON(path, payload) {
+async function postJSON(path, payload, isCurrent) {
+  const admit = () => {
+    if (isCurrent && isCurrent() !== true) throw new Error('Media session changed. No request was sent.');
+  };
+  admit();
+  const headers = await authHeaders();
+  admit();
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: await authHeaders(),
+    headers,
     body: JSON.stringify(payload)
   });
   if (!res.ok) {
@@ -126,7 +134,7 @@ export async function listMedia(forClient = '') {
     throw new Error(data.error || `Request failed (${res.status})`);
   }
   const { media } = await res.json();
-  return media || [];
+  return readableMediaItems(media);
 }
 
 /** List a client's curated media library (images + video references). */
@@ -137,7 +145,7 @@ export async function listClientMedia(client) {
     throw new Error(data.error || `Request failed (${res.status})`);
   }
   const { media } = await res.json();
-  return media || [];
+  return readableMediaItems(media);
 }
 
 /** Upload an optimized image (data URL) to a client's library. */
@@ -173,8 +181,12 @@ export async function ensureHostedImage(imageUrl, forClient = '') {
 }
 
 /** Add a video URL reference (YouTube / Vimeo / direct file) to a client's library. */
-export async function addVideoUrl(client, videoUrl) {
-  return postJSON('/api/media', { client, videoUrl });
+export async function addVideoUrl(client, videoUrl, { title, isCurrent } = {}) {
+  const normalizedTitle = normalizeVideoTitle(title);
+  if (normalizedTitle === null) throw new Error('Video title must be one line, up to 120 characters.');
+  const capturedUser = auth.currentUser;
+  return postJSON('/api/media', { client, videoUrl, ...(normalizedTitle ? { videoTitle: normalizedTitle } : {}) },
+    () => Boolean(capturedUser) && auth.currentUser === capturedUser && (!isCurrent || isCurrent() === true));
 }
 
 /**

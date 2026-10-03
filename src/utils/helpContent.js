@@ -72,16 +72,16 @@ export const HELP_GUIDES = [
   {
     id: 'video-links', title: 'Add a video link', category: 'Drafting', audiences: WRITERS,
     summary: 'Include a sharing link alongside the draft for review.',
-    keywords: 'video drive onedrive sharepoint dropbox youtube vimeo storage file screenshot',
+    keywords: 'video drive onedrive sharepoint dropbox youtube vimeo storage file screenshot media library title label search filter images videos find',
     steps: [
       'Keep the video in its source service and give your reviewers permission to open it.',
-      'In the editor, open Add video link to draft text.',
-      'Paste a supported HTTPS sharing link and choose Insert link into draft text.',
+      'In Media Library, add a YouTube, Vimeo or direct HTTPS video-file link. When adding a new link, Video title is optional, up to 120 characters. Search labels, video IDs or filenames and use All, Images or Videos to narrow the list.',
+      'In the editor, open Add video link to draft text. Paste a supported HTTPS sharing link and choose Insert link into draft text.',
       'Choose from library also lists video links. Selecting a video fills the link tool; confirm Insert to put that URL in the caption.',
       'Review the text and select Save. Use the displayed video link to check the destination yourself.',
     ],
     warning: 'The URL is part of the draft text, not a private attachment. It travels with copied or published text and draft AI requests. Spool does not upload, store or check the video.',
-    note: 'Google Drive, OneDrive, SharePoint, Dropbox, YouTube, Vimeo and supported direct video-file links are accepted. A local file path is not a sharing link.',
+    note: 'Video title changes only the library label; it does not rename the source video or change the post title. Existing library links cannot be renamed here. The draft-text link tool accepts Google Drive, OneDrive, SharePoint, Dropbox, YouTube, Vimeo and supported direct video-file links. A local file path is not a sharing link. Separate review-only link fields are not available.',
   },
   {
     id: 'workflow', title: 'Understand review and scheduling', category: 'Review', audiences: EVERYONE,

@@ -65,4 +65,18 @@ describe('static task guides', () => {
     expect(findHelpGuide('import-fields', 'operator').steps.join(' ')).toContain('never shortened');
     expect(findHelpGuide('import-operator', 'operator').warning).toContain('currently loaded threads');
   });
+  it('explains library title and type search without promising a remote rename or review-only attachment', () => {
+    for (const audience of ['operator', 'member']) {
+      const guide = findHelpGuide('video-links', audience);
+      expect(guide.steps.join(' ')).toContain('up to 120 characters');
+      expect(guide.steps.join(' ')).toContain('When adding a new link');
+      expect(guide.steps.join(' ')).toContain('All, Images or Videos');
+      expect(guide.note).toContain('only the library label');
+      expect(guide.note).toContain('does not rename the source video or change the post title');
+      expect(guide.note).toContain('Existing library links cannot be renamed here');
+      expect(guide.note).toContain('Separate review-only link fields are not available');
+      expect(searchHelpGuides('library title filter', audience).map(guide => guide.id)).toContain('video-links');
+    }
+    expect(findHelpGuide('video-links', 'guest')).toBeNull();
+  });
 });

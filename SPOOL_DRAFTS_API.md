@@ -146,6 +146,22 @@ curl -sS -X PATCH https://spool.stitchtec.dev/api/drafts/<id> \
 - `POST /api/media` — `{ "client": "...", "image": { "base64": "data:..." } }` to upload an (optimized) image, or `{ "client": "...", "videoUrl": "..." }` for a YouTube / Vimeo / direct-file reference. **Max 50 items per client.**
 - `DELETE /api/media/{key}` — remove one item.
 
+New video links must be supported public-shaped HTTPS destinations without credentials,
+ports or private-host syntax. This is URL validation, not a network, permission or playback check;
+no provider metadata or thumbnail is fetched. Existing saved pointers are not rewritten.
+
+Video creation optionally accepts `"videoTitle": "P01 CT demo v2"` (a single-line title of
+up to 120 UTF-16 code units; controls, invisible formatting and line separators are refused,
+not truncated). Omitted or blank titles preserve the earlier contract. A nonblank title is
+saved as additive metadata on the new pointer and returned as `title` in creation and library
+list responses. It labels the library item only; it does not rename the remote video or a draft.
+This route does not edit titles on existing pointers. Browser creation requires an exact title
+acknowledgement, otherwise its existing uncertain-result inspection holds further submissions.
+
+The new-video browser call rechecks captured account and local admission after its token wait.
+This does not cancel a submitted request or fence all other API writers. Library reads reject
+malformed successful responses rather than presenting them as an empty list.
+
 Accepts the internal key (whole workspace) or a **Firebase user token** (the caller's own images; the configured owner also sees the shared `generated/internal/` pool).
 
 ## ⚠️ User-Agent
