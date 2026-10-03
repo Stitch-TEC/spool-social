@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import { OPERATOR_UID } from './config/roles';
-import { updateDoc, deleteDoc } from 'firebase/firestore';
+import { updateDoc, deleteDoc, runTransaction } from 'firebase/firestore';
 
 const state = vi.hoisted(() => ({ auth: {}, posts: [], batches: [], grid: null, bulk: null, editor: null, commit: null }));
 vi.mock('./config/firebase', () => ({ db: { app: { options: { projectId: 'demo-spool' } } }, auth: { get currentUser() { return state.auth.user; } } }));
@@ -55,6 +55,11 @@ beforeEach(() => {
   state.posts = [base(), base('b', { client: 'Beta', clientId: 'beta' })];
   state.batches = []; state.grid = null; state.bulk = null; state.editor = null; state.commit = null;
   vi.mocked(updateDoc).mockClear(); vi.mocked(deleteDoc).mockClear();
+  vi.mocked(runTransaction).mockImplementation(async (_db, callback) => callback({
+    get: async ref => ({ exists: () => state.posts.some(post => post.id === ref.id),
+      data: () => state.posts.find(post => post.id === ref.id) }),
+    update: (ref, patch) => { state.posts = state.posts.map(post => post.id === ref.id ? { ...post, ...patch } : post); },
+  }));
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('No live network in compatibility QA'); }));
 });
@@ -86,11 +91,13 @@ describe('actual App delayed confirmation review-details admission', () => {
   });
   it('retains ordinary legacy direct card actions', async () => {
     render(<App />);
+    await act(async () => { await state.grid.onArchive('a'); });
+    await act(async () => { await state.grid.onRestore('a'); });
     await act(async () => {
-      await state.grid.onArchive('a'); await state.grid.onRestore('a');
       await state.grid.onStatusChange('a', 'posted'); await state.grid.onDismissSuggestion(state.posts[0]);
     });
-    expect(updateDoc).toHaveBeenCalledTimes(3); expect(deleteDoc).toHaveBeenCalledTimes(1);
+    expect(updateDoc).toHaveBeenCalledTimes(1); expect(runTransaction).toHaveBeenCalledTimes(2);
+    expect(deleteDoc).toHaveBeenCalledTimes(1);
   });
   it.each(['reviewDetailsVersion', 'firstComment', 'reviewMedia', 'reviewDetailsAck', 'reviewMediaLinks'])('refuses the whole create-drafts input before mapping away %s presence', async field => {
     render(<App />);

@@ -50,6 +50,7 @@ import { hasProtectedReviewDetails } from './utils/reviewDetails';
 import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
 import { validateImportRows } from './utils/importValidation';
 import { runImportAttempt } from './utils/importAttempt';
+import { archiveBaselineFor, runArchiveStatusAttempt } from './utils/archivePost';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
 import { OPERATOR_UID, slugifyClientId } from './config/roles';
@@ -224,6 +225,9 @@ const App = () => {
   const [importBusy, setImportBusy] = useState(false);
   const [importHold, setImportHold] = useState(null);
   const [importHelpRequest, setImportHelpRequest] = useState(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveHold, setArchiveHold] = useState(false);
+  const archiveLifetimeRef = useRef({ busy: false, hold: false });
   const importLifetimeRef = useRef({ mounted: true, busy: false, hold: null });
   useLayoutEffect(() => {
     const lifetime = importLifetimeRef.current;
@@ -781,31 +785,57 @@ const App = () => {
     }
   }, [isReadOnly, user, showToast, clientIdFor, isClientMember, myClientId, myClientName]);
 
-  const handleArchivePost = useCallback(async (postId) => {
-    if (isReadOnly) return;
+  const handleArchiveAction = useCallback(async (postId, action) => {
+    const lifetime = archiveLifetimeRef.current;
+    if (lifetime.busy || lifetime.hold) return false;
+    const captured = importAdmissionRef.current;
+    const capturedKey = getImportAdmissionKey();
+    if (!capturedKey || capturedKey !== importAdmissionKey || captured?.user !== user
+      || !captured?.isOperator || captured.isReadOnly) return false;
     const post = postsRef.current.find(item => item.id === postId);
-    if (!post) return showToast('Thread no longer available. Reload before continuing.', 'error');
-    if (hasProtectedReviewDetails(post)) return showToast('Changes to threads with review details are not enabled yet.', 'error');
-    try {
-      await updateDoc(doc(db, 'posts', postId), { status: STATUS.ARCHIVED });
-      showToast("Thread archived");
-    } catch {
-      showToast("Archive failed", "error");
+    if (!post) { showToast('Thread no longer available. No change sent.', 'error'); return false; }
+    if (hasProtectedReviewDetails(post)) { showToast('Review details are read-only. No change sent.', 'error'); return false; }
+    const baseline = archiveBaselineFor(post);
+    const isCurrent = () => getImportAdmissionKey() === capturedKey
+      && importAdmissionRef.current?.user === captured.user
+      && importAdmissionRef.current?.isOperator && !importAdmissionRef.current?.isReadOnly;
+    const assertAdmission = () => {
+      if (!isCurrent()) {
+        const error = new Error('Sign-in or thread list changed.');
+        error.code = 'archive_admission';
+        throw error;
+      }
+    };
+    let postRef;
+    try { postRef = doc(db, 'posts', postId); }
+    catch { showToast('Thread reference needs checking. No change sent.', 'error'); return false; }
+    lifetime.busy = true;
+    setArchiveBusy(true);
+    const result = await runArchiveStatusAttempt({ db, postRef, baseline, action, assertAdmission });
+    // The mounted page owns this hold across view/account changes. Never call a
+    // submitted transaction cancelled, or display prior-client details here.
+    if (result.status === 'needs_checking') lifetime.hold = true;
+    lifetime.busy = false;
+    if (!importLifetimeRef.current.mounted) return false;
+    setArchiveBusy(false);
+    setArchiveHold(lifetime.hold);
+    if (!isCurrent()) return false;
+    if (result.status === 'complete') {
+      showToast(action === 'archive' ? 'Thread archived' : 'Thread restored to drafts');
+      return true;
     }
-  }, [isReadOnly, showToast]);
-
-  const handleRestorePost = useCallback(async (postId) => {
-    if (isReadOnly) return;
-    const post = postsRef.current.find(item => item.id === postId);
-    if (!post) return showToast('Thread no longer available. Reload before continuing.', 'error');
-    if (hasProtectedReviewDetails(post)) return showToast('Changes to threads with review details are not enabled yet.', 'error');
-    try {
-      await updateDoc(doc(db, 'posts', postId), { status: STATUS.DRAFT });
-      showToast("Thread restored to drafts");
-    } catch {
-      showToast("Restore failed", "error");
+    if (result.status === 'stopped') {
+      const message = result.error?.code === 'archive_protected' ? 'Review details are read-only.'
+        : result.error?.code === 'archive_conflict' ? 'Thread changed. Reload before continuing.'
+        : result.error?.code === 'archive_baseline' ? 'Thread details need checking.'
+        : result.error?.code === 'archive_admission' ? 'Sign-in or thread list changed.'
+        : 'Thread could not be checked.';
+      showToast(`${message} No change sent.`, 'error');
     }
-  }, [isReadOnly, showToast]);
+    return false;
+  }, [getImportAdmissionKey, importAdmissionKey, user, showToast]);
+  const handleArchivePost = useCallback(postId => handleArchiveAction(postId, 'archive'), [handleArchiveAction]);
+  const handleRestorePost = useCallback(postId => handleArchiveAction(postId, 'restore'), [handleArchiveAction]);
 
   const handleStatusChange = useCallback(async (postId, newStatus, reviewBaseline, selectedReview) => {
     if (selectedReview && !isCurrentReview(selectedReview)) return;
@@ -2117,6 +2147,9 @@ const App = () => {
               )}
             </div>
 
+            {isOperator && archiveBusy && <p role="status" className="mb-4 text-sm text-slate-600">Updating archive…</p>}
+            {isOperator && archiveHold && <p role="alert" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Archive or restore needs checking. Inspect the thread before reloading; these actions are paused in this tab.</p>}
+
             {isLoading ? (
               <div className="flex flex-col items-center justify-center h-64">
                 <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
@@ -2282,8 +2315,8 @@ const App = () => {
                     onDelete={handleDeleteClick}
                     onStatusChange={handleStatusChange}
                     statusOptions={isClientMember ? MEMBER_STATUS_OPTIONS : undefined}
-                    onArchive={isOperator ? handleArchivePost : undefined}
-                    onRestore={isOperator ? handleRestorePost : undefined}
+                    onArchive={isOperator && !archiveBusy && !archiveHold ? handleArchivePost : undefined}
+                    onRestore={isOperator && !archiveBusy && !archiveHold ? handleRestorePost : undefined}
                     onUseTemplate={showTemplates ? handleUseTemplate : undefined}
                     onResubmit={handleResubmitForReview}
                     // Staging is an operator-only security boundary. Client
