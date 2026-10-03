@@ -46,7 +46,7 @@ import { sortPosts, SORT_ORDERS } from './utils/helpers';
 import { twitterLength } from './utils/markdownEditing';
 import { defaultPlatformForClient, validatedTags } from './utils/editorInputs';
 import { postEditingAccess } from './utils/postEditingAccess';
-import { hasReviewDetailsFields } from './utils/reviewDetails';
+import { hasProtectedReviewDetails } from './utils/reviewDetails';
 import { assertLegacyReviewSelection } from './utils/reviewDetailsAdmission';
 import { useClients } from './hooks/useClients';
 import BulkActionBar from './components/BulkActionBar';
@@ -369,7 +369,7 @@ const App = () => {
   // --- CRUD Handlers ---
   const handleSavePost = useCallback(async (formData, saveContext = {}) => {
     if (isReadOnly) return false;
-    if (hasReviewDetailsFields(formData)) {
+    if (hasProtectedReviewDetails(formData)) {
       showToast('Editing review media and first comments is not enabled yet.', 'error');
       return false;
     }
@@ -647,7 +647,7 @@ const App = () => {
     if (isReadOnly || !user) return;
     const post = postsRef.current.find(p => p.id === postId);
     if (!post) return;
-    if (hasReviewDetailsFields(post)) return showToast('This thread’s review details must be preserved. Deletion is not enabled in this version.', 'error');
+    if (hasProtectedReviewDetails(post)) return showToast('This thread’s review details must be preserved. Deletion is not enabled in this version.', 'error');
 
     try {
       await deleteDoc(doc(db, 'posts', postId));
@@ -735,6 +735,9 @@ const App = () => {
 
   const handleArchivePost = useCallback(async (postId) => {
     if (isReadOnly) return;
+    const post = postsRef.current.find(item => item.id === postId);
+    if (!post) return showToast('Thread no longer available. Reload before continuing.', 'error');
+    if (hasProtectedReviewDetails(post)) return showToast('Changes to threads with review details are not enabled yet.', 'error');
     try {
       await updateDoc(doc(db, 'posts', postId), { status: STATUS.ARCHIVED });
       showToast("Thread archived");
@@ -745,6 +748,9 @@ const App = () => {
 
   const handleRestorePost = useCallback(async (postId) => {
     if (isReadOnly) return;
+    const post = postsRef.current.find(item => item.id === postId);
+    if (!post) return showToast('Thread no longer available. Reload before continuing.', 'error');
+    if (hasProtectedReviewDetails(post)) return showToast('Changes to threads with review details are not enabled yet.', 'error');
     try {
       await updateDoc(doc(db, 'posts', postId), { status: STATUS.DRAFT });
       showToast("Thread restored to drafts");
@@ -758,6 +764,9 @@ const App = () => {
     // 🔒 SECURITY: Validate status enum
     if (!Object.values(STATUS).includes(newStatus)) return;
     if (isClientMember && !MEMBER_STATUS_OPTIONS.includes(newStatus)) return;
+    const loadedPost = postsRef.current.find(post => post.id === postId);
+    if (!loadedPost) return showToast('Thread no longer available. Reload before continuing.', 'error');
+    if (hasProtectedReviewDetails(loadedPost)) return showToast('Changes to threads with review details are not enabled yet.', 'error');
 
     // 🔒 SECURITY: Guests can ONLY approve (status -> scheduled)
     const isApproving = newStatus === STATUS.SCHEDULED;
@@ -826,7 +835,7 @@ const App = () => {
   // file can never land content in another tenant.
   const handleImportRows = useCallback(async (rows) => {
     if (isReadOnly || !user || !rows?.length) return false;
-    if (rows.some(hasReviewDetailsFields)) {
+    if (rows.some(hasProtectedReviewDetails)) {
       showToast('Importing review media and first comments is not enabled yet. No rows were imported.', 'error');
       return false;
     }
@@ -1010,6 +1019,11 @@ const App = () => {
   // archive; the automation's cadence brings fresh options next run.
   const handleDismissSuggestion = useCallback(async (post) => {
     if (isReadOnly || !isOperator) return;
+    const current = postsRef.current.find(item => item.id === post.id);
+    if (!current) return showToast('Thread no longer available. Reload before continuing.', 'error');
+    if (hasProtectedReviewDetails(post) || hasProtectedReviewDetails(current)) {
+      return showToast('Deletion of threads with review details is not enabled in this version.', 'error');
+    }
     try {
       await deleteDoc(doc(db, 'posts', post.id));
       showToast("Suggestion dismissed");
@@ -1152,7 +1166,7 @@ const App = () => {
   }, [clientsHash]);
 
   const handleCloneToAll = useCallback((post) => {
-    if (hasReviewDetailsFields(post)) return showToast('Review details cannot be copied to other clients.', 'error');
+    if (hasProtectedReviewDetails(post)) return showToast('Review details cannot be copied to other clients.', 'error');
     if (isReadOnly || !isOperator) return;
     // Blast writes LIVE drafts into every tenant's queue — unvetted suggestion content must
     // go through the explicit Promote first (the card hides the button too; this keeps the
@@ -1269,6 +1283,10 @@ const App = () => {
   // Batch-create draft posts (used by "Repurpose blog → social"). Returns count.
   const handleCreateDrafts = useCallback(async (drafts) => {
     if (isReadOnly || !user) return 0;
+    if (Array.isArray(drafts) && drafts.some(hasProtectedReviewDetails)) {
+      showToast('Creating drafts with review details is not enabled yet. No drafts were created.', 'error');
+      return 0;
+    }
     const valid = (drafts || []).filter(d => d && d.content && PLATFORMS[d.platform]);
     if (valid.length === 0) return 0;
 
@@ -1301,7 +1319,7 @@ const App = () => {
     });
     await batch.commit();
     return valid.length;
-  }, [isReadOnly, user, isClientMember, myClientName, myClientId, clientIdFor]);
+  }, [isReadOnly, user, isClientMember, myClientName, myClientId, clientIdFor, showToast]);
 
   // ===========================================================================
   // THE QUEUE PIPELINE
@@ -1503,7 +1521,7 @@ const App = () => {
     else exportPosts = posts;
 
     if (exportPosts.length === 0) return showToast("Nothing to export", "error");
-    if (format !== 'json' && exportPosts.some(hasReviewDetailsFields)) {
+    if (format !== 'json' && exportPosts.some(hasProtectedReviewDetails)) {
       return showToast('CSV cannot preserve review details yet. Use a JSON backup; restoring these details is not enabled yet.', 'error');
     }
 
@@ -1537,7 +1555,7 @@ const App = () => {
   const commitBulk = useCallback(async (mutate, successMsg, { clearAfter = false, emptyMsg } = {}) => {
     if (isReadOnly || !user) return;
     const byId = new Map(postsRef.current.map(p => [p.id, p]));
-    if ([...selectedIds].some(id => hasReviewDetailsFields(byId.get(id)))) {
+    if ([...selectedIds].some(id => hasProtectedReviewDetails(byId.get(id)))) {
       return showToast('Bulk changes to threads with review details are not enabled yet. No changes were submitted.', 'error');
     }
     const now = new Date().toISOString();
@@ -1687,7 +1705,7 @@ const App = () => {
   const handleBulkDelete = useCallback(() => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
-    if (ids.some(id => hasReviewDetailsFields(postsRef.current.find(post => post.id === id)))) {
+    if (ids.some(id => hasProtectedReviewDetails(postsRef.current.find(post => post.id === id)))) {
       return showToast('Deletion of threads with review details is not enabled in this version.', 'error');
     }
     setConfirmModal({
@@ -1729,7 +1747,7 @@ const App = () => {
     if (!from || !to || from === to) return showToast("Pick a different target name", "error");
 
     const affected = postsRef.current.filter(p => p.client === from);
-    if (affected.some(hasReviewDetailsFields)) {
+    if (affected.some(hasProtectedReviewDetails)) {
       return showToast('Client changes involving review details are not enabled yet.', 'error');
     }
     // RENAME and MERGE are different operations and must not share a tenant-key policy.

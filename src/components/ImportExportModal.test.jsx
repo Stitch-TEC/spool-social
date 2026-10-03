@@ -23,6 +23,16 @@ const changeFile = (container, text, name = 'in.csv') => {
 };
 
 describe('ImportExportModal — export scope', () => {
+  it.each([['reviewDetailsAck', null], ['reviewDetailsAck', {}], ['reviewMediaLinks', null],
+    ['reviewMediaLinks', []], ['reviewMediaLinks', '']])('does not download lossy CSV for ack/alias-only %s records %#', (field, value) => {
+    const showToast = vi.fn();
+    render(<ImportExportModal posts={[{ ...posts[0], [field]: value }]} uniqueClients={['Acme']}
+      isOperator onImport={noop} onClose={noop} showToast={showToast} />);
+    fireEvent.click(screen.getByRole('button', { name: /^CSV/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Export 1 thread$/ }));
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('CSV cannot preserve review details'), 'error');
+  });
   it('operator: counts active threads across all clients by default', () => {
     render(<ImportExportModal posts={posts} uniqueClients={['Acme', 'Beta']} isOperator onImport={noop} onClose={noop} showToast={noop} />);
     expect(screen.getByText('All clients')).toBeInTheDocument();

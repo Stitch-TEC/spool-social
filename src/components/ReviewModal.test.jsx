@@ -43,6 +43,36 @@ describe('ReviewModal — feedback attribution', () => {
 });
 
 describe('ReviewModal — review actions', () => {
+  it.each([['reviewDetailsAck', null], ['reviewDetailsAck', {}], ['reviewMediaLinks', null],
+    ['reviewMediaLinks', []], ['reviewMediaLinks', '']])('keeps ack/alias-only %s records view-only %#', (field, value) => {
+    const onApprove = vi.fn(), onRequestChanges = vi.fn();
+    render(<ReviewModal post={{ ...post, [field]: value }} onApprove={onApprove}
+      onRequestChanges={onRequestChanges} onClose={noop} />);
+    const approve = screen.getByRole('button', { name: 'Approve Thread' });
+    const request = screen.getByRole('button', { name: 'Request Changes' });
+    expect(approve).toBeDisabled();
+    expect(request).toBeDisabled();
+    fireEvent.click(approve); fireEvent.click(request);
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onRequestChanges).not.toHaveBeenCalled();
+  });
+  it.each([['reviewDetailsAck', null], ['reviewDetailsAck', {}], ['reviewMediaLinks', null],
+    ['reviewMediaLinks', []], ['reviewMediaLinks', '']])('disables an open feedback form when %s appears %#', (field, value) => {
+    const onApprove = vi.fn(), onRequestChanges = vi.fn();
+    const { rerender } = render(<ReviewModal post={post} onApprove={onApprove}
+      onRequestChanges={onRequestChanges} onClose={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Request Changes' }));
+    fireEvent.change(screen.getByLabelText('Specific feedback'), { target: { value: 'Keep my unsent note' } });
+    expect(screen.getByRole('button', { name: 'Submit Feedback' })).toBeEnabled();
+    rerender(<ReviewModal post={{ ...post, [field]: value }} onApprove={onApprove}
+      onRequestChanges={onRequestChanges} onClose={noop} />);
+    expect(screen.getByLabelText('Specific feedback')).toHaveValue('Keep my unsent note');
+    const submit = screen.getByRole('button', { name: 'Submit Feedback' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onRequestChanges).not.toHaveBeenCalled();
+  });
   it('opens recognized draft video links without embedding, fetching, approving or changing the source text', () => {
     const url = 'https://drive.google.com/file/d/synthetic-video/view?usp=sharing';
     const content = `Review this edit\n\n${url}`;

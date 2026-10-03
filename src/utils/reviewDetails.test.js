@@ -1,12 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { copyReviewDetailsFields, hasReviewDetailsFields, isValidReviewDetails,
   isValidReviewMedia, reviewDetailsSnapshot, reviewDetailsIdentity,
-  reviewDetailsAcknowledgmentMatches } from './reviewDetails.js';
+  reviewDetailsAcknowledgmentMatches, REVIEW_DETAILS_PROTECTED_FIELDS,
+  hasProtectedReviewDetails, assertLegacyReviewWriter } from './reviewDetails.js';
+import { REVIEW_DETAILS_PROTECTED_FIELDS as maintenanceFields,
+  hasProtectedReviewDetails as maintenancePresence } from '../../worker/reviewDetails.js';
 
 const media = { id: 'rm01234567890123456789', url: 'https://youtu.be/clip?token=a%2Fb', label: 'Cut one', version: 'v2' };
 const post = { reviewDetailsVersion: 1, reviewMedia: [media], firstComment: 'Website: https://example.com/' };
 
 describe('review-only compatibility contract', () => {
+  it('matches the privileged maintenance presence boundary without extending the payload contract', () => {
+    expect(REVIEW_DETAILS_PROTECTED_FIELDS).toEqual(maintenanceFields);
+    expect(Object.isFrozen(REVIEW_DETAILS_PROTECTED_FIELDS)).toBe(true);
+    for (const field of ['reviewDetailsAck', 'reviewMediaLinks']) {
+      const reserved = { content: 'Caption', [field]: null };
+      expect(hasProtectedReviewDetails(reserved)).toBe(true);
+      expect(hasReviewDetailsFields(reserved)).toBe(false);
+      expect(copyReviewDetailsFields(reserved)).toEqual({});
+      expect(reviewDetailsSnapshot(reserved)).toBeNull();
+      expect(reviewDetailsIdentity(reserved)).toBe('null');
+    }
+  });
+  it.each(REVIEW_DETAILS_PROTECTED_FIELDS.flatMap(field =>
+    [undefined, null, false, 0, '', [], {}].map(value => [field, value])))('fences own %s presence regardless of value %#', (field, value) => {
+    const reserved = { [field]: value };
+    expect(hasProtectedReviewDetails(reserved)).toBe(true);
+    expect(maintenancePresence(reserved)).toBe(true);
+    expect(() => assertLegacyReviewWriter(reserved)).toThrow('not enabled');
+  });
+  it('keeps legacy absence and inherited properties outside the own-field fence', () => {
+    for (const value of [null, undefined, [], '', 0, { content: 'Legacy' },
+      Object.create({ reviewDetailsAck: null, reviewMediaLinks: [] })]) {
+      expect(hasProtectedReviewDetails(value)).toBe(false);
+      expect(() => assertLegacyReviewWriter(value)).not.toThrow();
+    }
+  });
   it('keeps legacy absence distinct from the sticky versioned empty controls', () => {
     expect(isValidReviewDetails({ content: 'Caption' })).toBe(true);
     expect(hasReviewDetailsFields({ content: 'Caption' })).toBe(false);

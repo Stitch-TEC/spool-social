@@ -26,7 +26,8 @@ import { editorWorkSignature as workSignature, reconcileEditorSave } from '../ut
 import { recoveryScope, inspectRecovery, olderRecoveryScope, olderRecoveryPresence,
   captureRecoveryWork, recoveryMatchesLoaded, restoreRecoveryWork, writeRecovery,
   clearRecovery } from '../utils/editorRecovery';
-import { hasReviewDetailsFields } from '../utils/reviewDetails';
+import { hasReviewDetailsFields, isValidReviewDetails } from '../utils/reviewDetails';
+import useEscapeKey from '../hooks/useEscapeKey';
 import useAsyncRequest from '../hooks/useAsyncRequest';
 import useCreateRecovery from '../hooks/useCreateRecovery';
 import { createScope } from '../utils/createJournal';
@@ -55,7 +56,7 @@ const PLATFORM_ACTIVE_CLASSES = {
   job: 'border-violet-500 bg-violet-50',
 };
 
-const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, readOnlyReason = '', onCreateDrafts, postImagesByClient = {}, initialClient = '', initialPlatform = 'gmb', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser, mediaSessionKey = '', isSessionCurrent }) => {
+const EditorForm = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clientIdByName, clientIdFor, showToast, isReadOnly, readOnlyReason = '', onCreateDrafts, postImagesByClient = {}, initialClient = '', initialPlatform = 'gmb', clientLocked = false, canPreviewEmail = false, recoveryPrincipalId = '', recoveryClientIdFor, createRecoveryEnabled = false, recoveryProjectId = '', getRecoveryUser, mediaSessionKey = '', isSessionCurrent }) => {
   const allClients = useMemo(() => {
     const set = new Set([...(uniqueClients || []), ...Object.keys(clientMap || {})]);
     return [...set].sort();
@@ -1431,5 +1432,38 @@ const Editor = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, clie
     </div>
   );
 };
+
+// Do not construct signatures/recovery from malformed canonical metadata. This
+// view leaves the record and all device work untouched; it is not a repair.
+const MalformedThreadView = ({ post, onCancel }) => {
+  const closeRef = useRef(null);
+  useEscapeKey(onCancel);
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+  return (
+    <main className="min-h-screen bg-slate-50 p-4 sm:p-6 overflow-y-auto [overflow-wrap:anywhere]">
+      <section className="mx-auto max-w-2xl rounded-2xl border border-amber-200 bg-white p-4 sm:p-6">
+        <h2 className="text-lg font-bold text-slate-800">Thread needs checking</h2>
+        <p role="status" className="mt-2 text-sm text-slate-600">Review details could not be read. Copy the saved caption or close this thread.</p>
+        <label htmlFor="malformed-thread-caption" className="mt-4 block text-sm font-semibold text-slate-700">Saved caption — select and copy</label>
+        <textarea id="malformed-thread-caption" readOnly rows={8}
+          value={typeof post?.content === 'string' ? post.content : ''}
+          onFocus={event => event.currentTarget.select()}
+          className="mt-2 w-full rounded-lg border border-slate-300 p-3 text-sm text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600" />
+        <button ref={closeRef} type="button" onClick={onCancel} aria-label="Close Editor"
+          className="mt-4 min-h-11 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">Close</button>
+      </section>
+    </main>
+  );
+};
+
+const Editor = props => props.post !== null && props.post !== undefined && !isValidReviewDetails(props.post)
+  ? <MalformedThreadView post={props.post} onCancel={props.onCancel} />
+  : <EditorForm {...props} />;
 
 export default Editor;

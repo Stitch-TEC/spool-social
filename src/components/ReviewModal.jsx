@@ -7,7 +7,7 @@ import { DATE_FORMATTERS } from '../utils/helpers';
 import useEscapeKey from '../hooks/useEscapeKey';
 import { publicationSlugOf } from '../utils/review';
 import { reviewFeedbackState } from '../utils/reviewFeedback';
-import { hasReviewDetailsFields } from '../utils/reviewDetails';
+import { hasProtectedReviewDetails } from '../utils/reviewDetails';
 
 const fmtDate = (iso) => {
   try { return DATE_FORMATTERS.full.format(new Date(iso)); } catch { return ''; }
@@ -77,7 +77,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
 
   const feedbackTags = ["Fix Text", "Change Image", "Wrong Link", "Tone Issue"];
   const isArchived = post.status === 'archived';
-  const detailsUnavailable = hasReviewDetailsFields(post);
+  const detailsUnavailable = hasProtectedReviewDetails(post);
   const publicationSlug = publicationSlugOf(post);
   const composedFeedback = reviewFeedbackState(activeTags, feedback);
 
@@ -235,7 +235,7 @@ const ReviewModal = ({ post, clientSettings = {}, onApprove, onRequestChanges, o
             ) : (
               <div className="flex flex-col sm:flex-row gap-3">
                 <button onClick={() => setMode('view')} className="px-6 py-3 text-slate-500 font-medium hover:text-slate-700 transition-colors">Cancel</button>
-                <button disabled={!composedFeedback.valid} onClick={handleSubmit} className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-600/20 disabled:opacity-50 disabled:cursor-not-allowed">Submit Feedback</button>
+                <button disabled={!composedFeedback.valid || detailsUnavailable} onClick={handleSubmit} className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-600/20 disabled:opacity-50 disabled:cursor-not-allowed">Submit Feedback</button>
               </div>
             )}
           </div>

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import { OPERATOR_UID } from './config/roles';
+import { updateDoc, deleteDoc } from 'firebase/firestore';
 
-const state = vi.hoisted(() => ({ auth: {}, posts: [], batches: [], grid: null, bulk: null, commit: null }));
+const state = vi.hoisted(() => ({ auth: {}, posts: [], batches: [], grid: null, bulk: null, editor: null, commit: null }));
 vi.mock('./config/firebase', () => ({ db: { app: { options: { projectId: 'demo-spool' } } }, auth: { get currentUser() { return state.auth.user; } } }));
 vi.mock('./hooks/useAuth', () => ({ default: () => state.auth }));
 vi.mock('./hooks/usePosts', () => ({ default: () => ({ posts: state.posts, clientMap: {}, isLoading: false, error: null }) }));
@@ -29,6 +30,7 @@ vi.mock('./components/BulkActionBar', () => ({ default: props => {
   return <button onClick={props.onDelete}>Delete fixture selection</button>;
 } }));
 vi.mock('./components/Sidebar', () => ({ default: () => null }));
+vi.mock('./components/Editor', () => ({ default: props => { state.editor = props; return <div>Fixture editor</div>; } }));
 vi.mock('./components/FilterBar', () => ({ default: () => null, SUGGESTIONS_LANE: 'suggestions' }));
 vi.mock('./components/BrandFooter', () => ({ default: () => null }));
 vi.mock('./components/FeedbackWidget', () => ({ default: () => null }));
@@ -51,24 +53,82 @@ beforeEach(() => {
   state.auth = { user, role: 'super_admin', isOperator: true, isClientMember: false, isReadOnly: false,
     authLoading: false, authRevision: 1, getAuthRevision: () => 1, clientId: null };
   state.posts = [base(), base('b', { client: 'Beta', clientId: 'beta' })];
-  state.batches = []; state.grid = null; state.bulk = null; state.commit = null;
+  state.batches = []; state.grid = null; state.bulk = null; state.editor = null; state.commit = null;
+  vi.mocked(updateDoc).mockClear(); vi.mocked(deleteDoc).mockClear();
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('No live network in compatibility QA'); }));
 });
 afterEach(() => { cleanup(); expect(fetch).not.toHaveBeenCalled(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('actual App delayed confirmation review-details admission', () => {
-  it.each(['details', 'missing'])('does not clone a %s source after the confirmation was opened', async kind => {
+  it.each(['reviewDetailsVersion', 'firstComment', 'reviewMedia', 'reviewDetailsAck', 'reviewMediaLinks'])('refuses all direct card writes when current %s presence appears after the callback was captured', async field => {
+    const app = render(<App />);
+    const captured = state.grid;
+    const stalePost = state.posts[0];
+    state.posts = state.posts.map(post => post.id === 'a' ? { ...post, [field]: null } : post);
+    app.rerender(<App />);
+    await act(async () => {
+      await captured.onArchive('a'); await captured.onRestore('a');
+      await captured.onStatusChange('a', 'posted'); await captured.onDismissSuggestion(stalePost);
+    });
+    expect(updateDoc).not.toHaveBeenCalled(); expect(deleteDoc).not.toHaveBeenCalled();
+    expect(screen.queryByText('Thread archived')).toBeNull();
+    expect(screen.queryByText('Suggestion dismissed')).toBeNull();
+  });
+  it('refuses missing captured sources instead of treating them as ordinary legacy rows', async () => {
+    const app = render(<App />), captured = state.grid, stalePost = state.posts[0];
+    state.posts = state.posts.filter(post => post.id !== 'a'); app.rerender(<App />);
+    await act(async () => {
+      await captured.onArchive('a'); await captured.onRestore('a');
+      await captured.onStatusChange('a', 'posted'); await captured.onDismissSuggestion(stalePost);
+    });
+    expect(updateDoc).not.toHaveBeenCalled(); expect(deleteDoc).not.toHaveBeenCalled();
+  });
+  it('retains ordinary legacy direct card actions', async () => {
+    render(<App />);
+    await act(async () => {
+      await state.grid.onArchive('a'); await state.grid.onRestore('a');
+      await state.grid.onStatusChange('a', 'posted'); await state.grid.onDismissSuggestion(state.posts[0]);
+    });
+    expect(updateDoc).toHaveBeenCalledTimes(3); expect(deleteDoc).toHaveBeenCalledTimes(1);
+  });
+  it.each(['reviewDetailsVersion', 'firstComment', 'reviewMedia', 'reviewDetailsAck', 'reviewMediaLinks'])('refuses the whole create-drafts input before mapping away %s presence', async field => {
+    render(<App />);
+    await act(async () => { state.grid.onEdit(state.posts[0]); });
+    await screen.findByText('Fixture editor');
+    let count;
+    await act(async () => { count = await state.editor.onCreateDrafts([
+      { platform: 'linkedin', content: 'Ordinary draft', client: 'Acme' },
+      { platform: 'linkedin', content: 'Keep reserved field', client: 'Acme', [field]: null },
+    ]); });
+    expect(count).toBe(0); expect(state.batches).toHaveLength(0);
+    expect(screen.getByText(/No drafts were created/)).toBeInTheDocument();
+  });
+  it('retains ordinary create-drafts input without introducing extension fields', async () => {
+    render(<App />);
+    await act(async () => { state.grid.onEdit(state.posts[0]); });
+    await screen.findByText('Fixture editor');
+    let count;
+    await act(async () => { count = await state.editor.onCreateDrafts([
+      { platform: 'linkedin', content: 'Ordinary draft', client: 'Acme' },
+    ]); });
+    expect(count).toBe(1); expect(state.batches).toHaveLength(1);
+    expect(state.batches[0][0].value).toMatchObject({ content: 'Ordinary draft', reviewStage: 'private', approvalStatus: 'pending' });
+    expect(state.batches[0][0].value).not.toHaveProperty('reviewDetailsVersion');
+    expect(state.batches[0][0].value).not.toHaveProperty('reviewDetailsAck');
+  });
+  it.each(['details', 'ack-only', 'alias-only', 'missing'])('does not clone a %s source after the confirmation was opened', async kind => {
     const app = render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Clone fixture a' }));
     await screen.findByRole('dialog', { name: 'Blast: Clone to All Clients?' });
     state.posts = kind === 'missing' ? state.posts.filter(post => post.id !== 'a')
-      : state.posts.map(post => post.id === 'a' ? { ...post, reviewDetailsVersion: 1, firstComment: 'New comment' } : post);
+      : state.posts.map(post => post.id === 'a' ? { ...post, ...(kind === 'ack-only' ? { reviewDetailsAck: null }
+        : kind === 'alias-only' ? { reviewMediaLinks: [] } : { reviewDetailsVersion: 1, firstComment: 'New comment' }) } : post);
     app.rerender(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm', exact: true }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(state.batches).toHaveLength(0);
-    expect(screen.getByText(kind === 'details' ? /Nothing cloned.*now has review details/ : /Cloning failed.*source thread/)).toBeInTheDocument();
+    expect(screen.getByText(kind !== 'missing' ? /Nothing cloned.*now has review details/ : /Cloning failed.*source thread/)).toBeInTheDocument();
   });
 
   it('still clones an unchanged legacy source into unapproved private drafts', async () => {
@@ -81,9 +141,10 @@ describe('actual App delayed confirmation review-details admission', () => {
     expect(state.batches[0][0].value).not.toHaveProperty('firstComment');
   });
 
-  it.each(['reviewDetailsVersion', 'firstComment', 'reviewMedia'])('does not delete after %s appears during confirmation', async field => {
+  it.each(['reviewDetailsVersion', 'firstComment', 'reviewMedia', 'reviewDetailsAck', 'reviewMediaLinks'])('does not delete after %s appears during confirmation', async field => {
     const app = render(<App />); await beginDelete();
-    state.posts = state.posts.map(post => post.id === 'b' ? { ...post, [field]: field === 'reviewDetailsVersion' ? 99 : field === 'reviewMedia' ? [] : '' } : post);
+    state.posts = state.posts.map(post => post.id === 'b' ? { ...post, [field]: field === 'reviewDetailsVersion' ? 99
+      : ['reviewMedia', 'reviewMediaLinks'].includes(field) ? [] : field === 'reviewDetailsAck' ? null : '' } : post);
     app.rerender(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete', exact: true }));
     await screen.findByText(/Deletion stopped before starting.*now has review details/);

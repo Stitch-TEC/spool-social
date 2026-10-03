@@ -96,6 +96,9 @@ describe('deliberate lossless localStorage v3 recovery', () => {
 
   it.each([
     { content: 'Draft', unknown: 'Do not silently drop' },
+    { content: 'Draft', reviewDetailsAck: null }, { content: 'Draft', reviewDetailsAck: {} },
+    { content: 'Draft', reviewMediaLinks: null }, { content: 'Draft', reviewMediaLinks: [] },
+    { content: 'Draft', reviewMediaLinks: '' },
     { content: 'Draft', savedAt: 'now' }, { content: 'Draft', savedAt: -1 },
     { content: 'Draft', tags: [3] }, { content: 'Draft', firstComment: 'Missing marker' },
     { content: 'Draft', reviewDetailsVersion: 1, reviewMedia: [{ ...media, unknown: true }] },

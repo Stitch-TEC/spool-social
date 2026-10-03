@@ -1,6 +1,6 @@
 import { APPROVAL_STATUS, PLATFORMS, REVIEW_STAGE, STATUS } from '../constants';
 import { OPERATOR_UID } from '../config/roles';
-import { hasReviewDetailsFields } from './reviewDetails';
+import { hasProtectedReviewDetails } from './reviewDetails';
 
 const CLIENT_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const blocked = reason => ({ canEdit: false, reason });
@@ -11,7 +11,7 @@ const allowed = () => ({ canEdit: true, reason: '' });
 // it is not proof of why a historical production write was denied.
 export function postEditingAccess(post, { isReadOnly = false, isOperator = false, isClientMember = false, clientId } = {}) {
   if (isReadOnly) return blocked('Review links cannot edit threads. Ask Stitch TEC for changes.');
-  if (hasReviewDetailsFields(post)) return blocked('Review details are read-only in this Spool version.');
+  if (hasProtectedReviewDetails(post)) return blocked('Review details are read-only in this Spool version.');
   if (isOperator) return allowed();
   if (!isClientMember || typeof clientId !== 'string' || clientId.length > 64 || !CLIENT_ID.test(clientId)) {
     return blocked('Only Stitch TEC or this workspace’s editors can edit threads.');

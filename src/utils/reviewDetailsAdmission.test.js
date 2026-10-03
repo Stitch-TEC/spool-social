@@ -12,6 +12,13 @@ describe('delayed legacy-writer selection admission', () => {
     expect(() => assertLegacyReviewSelection([{ id: 'a', reviewDetailsVersion: 1 }], ['a']))
       .toThrow('This thread has review details.');
   });
+  it.each([['reviewDetailsAck', null], ['reviewDetailsAck', {}], ['reviewMediaLinks', null],
+    ['reviewMediaLinks', []], ['reviewMediaLinks', '']])('refuses current ack/alias-only %s presence %#', (field, value) => {
+    const rows = [{ id: 'a' }, { id: 'b', [field]: value }];
+    expect(() => assertLegacyReviewSelection(rows, ['a'])).not.toThrow();
+    expect(() => assertLegacyReviewSelection(rows, ['a', 'b'])).toThrow('review details');
+    expect(rows[1][field]).toEqual(value);
+  });
   it('refuses a deleted/missing source rather than cloning a stale copy', () => {
     expect(() => assertLegacyReviewSelection([], ['a'])).toThrow('no longer available');
   });

@@ -3,6 +3,12 @@ import { parseVideoReference } from './videoReferences.js';
 // This is a compatibility contract, not an authoring switch. Review references
 // are mutable external destinations, not copied files or proof of access.
 export const REVIEW_DETAILS_FIELDS = ['reviewDetailsVersion', 'reviewMedia', 'firstComment'];
+// Unsupported writers must also preserve server-owned acknowledgments and the
+// reserved legacy alias, even when their values are empty or malformed. Keep
+// this admission boundary separate from the canonical three-field payload.
+export const REVIEW_DETAILS_PROTECTED_FIELDS = Object.freeze([
+  ...REVIEW_DETAILS_FIELDS, 'reviewDetailsAck', 'reviewMediaLinks',
+]);
 export const REVIEW_MEDIA_LIMIT = 5;
 export const FIRST_COMMENT_LIMIT = 4000;
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -11,6 +17,10 @@ const itemKeys = ['id', 'url', 'label', 'version'];
 
 export function hasReviewDetailsFields(value) {
   return object(value) && REVIEW_DETAILS_FIELDS.some(key => own(value, key));
+}
+
+export function hasProtectedReviewDetails(value) {
+  return object(value) && REVIEW_DETAILS_PROTECTED_FIELDS.some(key => own(value, key));
 }
 
 export function isValidReviewMedia(value) {
@@ -81,7 +91,7 @@ export function reviewDetailsAcknowledgmentMatches(ack, value) {
 }
 
 export function assertLegacyReviewWriter(value) {
-  if (!hasReviewDetailsFields(value)) return;
+  if (!hasProtectedReviewDetails(value)) return;
   const error = new Error('This thread has review details. Editing and direct review are not enabled in this Spool version.');
   error.code = 'review_details_authoring_disabled';
   throw error;
