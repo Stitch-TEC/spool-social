@@ -972,9 +972,9 @@ const EditorForm = ({ post, onSave, onCancel, onHelp, clientMap, uniqueClients, 
 
           {/* Editor Area */}
           <div className="relative group">
-            <div className="flex justify-between items-center mb-2 gap-3">
-               <label className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0">Content</label>
-               <button onClick={() => setIsSparkOpen(true)} className="flex items-center gap-1 text-indigo-600 text-xs font-bold hover:underline shrink-0"><Wand2 size={12}/> <span>Spark Deck</span></button>
+            <div className="flex min-w-0 flex-wrap justify-between items-center mb-2 gap-x-3 gap-y-2">
+               <label className="text-xs font-bold text-slate-600 uppercase tracking-wider shrink-0">Content</label>
+               <button type="button" onClick={() => setIsSparkOpen(true)} className="ml-auto flex min-h-11 min-w-11 max-w-full items-center gap-1 rounded-lg px-2 text-indigo-600 text-xs font-bold hover:underline shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"><Wand2 size={12} aria-hidden="true" className="shrink-0" /> <span className="min-w-0">Spark Deck</span></button>
             </div>
             {!isReadOnly && (
               <div className="mb-2">
