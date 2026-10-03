@@ -18,7 +18,7 @@ export const HELP_GUIDES = [
   {
     id: 'create-operator', title: 'Create and save a draft', category: 'Drafting', audiences: ['operator'],
     summary: 'Start a private draft, then decide when to share it.',
-    keywords: 'new thread save editor content client AI recovery',
+    keywords: 'new thread save editor content client AI recovery platform usual',
     steps: [
       'Choose a client, then select New. Confirm Client Name in the editor.',
       'Choose Platform and write the content. Schedule starts empty; tags allow 10 entries of 20 characters. AI draft is optional; review it before use.',
@@ -27,11 +27,12 @@ export const HELP_GUIDES = [
       'When ready, use Send for review on the saved thread.',
     ],
     warning: 'Saving your new draft does not share it with the client or publish it.',
+    note: 'Usual marks the most-used platform in this client’s loaded threads; choose any platform you need.',
   },
   {
     id: 'create-member', title: 'Work on your client’s drafts', category: 'Drafting', audiences: ['member'],
     summary: 'Create or edit a thread within your own client workspace.',
-    keywords: 'new thread save editor content approval review client AI recovery',
+    keywords: 'new thread save editor content approval review client AI recovery platform usual',
     steps: [
       'Select New or open an existing thread. Client Name stays with your workspace.',
       'Choose Platform and write or adjust the content. AI draft is optional.',
@@ -40,6 +41,7 @@ export const HELP_GUIDES = [
       'For approval or feedback, open the review link supplied by your team; the signed-in editor is a different view.',
     ],
     warning: 'Your saved new threads are available for client review. Saving an edit is not an approval; changes to approved content need another review.',
+    note: 'Usual marks the most-used platform in this client’s loaded threads; choose any platform you need.',
   },
   {
     id: 'send-review', title: 'Share a draft for review', category: 'Review', audiences: ['operator'],
