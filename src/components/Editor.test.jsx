@@ -232,6 +232,39 @@ describe('Editor', () => {
     expect(clientInput.value).toBe('Acme Corp');
   });
 
+  it('lets the Content toolbar wrap while keeping a named, touch-sized keyboard target', () => {
+    render(<Editor {...baseProps} />);
+    const sparkButton = screen.getByRole('button', { name: 'Spark Deck', exact: true });
+    expect(sparkButton).toHaveAttribute('type', 'button');
+    expect(sparkButton).toHaveClass('min-h-11', 'min-w-11', 'max-w-full', 'focus-visible:outline-2', 'focus-visible:outline-offset-2');
+    expect(sparkButton.parentElement).toHaveClass('min-w-0', 'flex-wrap', 'gap-y-2');
+    expect(screen.getByText('Content', { selector: 'label' })).toHaveClass('text-slate-600');
+    expect(sparkButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it.each([false, true])('keeps the current caption, date and tags when opening and closing Spark Deck (read-only: %s)', isReadOnly => {
+    const onSave = vi.fn();
+    const scheduledDate = '2026-10-08T15:30:00.000Z';
+    render(<Editor {...baseProps} onSave={onSave} isReadOnly post={{
+      id: 'toolbar-preservation', client: 'Acme', clientId: 'acme', platform: 'blog',
+      title: 'Existing title', content: 'Existing caption', scheduledDate, tags: ['existing'],
+    }} />);
+    const caption = screen.getByDisplayValue('Existing caption');
+    if (!isReadOnly) fireEvent.change(caption, { target: { value: 'Unsaved caption' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spark Deck', exact: true }));
+    expect(screen.getByRole('dialog', { name: 'Spark Deck' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close Spark Deck' }));
+
+    expect(screen.queryByRole('dialog', { name: 'Spark Deck' })).not.toBeInTheDocument();
+    expect(caption).toHaveValue(isReadOnly ? 'Existing caption' : 'Unsaved caption');
+    expect(screen.getByDisplayValue('Existing title')).toBeInTheDocument();
+    expect(screen.getByLabelText('Schedule (optional)')).toHaveValue(toLocalISOString(new Date(scheduledDate)));
+    expect(screen.getByText('#existing')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Select or type a new client...')).toHaveValue('Acme');
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('does not offer to save whitespace-only content', () => {
     const onSave = vi.fn();
     render(<Editor {...baseProps} onSave={onSave} post={{ id: 'empty', content: '   \n ', client: 'Acme' }} />);
