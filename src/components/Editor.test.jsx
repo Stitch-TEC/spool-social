@@ -242,19 +242,28 @@ describe('Editor', () => {
     expect(sparkButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it.each([false, true])('keeps the current caption, date and tags when opening and closing Spark Deck (read-only: %s)', isReadOnly => {
+  it.each([false, true])('preserves current work and Spark Deck admission (read-only: %s)', isReadOnly => {
     const onSave = vi.fn();
     const scheduledDate = '2026-10-08T15:30:00.000Z';
-    render(<Editor {...baseProps} onSave={onSave} isReadOnly post={{
+    render(<Editor {...baseProps} onSave={onSave} isReadOnly={isReadOnly} post={{
       id: 'toolbar-preservation', client: 'Acme', clientId: 'acme', platform: 'blog',
       title: 'Existing title', content: 'Existing caption', scheduledDate, tags: ['existing'],
     }} />);
     const caption = screen.getByDisplayValue('Existing caption');
+    expect(caption.closest('fieldset').disabled).toBe(isReadOnly);
+    if (isReadOnly) expect(caption).toBeDisabled();
+    else expect(caption).toBeEnabled();
     if (!isReadOnly) fireEvent.change(caption, { target: { value: 'Unsaved caption' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Spark Deck', exact: true }));
-    expect(screen.getByRole('dialog', { name: 'Spark Deck' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Close Spark Deck' }));
+    const sparkButton = screen.getByRole('button', { name: 'Spark Deck', exact: true });
+    if (isReadOnly) {
+      expect(sparkButton).toBeDisabled();
+    } else {
+      expect(sparkButton).toBeEnabled();
+      fireEvent.click(sparkButton);
+      expect(screen.getByRole('dialog', { name: 'Spark Deck' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Close Spark Deck' }));
+    }
 
     expect(screen.queryByRole('dialog', { name: 'Spark Deck' })).not.toBeInTheDocument();
     expect(caption).toHaveValue(isReadOnly ? 'Existing caption' : 'Unsaved caption');
